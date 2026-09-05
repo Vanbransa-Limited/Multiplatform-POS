@@ -65,10 +65,6 @@ async function runBoot(onSyncStatus) {
 
   const tenants = await db.tenants.toArray();
   state.currentTenant = tenants[0] || null;
-  if (state.currentTenant && state.currentTenant.trading_name === 'Titanium') {
-    state.currentTenant.trading_name = 'Vanbransa';
-    await db.tenants.put(state.currentTenant);
-  }
 
   const branches = await db.branches.toArray();
   state.currentBranch = branches[0] || null; // Nairobi CBD default

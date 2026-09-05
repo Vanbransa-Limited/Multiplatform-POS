@@ -60,9 +60,9 @@ export function renderReceiptHtml(payload) {
   return `
     <div class="receipt-header">
       <h2>${escapeHtml(payload.tenantName)}</h2>
-      <p>${escapeHtml(payload.branchName)}</p>
-      <p>PIN: ${escapeHtml(payload.kraPin)}</p>
-      <p>Branch ID: ${escapeHtml(payload.branchCode)}</p>
+      ${payload.branchName ? `<p>${escapeHtml(payload.branchName)}</p>` : ''}
+      ${payload.kraPin ? `<p>PIN: ${escapeHtml(payload.kraPin)}</p>` : ''}
+      ${payload.branchCode ? `<p>Branch ID: ${escapeHtml(payload.branchCode)}</p>` : ''}
       ${payload.phone ? `<p>Tel: ${escapeHtml(payload.phone)}</p>` : ''}
     </div>
     <div class="receipt-divider"></div>

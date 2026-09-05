@@ -1427,6 +1427,7 @@ export class TillView {
       branchName: state.currentBranch.name,
       kraPin: state.currentTenant.kra_pin,
       branchCode: state.currentBranch.etims_bhf_id,
+      phone: state.currentTenant.phone,
       invoiceNo: sale.invoice_no,
       soldAt: new Date(sale.sold_at).toLocaleString(),
       cashierName: state.currentUser.name,
@@ -1455,11 +1456,11 @@ export class TillView {
 
     paperView.innerHTML = `
       <div class="receipt-header">
-        <h2>${state.currentTenant.trading_name}</h2>
-        <p>${state.currentBranch.name}</p>
-        <p>PIN: ${state.currentTenant.kra_pin}</p>
-        <p>Branch ID: ${state.currentBranch.etims_bhf_id}</p>
-        <p>Tel: +254 712 345678</p>
+        <h2>${state.currentTenant.trading_name || ''}</h2>
+        ${state.currentBranch.name ? `<p>${state.currentBranch.name}</p>` : ''}
+        ${state.currentTenant.kra_pin ? `<p>PIN: ${state.currentTenant.kra_pin}</p>` : ''}
+        ${state.currentBranch.etims_bhf_id ? `<p>Branch ID: ${state.currentBranch.etims_bhf_id}</p>` : ''}
+        ${state.currentTenant.phone ? `<p>Tel: ${state.currentTenant.phone}</p>` : ''}
       </div>
       <div class="receipt-divider"></div>
       <div style="font-size:10px; margin-bottom: 8px;">

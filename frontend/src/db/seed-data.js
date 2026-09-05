@@ -10,18 +10,22 @@ export const TENANT_ID = 'tenant-01';
 export const DEFAULT_BRANCH_ID = 'branch-nai-01';
 export const DEFAULT_DEVICE_ID = 'device-till-01';
 
+// Identity a fresh device starts with. These print on the receipt, so a
+// placeholder here becomes a placeholder in a customer's hand: fields the
+// merchant has not supplied yet are left empty rather than invented.
 export const tenant = {
     id: TENANT_ID,
-    legal_name: 'Kenya Retail Group Ltd',
-    trading_name: 'Vanbransa',
-    kra_pin: 'P051234567A',
+    legal_name: '',
+    trading_name: 'Titanium',
+    kra_pin: '',
+    phone: '',
     etims_mode: 'OSCU',
     status: 'ACTIVE'
   };
 
 export const branches = [
-    { id: 'branch-nai-01', tenant_id: TENANT_ID, name: 'Nairobi CBD Branch', code: 'BH001', etims_bhf_id: '00', is_active: 1 },
-    { id: 'branch-nai-02', tenant_id: TENANT_ID, name: 'Westlands Branch', code: 'BH002', etims_bhf_id: '01', is_active: 1 }
+    { id: 'branch-nai-01', tenant_id: TENANT_ID, name: '', code: 'BH001', etims_bhf_id: '00', is_active: 1 },
+    { id: 'branch-nai-02', tenant_id: TENANT_ID, name: '', code: 'BH002', etims_bhf_id: '01', is_active: 1 }
   ];
 
 export const device = {

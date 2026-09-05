@@ -58,6 +58,20 @@ test('an unsigned sale says so rather than printing a blank fiscal block', () =>
   assert.ok(!signed.includes('AWAITING FISCAL SIGNATURE'));
 });
 
+test('identity the merchant has not supplied yet prints nothing, not an empty label', () => {
+  const html = renderReceiptHtml({ ...receipt, kraPin: '', branchName: '', branchCode: '', phone: '' });
+
+  assert.ok(html.includes('Titanium'));
+  assert.ok(!html.includes('PIN:'));
+  assert.ok(!html.includes('Branch ID:'));
+  assert.ok(!html.includes('Tel:'));
+  assert.ok(!html.includes('undefined'));
+
+  const filled = renderReceiptHtml({ ...receipt, phone: '+254712000000' });
+  assert.ok(filled.includes('PIN: P051234567A'));
+  assert.ok(filled.includes('Tel: +254712000000'));
+});
+
 test('a malformed job renders nothing rather than half a receipt', () => {
   assert.equal(isPrintableReceipt(null), false);
   assert.equal(isPrintableReceipt({ invoiceNo: 'X' }), false);

@@ -447,10 +447,11 @@ export class OrdersView {
     const productsList = await db.products.toArray();
     const prodMap = new Map(productsList.map(p => [p.id, p]));
 
-    const tenant = state.currentTenant || (await db.tenants.first()) || { trading_name: 'Vanbransa', kra_pin: 'P051234567Z' };
-    const branch = state.currentBranch || (await db.branches.first()) || { name: 'Vanbransa Main Branch', etims_bhf_id: '00' };
+    // No invented identity: a placeholder here prints on a customer's receipt.
+    const tenant = state.currentTenant || (await db.tenants.first()) || {};
+    const branch = state.currentBranch || (await db.branches.first()) || {};
 
-    let cashierName = 'Vanbransa Owner';
+    let cashierName = '';
     if (sale.shift_id) {
       const shift = await db.shifts.get(sale.shift_id);
       if (shift && shift.user_id) {
@@ -474,11 +475,11 @@ export class OrdersView {
 
     paper.innerHTML = `
       <div style="text-align: center; margin-bottom: 12px;">
-        <h2 style="margin: 0; font-size: 16px; font-weight: 800; text-transform: uppercase;">${tenant.trading_name || 'Vanbransa'}</h2>
-        <p style="margin: 2px 0 0 0; font-size: 10px; color: #444;">${branch.name || 'Main Branch'}</p>
-        <p style="margin: 1px 0 0 0; font-size: 10px; color: #444;">KRA PIN: ${tenant.kra_pin || 'P051234567Z'}</p>
-        <p style="margin: 1px 0 0 0; font-size: 10px; color: #444;">Branch Code: ${branch.etims_bhf_id || '00'}</p>
-        <p style="margin: 1px 0 0 0; font-size: 10px; color: #444;">Tel: +254 700 000 000</p>
+        <h2 style="margin: 0; font-size: 16px; font-weight: 800; text-transform: uppercase;">${tenant.trading_name || ''}</h2>
+        ${branch.name ? `<p style="margin: 2px 0 0 0; font-size: 10px; color: #444;">${branch.name}</p>` : ''}
+        ${tenant.kra_pin ? `<p style="margin: 1px 0 0 0; font-size: 10px; color: #444;">KRA PIN: ${tenant.kra_pin}</p>` : ''}
+        ${branch.etims_bhf_id ? `<p style="margin: 1px 0 0 0; font-size: 10px; color: #444;">Branch Code: ${branch.etims_bhf_id}</p>` : ''}
+        ${tenant.phone ? `<p style="margin: 1px 0 0 0; font-size: 10px; color: #444;">Tel: ${tenant.phone}</p>` : ''}
       </div>
       
       <div style="border-top: 1px dashed #666; margin: 8px 0;"></div>

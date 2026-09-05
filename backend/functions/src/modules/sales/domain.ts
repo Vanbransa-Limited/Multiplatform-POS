@@ -11,6 +11,7 @@ import {
 import type {
   InputLine,
   InputPayment,
+  ParsedSaleInput,
   PreparedLine,
   SaleTotals,
 } from "./types";
@@ -108,16 +109,140 @@ export function calculateSaleTotals(
 export function assertDiscountPermission(
   lines: readonly PreparedLine[],
   staffRole: unknown,
+  providerAuthorized = false,
 ): void {
   if (
     lines.some((line) => line.discountMinor > 0)
     && !DISCOUNT_ROLES.has(String(staffRole))
+    && !providerAuthorized
   ) {
     throw new HttpsError(
       "permission-denied",
       "This staff role cannot apply checkout discounts.",
     );
   }
+}
+
+function exactIntentLines(
+  value: unknown,
+  lines: readonly PreparedLine[],
+): boolean {
+  if (!Array.isArray(value) || value.length !== lines.length) return false;
+  const expected = new Map(lines.map((line) => [line.productId, line.qty]));
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+    const line = raw as Record<string, unknown>;
+    if (
+      typeof line.productId !== "string"
+      || seen.has(line.productId)
+      || !Number.isSafeInteger(line.qty)
+      || expected.get(line.productId) !== line.qty
+    ) return false;
+    seen.add(line.productId);
+  }
+  return seen.size === expected.size;
+}
+
+function exactIntentDiscounts(
+  value: unknown,
+  lines: readonly PreparedLine[],
+): boolean {
+  if (!Array.isArray(value) || value.length !== lines.length) return false;
+  const expected = new Map(lines.map((line) => [line.productId, line.discountMinor]));
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+    const line = raw as Record<string, unknown>;
+    if (
+      typeof line.productId !== "string"
+      || seen.has(line.productId)
+      || !Number.isSafeInteger(line.discountMinor)
+      || expected.get(line.productId) !== line.discountMinor
+    ) return false;
+    seen.add(line.productId);
+  }
+  return seen.size === expected.size;
+}
+
+/**
+ * A frontline cashier may submit a discount only when a verified M-Pesa
+ * intent authorized this exact cart and tender split. This is deliberately
+ * stricter than merely matching the receipt amount: otherwise a membership
+ * benefit could be moved to another customer, product, branch, or cashier.
+ */
+export function hasProviderAuthorizedDiscount(
+  input: ParsedSaleInput,
+  lines: readonly PreparedLine[],
+  paymentIntentDocuments: readonly DocumentSnapshot<DocumentData>[],
+): boolean {
+  const totalDiscountMinor = lines.reduce(
+    (total, line) => total + line.discountMinor,
+    0,
+  );
+  if (!Number.isSafeInteger(totalDiscountMinor) || totalDiscountMinor <= 0) return false;
+
+  const candidates = paymentIntentDocuments
+    .map((document) => document.data() ?? {})
+    .filter((intent) => Number(intent.membershipDiscountMinor) > 0);
+  if (candidates.length !== 1) return false;
+
+  const intent = candidates[0];
+  const matchingPayments = input.payments.filter(
+    (payment) => payment.method === "mpesa"
+      && payment.reference === intent.reference,
+  );
+  if (matchingPayments.length !== 1) return false;
+  return mpesaIntentMatchesSale(input, lines, intent, matchingPayments[0])
+    && Number.isSafeInteger(intent.membershipDiscountBasisPoints)
+    && intent.membershipDiscountBasisPoints > 0
+    && (intent.membershipDiscountSource === "membership"
+      || intent.membershipDiscountSource === "customer");
+}
+
+/** Every M-Pesa receipt is scoped to the cart that raised its STK prompt. */
+export function mpesaIntentMatchesSale(
+  input: ParsedSaleInput,
+  lines: readonly PreparedLine[],
+  intent: DocumentData,
+  matchedPayment: InputPayment,
+): boolean {
+  const totalDiscountMinor = lines.reduce(
+    (total, line) => total + line.discountMinor,
+    0,
+  );
+  if (!Number.isSafeInteger(totalDiscountMinor)) return false;
+
+  const otherPayments = input.payments.filter((payment) => payment !== matchedPayment);
+  const otherPaymentMinor = otherPayments.reduce(
+    (total, payment) => total + payment.amountMinor,
+    0,
+  );
+  const subtotalMinor = lines.reduce(
+    (total, line) => total + line.unitPriceMinor * line.qty,
+    0,
+  );
+
+  return matchedPayment.method === "mpesa"
+    && matchedPayment.reference === intent.reference
+    && matchedPayment.amountMinor === intent.amountMinor
+    && otherPayments.every((payment) => payment.method === "cash")
+    && Number.isSafeInteger(otherPaymentMinor)
+    && otherPaymentMinor === intent.cashAmountMinor
+    && intent.tenantId === input.tenantId
+    && intent.branchId === input.branchId
+    && intent.deviceId === input.deviceId
+    && intent.authorizedStaffId === input.staffId
+    && intent.customerId === input.customerId
+    && intent.method === "mpesa"
+    && intent.status === "verified"
+    && !intent.consumedSaleId
+    && intent.membershipDiscountMinor === totalDiscountMinor
+    && intent.cartGrossMinor === subtotalMinor
+    && intent.baseAmountMinor === intent.amountMinor + totalDiscountMinor
+    && intent.baseAmountMinor + intent.cashAmountMinor === subtotalMinor
+    && exactIntentLines(intent.lines, lines)
+    && exactIntentDiscounts(intent.lineDiscounts, lines);
 }
 
 export function assertAcceptedPayments(

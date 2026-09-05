@@ -8,6 +8,7 @@ import {
   assertAcceptedPayments,
   assertDiscountPermission,
   calculateSaleTotals,
+  hasProviderAuthorizedDiscount,
   prepareSaleLines,
 } from "./domain";
 import { saleRequestFingerprint } from "./fingerprint";
@@ -44,7 +45,6 @@ export async function executeCreateSale(
       context.productDocuments,
       input.tenantId,
     );
-    assertDiscountPermission(preparedLines, context.staff.role);
     const totals = calculateSaleTotals(preparedLines, input.payments);
     assertAcceptedPayments(input.payments, context.settings);
 
@@ -54,6 +54,15 @@ export async function executeCreateSale(
       input,
       preparedLines,
       timestamp,
+    );
+    assertDiscountPermission(
+      preparedLines,
+      context.staff.role,
+      hasProviderAuthorizedDiscount(
+        input,
+        preparedLines,
+        dependencies.paymentIntentDocuments,
+      ),
     );
     const records = buildSaleRecords({
       saleId,

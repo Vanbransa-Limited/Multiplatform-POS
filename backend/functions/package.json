@@ -9,7 +9,9 @@
   "scripts": {
     "build": "npm run clean && tsc -p tsconfig.json",
     "clean": "node scripts/clean.cjs",
-    "test": "npm run build && node --test test/sales-domain.test.cjs test/roles.test.cjs test/provisioning.test.cjs test/mpesa.test.cjs",
+    "test": "npm run build && node --test test/sales-domain.test.cjs test/roles.test.cjs test/provisioning.test.cjs test/mpesa.test.cjs test/mpesa-c2b.test.cjs",
+    "mpesa:lifecycle": "node scripts/mpesa-lifecycle.cjs",
+    "mpesa:configure": "node scripts/configure-mpesa.cjs",
     "watch": "tsc -p tsconfig.json --watch"
   },
   "dependencies": {

@@ -6,6 +6,10 @@ Multiplatform POS is now structured as a tenant-aware Next.js and Firebase platf
 > replacement for every legacy workflow. See the
 > [legacy-to-Next migration audit](docs/legacy-parity-audit.md) for the verified
 > feature matrix, known blockers, and prioritized completion plan.
+>
+> M-Pesa is implemented behind a fail-closed lifecycle and remains staged by
+> default. See the [M-Pesa staged handover](docs/mpesa-staged-handover.md) before
+> configuring Daraja or changing any payment state.
 
 ## Repository layout
 
@@ -170,7 +174,7 @@ PINs are never embedded in application source or written to Firestore.
 
 The function ignores client pricing. Inside one Firestore transaction it validates the tenant, branch, device, staff, open shift, customer, enabled payment methods, authoritative product prices, discounts, and HOUSE stock; then writes the sale, line snapshots, payments, stock movements, balance changes, shift cash, invoice counter, and audit event. A deterministic sale document makes retries idempotent and returns the full existing result on replay.
 
-Cash is trusted directly. Non-cash entries require a server-created, unconsumed `payment_intents` document with matching tenant, method, amount, verified status, and provider reference. Provider webhook Functions will create those intents later; the browser cannot mark a digital payment verified.
+Cash is trusted directly. Non-cash entries require a server-created, unconsumed `payment_intents` document with matching tenant, method, amount, verified status, and provider reference. The staged M-Pesa flow creates one only after a strictly correlated callback and a successful STK Query agree; the browser cannot mark a digital payment verified. Other provider adapters remain future work.
 
 Canonical Firestore fields are camelCase and match `frontend/src/types/pos.ts`. Tenant-owned documents contain `tenantId`; balance documents use `${branchId}_${productId}_HOUSE` IDs with `location: "HOUSE"` and `qty`.
 
@@ -186,18 +190,15 @@ Hiding navigation items is only a user-experience feature; security rules and Fu
 ## Build, verify, and deploy
 
 ```bash
-cd frontend
-npm run lint
-npm run typecheck
-npm run test:run
+npm test
 npm run build
-
-cd ../backend/functions
-npm run build
-
-cd ../..
-firebase deploy
+npm run deploy -- --project <staging-project-id>
 ```
+
+Deployment now requires an explicit project. A `demo-*` identifier is
+emulator-only, and the known production project requires a second explicit
+confirmation. This prevents an ordinary staging command from becoming a
+production payment changeover.
 
 Classic Firebase Hosting serves `frontend/out` with no SPA catch-all because Next static export emits its own route files. If the frontend later requires SSR, Server Actions, or dynamic server rendering, move it to Firebase App Hosting or Cloud Run rather than adding an `index.html` rewrite.
 

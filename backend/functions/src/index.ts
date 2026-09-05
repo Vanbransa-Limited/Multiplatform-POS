@@ -1,7 +1,16 @@
 // Keep discovery lightweight: domain modules own their triggers and this entry
 // point only re-exports them for the Firebase Functions runtime.
 export { health } from "./health";
-export { initiateMpesaStk, mpesaCallback, queryMpesaStatus } from "./modules/mpesa";
+export {
+  getMpesaCapability,
+  initiateMpesaStk,
+  mpesaCallback,
+  queryMpesaStatus,
+} from "./modules/mpesa";
+export {
+  mpesaC2bConfirmation,
+  mpesaC2bValidation,
+} from "./modules/mpesa/c2b";
 export { importProducts } from "./modules/catalogue";
 export { createSale } from "./modules/sales";
 export {

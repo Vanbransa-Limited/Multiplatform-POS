@@ -20,6 +20,24 @@ function requireId(value: unknown, label: string): string {
   return id;
 }
 
+function discountBasisPoints(customer: Record<string, unknown>): number {
+  const explicitBasisPoints = Number(customer.membership_discount_basis_points);
+  if (
+    Number.isSafeInteger(explicitBasisPoints)
+    && explicitBasisPoints >= 0
+    && explicitBasisPoints <= 10_000
+  ) {
+    return explicitBasisPoints;
+  }
+
+  const legacyPercent = Number(
+    customer.membership_discount_percent ?? customer.discount_rate,
+  );
+  return Number.isFinite(legacyPercent) && legacyPercent >= 0 && legacyPercent <= 100
+    ? Math.round(legacyPercent * 100)
+    : 0;
+}
+
 export function mapSeed(payload: SeedPayload): MappedSeed {
   const tenantSource = payload.tenant ?? {};
   const tenantId = text(payload.TENANT_ID) || requireId(tenantSource.id, "tenant");
@@ -149,6 +167,10 @@ export function mapSeed(payload: SeedPayload): MappedSeed {
       phone: text(customer.phone),
       kraPin: text(customer.kra_pin),
       priceTier: text(customer.price_tier, "RETAIL"),
+      // Legacy integrations looked this up by phone before raising an STK
+      // prompt. Store the canonical rate with the customer so the backend can
+      // reproduce that behaviour without trusting a browser-calculated price.
+      membershipDiscountBasisPoints: discountBasisPoints(customer),
       isActive: true,
     })),
     suppliers: (payload.suppliers ?? []).map((supplier) => ({

@@ -1,6 +1,7 @@
 import { db } from '../db/schema';
 import { logAuditEvent } from '../db/index';
 import { state, showNotification } from '../context';
+import { firebaseConfigured, openShift as openCloudShift } from '../services/firebase';
 
 export class ShiftsView {
   constructor(container) {
@@ -146,7 +147,21 @@ export class ShiftsView {
       return;
     }
 
-    const shiftId = crypto.randomUUID();
+    let shiftId = state.cloudShiftId || crypto.randomUUID();
+    if (firebaseConfigured && !state.cloudShiftId) {
+      try {
+        const cloudShift = await openCloudShift(
+          state.currentBranch.id,
+          undefined,
+          Math.round(float * 100)
+        );
+        state.cloudShiftId = cloudShift?.shiftId || null;
+        shiftId = state.cloudShiftId || shiftId;
+      } catch {
+        // Offline shifts retain a local id. They remain queued until a cloud
+        // session is available; no provider payment can start while offline.
+      }
+    }
     const newShift = {
       id: shiftId,
       branch_id: state.currentBranch.id,

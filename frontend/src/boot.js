@@ -128,7 +128,10 @@ export async function establishCloudSession() {
 
   try {
     const branchId = state.currentBranch ? state.currentBranch.id : null;
-    if (branchId) await openShift(branchId);
+    if (branchId) {
+      const cloudShift = await openShift(branchId);
+      state.cloudShiftId = cloudShift?.shiftId || null;
+    }
     if (state.syncManager) state.syncManager.syncOutbox();
   } catch (err) {
     console.warn('Backend session unavailable; till stays local-only.', err);
@@ -152,6 +155,7 @@ export async function establishCloudSession() {
 }
 
 export async function endCloudSession() {
+  state.cloudShiftId = null;
   try {
     const { firebaseConfigured, signOutTill } = await import('./services/firebase.js');
     if (firebaseConfigured) await signOutTill();

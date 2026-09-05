@@ -1,6 +1,7 @@
 # Legacy-to-Next migration audit
 
 Audit date: 2026-08-24  
+M-Pesa addendum: 2026-09-04
 Legacy reference: `legacy/vanilla-pos`  
 Target applications: `frontend` (Next.js) and `backend/functions` (Firebase Functions)
 
@@ -17,9 +18,9 @@ drop-in replacement for the reachable legacy workflows.
   contracts. Most other routes are read-only projections.
 - Firebase mode cannot yet be operated end-to-end without manually provisioned
   Auth users, custom claims, Firestore documents, PIN hashes, and an open shift.
-- Non-cash production checkout cannot complete because no provider webhook creates
-  verified `payment_intents`, and the checkout UI does not collect a verified
-  reference.
+- M-Pesa now has staged initiation, callback/query verification, and verified
+  `payment_intents`, but it remains deliberately non-live and has not had
+  real-money UAT. Other non-cash providers still have no adapter.
 - eTIMS submission, stock workflows, shift workflows, staff/catalog administration,
   detailed receipts, exports, public menu ordering, and offline operation are not
   migrated.
@@ -49,7 +50,7 @@ The correct status label for the target is **migration foundation / partial pari
 | Orders Viewer | `/orders` | Read-only | Sales ledger and summary metrics exist. Missing search, staff/payment/fiscal filters, invoice detail, receipt rendering, print, and CSV export. |
 | Shift Management | `/shifts` | Read-only | Shift records and totals render. Missing open, pay-in, pay-out, X report, cash-up, close, and persisted Z report. No backend shift callable exists. |
 | Inventory / Menu Admin | `/inventory` | Read-only | Product, price, tax, eTIMS metadata, and aggregate stock render. Missing product/category/barcode CRUD, image upload, eTIMS item registration, adjustments, stock take, batch tracking, and expiry exposure. |
-| M-Pesa | `/mpesa` | Read-only | Existing mobile-payment records render. Missing STK initiation, callback/webhook verification, query/reconciliation, retry, and payment-intent creation. The legacy Daraja flow was only an in-memory simulator and must be redesigned. |
+| M-Pesa | `/mpesa` and Till | Partial / staged | Lifecycle-gated STK initiation, tenant Till/Paybill routing, deterministic retry, strict callback correlation, STK Query verification, membership pricing, verified intents, and attempt viewing are implemented. Production activation, live credentials, C2B registration, and real-money UAT are deliberately incomplete. |
 | Store Stock | `/store-stock` | Read-only | STORE balances render. Missing delivery receipt, absolute adjustment, requisition approval, issue, and paired Store-to-House movements. |
 | House Stock | `/house-stock` | Read-only | HOUSE balances and low-stock state render. Missing stock request creation and lifecycle tracking. |
 | Users | `/users` | Read-only | Staff profiles, roles, and statuses render without PIN exposure. Missing Auth-user/custom-claim provisioning, create/edit/suspend, role assignment, and PIN rotation. |
@@ -85,7 +86,7 @@ mere presence in `legacy` is not evidence of previously working functionality.
 | Users | `staff`, server-only `staff_pin_credentials`, Auth custom claims | Safer redesign; management/provisioning missing |
 | Categories, products, barcodes | Typed contracts and Firestore collections | Carried as read models; CRUD/media/eTIMS registration missing |
 | Customers, suppliers | Typed contracts and Firestore collections | Carried as read models; maintenance missing |
-| Sales, sale lines, payments | Canonical collections plus transactional `createSale` | Core cash-sale path carried; refunds, voids, held carts, credit, split tender, and provider initiation missing |
+| Sales, sale lines, payments | Canonical collections plus transactional `createSale` | Cash and staged M-Pesa/split paths exist; refunds, voids, held carts, and production payment cutover remain incomplete |
 | Stock movements | Server writes SALE movements; rules/index exist | Partial; not loaded by the frontend and no general stock service exists |
 | Current stock | Materialized `stock_balances` by branch/product/location | Safer redesign; only sale deduction is implemented |
 | Fiscal records | None | Missing |
@@ -97,12 +98,13 @@ mere presence in `legacy` is not evidence of previously working functionality.
 | Audit log | `audit_logs` | Partial; server-owned but incomplete event coverage and no integrity/retention mechanism |
 | Shifts | Typed `shifts` collection | Read-only plus sale cash increment; lifecycle and cash movements missing |
 | Tenant/local settings | `tenant_settings` | Partial, normalized replacement for scattered localStorage settings |
-| Discounts | Only `discountMinor` on sale input/line snapshot | Missing rule/promotion model; backend now limits client-selected discounts to owners/managers |
+| Discounts | Line snapshots plus M-Pesa membership authorization | General promotion rules remain missing; client-selected discounts require an owner/manager, while a server-resolved membership discount is bound to its exact verified payment and cart |
 | Public/online orders | None | Missing / redesign |
 
-The target does not yet define canonical entities for payment intents, fiscal
-attempts/outbox entries, cash movements, Z reports, returns/refunds, receivables,
-discount approvals, or online orders in the shared frontend contract.
+The target now defines server-owned M-Pesa attempts and payment intents. It does
+not yet define canonical entities for fiscal attempts/outbox entries, cash
+movements, Z reports, returns/refunds, receivables, general discount approvals,
+or online orders in the shared frontend contract.
 
 ## Business-rule differences
 
@@ -207,8 +209,9 @@ The refactor also closes these audit defects:
 
 ## Remaining backend and security gaps
 
-1. There are no provider webhooks, payment-intent creation functions, or secrets
-   configuration. Digital checkout is not production-ready.
+1. M-Pesa has a staged provider callback/query and payment-intent path, but its
+   credential rotation, sandbox UAT, production deployment, and activation are
+   outstanding. Other digital providers have no equivalent adapter.
 2. There is no eTIMS client, fiscal outbox, retry policy, reconciliation, or fiscal
    receipt store. Tax-enabled sales remain `pending` indefinitely.
 3. PIN verification does not issue a server-verifiable till-unlock grant.
@@ -262,8 +265,9 @@ these defects or simulators.
 2. Add the real Firebase sign-in/session bootstrap before the local PIN lock.
 3. Implement shift open/close and cash-movement Functions, then bind Till only to
    the authenticated staff member's shift in both adapters.
-4. Implement payment-provider initiation/webhooks and verified payment intents;
-   hide or disable non-cash methods until each provider is configured.
+4. Complete sandbox and controlled production UAT for the staged M-Pesa adapter;
+   keep every other non-cash method disabled until it has an equivalent verified
+   provider path.
 5. Implement an eTIMS outbox/worker, retry states, fiscal records, and receipt data.
 
 ### P1 — restore core operating workflows

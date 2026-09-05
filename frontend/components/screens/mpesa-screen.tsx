@@ -1,17 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { DocumentData, QueryDocumentSnapshot, QuerySnapshot } from "firebase/firestore";
 
 import { db } from "@/db/schema";
+import { currentClaims, getFirebase } from "@/services/firebase";
 import { PAGE_SIZE, paginate } from "@/services/paginate";
 
 /**
- * M-Pesa payments viewer, ported from src/ui/mpesa.js.
- *
- * Markup and inline styles are reproduced exactly; visual/baselines/mpesa.png
- * is the contract. Behaviour is preserved as-is, including the 'Mobile Money'
- * method filter that never matches what the till actually writes ('MPESA') -
- * changing that is a product decision, not part of this port.
+ * M-Pesa attempt viewer. Firebase mode watches the server-owned attempt ledger;
+ * offline/mock mode falls back to locally completed MPESA payment rows.
  */
 
 type Payment = {
@@ -21,6 +19,7 @@ type Payment = {
   status?: string;
   created_at?: string;
   metadata?: { phone?: string };
+  message?: string;
 };
 
 const CELL = { padding: "12px 16px", fontSize: 13 } as const;
@@ -37,10 +36,28 @@ const PAGER_BUTTON = {
 } as const;
 
 function formatDate(value?: string) {
+  if (!value) return "-";
   return new Date(value ?? "").toLocaleString("en-US", {
     month: "numeric", day: "numeric", year: "numeric",
     hour: "numeric", minute: "numeric", hour12: true,
   });
+}
+
+function attemptStatus(value: unknown): "SUCCESS" | "FAILED" | "PENDING" {
+  const status = typeof value === "string" ? value.toLowerCase() : "";
+  if (status === "paid") return "SUCCESS";
+  if (["failed", "cancelled", "expired"].includes(status)) return "FAILED";
+  return "PENDING";
+}
+
+function timestampIso(value: unknown): string | undefined {
+  if (value && typeof value === "object" && "toDate" in value) {
+    const toDate = (value as { toDate?: unknown }).toDate;
+    if (typeof toDate === "function") {
+      return (value as { toDate: () => Date }).toDate().toISOString();
+    }
+  }
+  return typeof value === "string" ? value : undefined;
 }
 
 export function MpesaScreen() {
@@ -50,13 +67,73 @@ export function MpesaScreen() {
   const [page, setPage] = useState(1);
 
   useEffect(() => {
-    db.payments
-      .where("method").equals("Mobile Money").toArray()
-      .then((rows: Payment[]) => {
-        rows.sort((a, b) => Number(new Date(b.created_at ?? "")) - Number(new Date(a.created_at ?? "")));
-        setPayments(rows);
-      })
-      .catch(() => setPayments([]));
+    let disposed = false;
+    let unsubscribe = () => {};
+
+    const localFallback = async () => {
+      const rows = await db.payments.where("method").equals("MPESA").toArray();
+      const mapped = (rows as Array<Payment & { received_at?: string }>).map((row) => ({
+        ...row,
+        status: "SUCCESS",
+        created_at: row.created_at || row.received_at,
+        message: "Confirmed payment stored on this till.",
+      }));
+      mapped.sort((a, b) => Number(new Date(b.created_at ?? "")) - Number(new Date(a.created_at ?? "")));
+      if (!disposed) setPayments(mapped);
+    };
+
+    const start = async () => {
+      try {
+        const [fb, claims] = await Promise.all([getFirebase(), currentClaims()]);
+        if (!fb || !claims?.tenant_id) {
+          await localFallback();
+          return;
+        }
+
+        const constraints = [
+          fb.firestore.where("tenantId", "==", String(claims.tenant_id)),
+        ];
+        if (claims.staff_role !== "owner" && claims.staff_role !== "store_manager") {
+          constraints.push(fb.firestore.where("staffId", "==", String(claims.staff_id || "")));
+        }
+        const query = fb.firestore.query(
+          fb.firestore.collection(fb.dbInstance, "mpesa_payments"),
+          ...constraints,
+        );
+        unsubscribe = fb.firestore.onSnapshot(query, (snapshot: QuerySnapshot<DocumentData>) => {
+          const rows: Payment[] = snapshot.docs.map((document: QueryDocumentSnapshot<DocumentData>) => {
+            const attempt = document.data();
+            return {
+              id: document.id,
+              amount: Number.isSafeInteger(attempt.amountMinor)
+                ? attempt.amountMinor / 100
+                : 0,
+              reference: attempt.receipt || attempt.orderReference || document.id,
+              status: attemptStatus(attempt.status),
+              created_at: timestampIso(attempt.requestedAt),
+              metadata: { phone: typeof attempt.phone === "string" ? attempt.phone : undefined },
+              message: typeof attempt.resultDesc === "string" && attempt.resultDesc
+                ? attempt.resultDesc
+                : typeof attempt.customerMessage === "string"
+                  ? attempt.customerMessage
+                  : "Awaiting provider confirmation.",
+            };
+          });
+          rows.sort((a, b) => Number(new Date(b.created_at ?? "")) - Number(new Date(a.created_at ?? "")));
+          if (!disposed) setPayments(rows);
+        }, () => void localFallback());
+      } catch {
+        await localFallback().catch(() => {
+          if (!disposed) setPayments([]);
+        });
+      }
+    };
+
+    void start();
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
   }, []);
 
   // Totals count every payment; only the table is filtered, as in the original.
@@ -69,7 +146,7 @@ export function MpesaScreen() {
     for (const payment of payments) {
       const status = payment.status || "SUCCESS";
       if (status === "SUCCESS") success += payment.amount;
-      else failed += payment.amount;
+      else if (status === "FAILED") failed += payment.amount;
 
       if (filter !== "ALL" && status !== filter) continue;
       const reference = (payment.reference || "N/A").toLowerCase();
@@ -126,6 +203,7 @@ export function MpesaScreen() {
               <option value="ALL">All Statuses</option>
               <option value="SUCCESS">Success</option>
               <option value="FAILED">Failed</option>
+              <option value="PENDING">Pending / review</option>
             </select>
           </div>
         </div>
@@ -153,6 +231,7 @@ export function MpesaScreen() {
                 view.rows.map((payment) => {
                   const status = payment.status || "SUCCESS";
                   const isSuccess = status === "SUCCESS";
+                  const isPending = status === "PENDING";
                   return (
                     <tr key={payment.id} style={{ borderBottom: "1px solid var(--border-color)" }}>
                       <td style={{ ...CELL, color: "var(--text-muted)" }}>{formatDate(payment.created_at)}</td>
@@ -164,14 +243,16 @@ export function MpesaScreen() {
                       <td style={{ ...CELL, fontWeight: 700 }}>{payment.metadata?.phone || "-"}</td>
                       <td style={{ ...CELL, fontWeight: 700, color: "#F59E0B" }}>{payment.amount}</td>
                       <td style={{ padding: "12px 16px" }}>
-                        <span style={{ background: isSuccess ? "rgba(16, 185, 129, 0.1)" : "rgba(244, 63, 94, 0.1)", color: isSuccess ? "var(--accent-green)" : "var(--accent-rose)", padding: "4px 8px", borderRadius: 4, fontSize: 10, fontWeight: 800 }}>
+                        <span style={{ background: isSuccess ? "rgba(16, 185, 129, 0.1)" : isPending ? "rgba(245, 158, 11, 0.1)" : "rgba(244, 63, 94, 0.1)", color: isSuccess ? "var(--accent-green)" : isPending ? "var(--accent-amber)" : "var(--accent-rose)", padding: "4px 8px", borderRadius: 4, fontSize: 10, fontWeight: 800 }}>
                           {status}
                         </span>
                       </td>
                       <td style={{ padding: "12px 16px", fontSize: 12, color: "var(--text-muted)" }}>
-                        {isSuccess
-                          ? "The service request is processed successfully."
-                          : "Transaction failed or cancelled by user."}
+                        {payment.message || (isSuccess
+                          ? "Payment confirmed."
+                          : isPending
+                            ? "Awaiting provider confirmation."
+                            : "Transaction failed or was cancelled.")}
                       </td>
                     </tr>
                   );

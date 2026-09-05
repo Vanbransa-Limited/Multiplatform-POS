@@ -30,6 +30,31 @@ export const MPESA_SECRETS = [
 ];
 
 const KENYAN_MSISDN = /^(?:254|0)?([17]\d{8})$/;
+const ROUTING_NUMBER = /^\d{5,12}$/;
+const DOCUMENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const RECEIPT_NUMBER = /^[A-Za-z0-9]{6,32}$/;
+
+export type MpesaLifecycle = "staged" | "live" | "suspended";
+export type MpesaEnvironment = "sandbox" | "production";
+export type StkTransactionType =
+  | "CustomerBuyGoodsOnline"
+  | "CustomerPayBillOnline";
+
+export interface MpesaConfig {
+  lifecycle: MpesaLifecycle;
+  environment: MpesaEnvironment;
+  transactionType: StkTransactionType;
+  partyB: string;
+  accountReference: string;
+  allowedBranchIds: string[] | null;
+}
+
+export interface StkAttemptMatch {
+  checkoutRequestId: string;
+  merchantRequestId: string;
+  amountMinor: number;
+  phone: string;
+}
 
 export interface StkCallback {
   checkoutRequestId: string;
@@ -39,6 +64,57 @@ export interface StkCallback {
   receipt: string | null;
   amountMinor: number | null;
   phone: string | null;
+}
+
+/** Missing or malformed configuration is deliberately non-live. */
+export function parseMpesaLifecycle(value: unknown): MpesaLifecycle {
+  return value === "live" || value === "suspended" ? value : "staged";
+}
+
+/**
+ * Reads the non-secret routing document stored at mpesa_configs/{tenantId}.
+ * Secrets and the parent BusinessShortCode remain in Secret Manager.
+ */
+export function parseMpesaConfig(value: unknown): MpesaConfig | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const config = value as Record<string, unknown>;
+  const transactionType = config.transactionType;
+  const environment = config.environment;
+  if (environment !== "sandbox" && environment !== "production") return null;
+  if (
+    transactionType !== "CustomerBuyGoodsOnline"
+    && transactionType !== "CustomerPayBillOnline"
+  ) {
+    return null;
+  }
+
+  const partyB = typeof config.partyB === "string" ? config.partyB.trim() : "";
+  const accountReference = typeof config.accountReference === "string"
+    ? config.accountReference.trim()
+    : "";
+  if (!ROUTING_NUMBER.test(partyB) || accountReference.length < 1 || accountReference.length > 12) {
+    return null;
+  }
+
+  let allowedBranchIds: string[] | null = null;
+  if (config.allowedBranchIds !== undefined && config.allowedBranchIds !== null) {
+    if (
+      !Array.isArray(config.allowedBranchIds)
+      || config.allowedBranchIds.some((id) => typeof id !== "string" || !DOCUMENT_ID.test(id))
+    ) {
+      return null;
+    }
+    allowedBranchIds = [...new Set(config.allowedBranchIds as string[])];
+  }
+
+  return {
+    lifecycle: parseMpesaLifecycle(config.lifecycle),
+    environment,
+    transactionType,
+    partyB,
+    accountReference,
+    allowedBranchIds,
+  };
 }
 
 /** Safaricom only accepts 2547XXXXXXXX / 2541XXXXXXXX on the wire. */
@@ -53,6 +129,16 @@ export function normalizePhone(raw: unknown): string {
   }
 
   return `254${match[1]}`;
+}
+
+/** Daraja caps AccountReference at 12 characters. */
+export function sanitizeAccountReference(raw: string, fallback: string): string {
+  const sanitized = raw
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^A-Za-z0-9_-]/g, "")
+    .slice(0, 12);
+  return sanitized || fallback.slice(0, 12);
 }
 
 /**
@@ -83,8 +169,16 @@ export function stkPassword(
 export function parseStkCallback(body: unknown): StkCallback | null {
   const callback = (body as Record<string, any>)?.Body?.stkCallback;
   if (typeof callback !== "object" || callback === null) return null;
-  if (typeof callback.CheckoutRequestID !== "string") return null;
-  if (typeof callback.ResultCode !== "number") return null;
+  if (
+    typeof callback.CheckoutRequestID !== "string"
+    || callback.CheckoutRequestID.length < 1
+    || callback.CheckoutRequestID.length > 128
+  ) return null;
+  if (
+    typeof callback.ResultCode !== "number"
+    || !Number.isSafeInteger(callback.ResultCode)
+    || callback.ResultCode < 0
+  ) return null;
 
   const items: unknown[] = Array.isArray(callback.CallbackMetadata?.Item)
     ? callback.CallbackMetadata.Item
@@ -103,18 +197,60 @@ export function parseStkCallback(body: unknown): StkCallback | null {
       : null,
     resultCode: callback.ResultCode,
     resultDesc: typeof callback.ResultDesc === "string" ? callback.ResultDesc : "",
-    receipt: typeof receipt === "string" ? receipt : null,
+    receipt: typeof receipt === "string" && receipt.trim()
+      ? receipt.trim().toUpperCase()
+      : null,
     // Daraja quotes whole shillings; the ledger is in cents throughout.
     amountMinor: typeof amount === "number" ? Math.round(amount * 100) : null,
     phone: phone === undefined || phone === null ? null : String(phone),
   };
 }
 
+/**
+ * A callback is an unauthenticated claim. It may only trigger verification
+ * when every identifier Safaricom supplied agrees with the attempt we sent.
+ */
+export function callbackMismatchReason(
+  callback: StkCallback,
+  attempt: StkAttemptMatch,
+): string | null {
+  if (callback.checkoutRequestId !== attempt.checkoutRequestId) {
+    return "checkout_request_mismatch";
+  }
+  if (
+    callback.merchantRequestId === null
+    || callback.merchantRequestId !== attempt.merchantRequestId
+  ) {
+    return "merchant_request_mismatch";
+  }
+
+  if (callback.amountMinor !== null && callback.amountMinor !== attempt.amountMinor) {
+    return "amount_mismatch";
+  }
+  if (callback.phone !== null) {
+    try {
+      if (normalizePhone(callback.phone) !== attempt.phone) return "phone_mismatch";
+    } catch {
+      return "phone_mismatch";
+    }
+  }
+
+  if (callback.resultCode === 0) {
+    if (callback.amountMinor === null) return "success_missing_amount";
+    if (callback.phone === null) return "success_missing_phone";
+    if (callback.receipt === null || !RECEIPT_NUMBER.test(callback.receipt)) {
+      return "success_missing_receipt";
+    }
+  }
+
+  return null;
+}
+
 async function darajaFetch(
   path: string,
   init: RequestInit,
 ): Promise<Record<string, unknown>> {
-  const url = `${MPESA_BASE_URL.value()}${path}`;
+  const url = `${darajaBaseUrl()}${path}`;
   // Without a deadline a stalled Safaricom connection holds the instance until
   // the function times out, and the cashier is left staring at a spinner.
   const response = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
@@ -128,11 +264,43 @@ async function darajaFetch(
   }
 
   if (!response.ok || typeof payload !== "object" || payload === null) {
-    logger.error("Daraja call failed", { path, status: response.status, body: text.slice(0, 500) });
+    logger.error("Daraja call failed", { path, status: response.status });
     throw new HttpsError("unavailable", "M-Pesa is not responding. Take the payment another way.");
   }
 
   return payload as Record<string, unknown>;
+}
+
+function darajaBaseUrl(): string {
+  const baseUrl = MPESA_BASE_URL.value().replace(/\/$/, "");
+  if (
+    baseUrl === "https://sandbox.safaricom.co.ke"
+    || baseUrl === "https://api.safaricom.co.ke"
+  ) {
+    return baseUrl;
+  }
+
+  const emulatorLoopback = process.env.FUNCTIONS_EMULATOR === "true"
+    && /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(baseUrl);
+  if (emulatorLoopback) return baseUrl;
+
+  throw new HttpsError("failed-precondition", "The M-Pesa API endpoint is not approved.");
+}
+
+function darajaEnvironment(): MpesaEnvironment {
+  const baseUrl = darajaBaseUrl();
+  if (baseUrl === "https://api.safaricom.co.ke") return "production";
+  // The official sandbox and an emulator-only loopback are non-money
+  // environments for the purpose of this tenant route gate.
+  return "sandbox";
+}
+
+function businessShortcode(): string {
+  const shortcode = MPESA_SHORTCODE.value().trim();
+  if (!ROUTING_NUMBER.test(shortcode)) {
+    throw new HttpsError("failed-precondition", "The M-Pesa BusinessShortCode is invalid.");
+  }
+  return shortcode;
 }
 
 // Daraja tokens live 3599s. Caching per warm instance keeps the customer from
@@ -174,10 +342,12 @@ export async function darajaToken(): Promise<string> {
  * a successful payment, so an empty field would settle an unpaid sale as paid.
  */
 export function parseResultCode(value: unknown): number | null {
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
   if (typeof value !== "string" || value.trim() === "") return null;
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 /**
@@ -191,10 +361,10 @@ export async function stkQuery(checkoutRequestId: string): Promise<{
   resultCode: number;
   resultDesc: string;
 } | null> {
-  const shortcode = MPESA_SHORTCODE.value();
+  const shortcode = businessShortcode();
   const timestamp = darajaTimestamp(new Date());
 
-  const response = await fetch(`${MPESA_BASE_URL.value()}/mpesa/stkpushquery/v1/query`, {
+  const response = await fetch(`${darajaBaseUrl()}/mpesa/stkpushquery/v1/query`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${await darajaToken()}`,
@@ -223,7 +393,6 @@ export async function stkQuery(checkoutRequestId: string): Promise<{
     logger.info("STK query still in flight", {
       checkoutRequestId,
       status: response.status,
-      body: text.slice(0, 300),
     });
     return null;
   }
@@ -240,14 +409,88 @@ export interface StkPushResult {
   customerMessage: string;
 }
 
-export async function stkPush(input: {
+export interface StkPayloadInput {
+  lifecycle: MpesaLifecycle;
+  environment: MpesaEnvironment;
+  transactionType: StkTransactionType;
+  partyB: string;
   phone: string;
   amountKes: number;
   accountReference: string;
   description: string;
-}): Promise<StkPushResult> {
-  const shortcode = MPESA_SHORTCODE.value();
+}
+
+export function buildStkPayload(input: StkPayloadInput & {
+  businessShortCode: string;
+  passkey: string;
+  timestamp: string;
+  callbackUrl: string;
+}): Record<string, unknown> {
+  if (input.lifecycle !== "live") {
+    throw new HttpsError("failed-precondition", "M-Pesa is configured but not active.");
+  }
+  if (!ROUTING_NUMBER.test(input.businessShortCode) || !ROUTING_NUMBER.test(input.partyB)) {
+    throw new HttpsError("failed-precondition", "The M-Pesa route is invalid.");
+  }
+  if (
+    input.accountReference.length < 1
+    || input.accountReference.length > 12
+    || !/^[A-Za-z0-9_-]+$/.test(input.accountReference)
+  ) {
+    throw new HttpsError("failed-precondition", "The M-Pesa account reference is invalid.");
+  }
+  if (
+    input.transactionType === "CustomerPayBillOnline"
+    && input.partyB !== input.businessShortCode
+  ) {
+    throw new HttpsError(
+      "failed-precondition",
+      "A Paybill route must use the BusinessShortCode as PartyB.",
+    );
+  }
+
+  return {
+    BusinessShortCode: input.businessShortCode,
+    Password: stkPassword(input.businessShortCode, input.passkey, input.timestamp),
+    Timestamp: input.timestamp,
+    TransactionType: input.transactionType,
+    Amount: input.amountKes,
+    PartyA: input.phone,
+    PartyB: input.partyB,
+    PhoneNumber: input.phone,
+    CallBackURL: input.callbackUrl,
+    AccountReference: input.accountReference,
+    TransactionDesc: input.description,
+  };
+}
+
+export async function stkPush(input: StkPayloadInput): Promise<StkPushResult> {
+  // Keep the final release gate in the wire helper as well as the callable. A
+  // future caller must not accidentally bypass it and send a production push.
+  if (input.lifecycle !== "live") {
+    throw new HttpsError("failed-precondition", "M-Pesa is configured but not active.");
+  }
+  if (darajaEnvironment() !== input.environment) {
+    throw new HttpsError(
+      "failed-precondition",
+      "The tenant M-Pesa environment does not match the configured Daraja endpoint.",
+    );
+  }
+
+  const shortcode = businessShortcode();
   const timestamp = darajaTimestamp(new Date());
+  const callbackUrl = MPESA_CALLBACK_URL.value().trim();
+  if (!/^https:\/\//.test(callbackUrl)) {
+    throw new HttpsError("failed-precondition", "The M-Pesa callback URL must use HTTPS.");
+  }
+
+  const requestPayload = buildStkPayload({
+    ...input,
+    businessShortCode: shortcode,
+    passkey: MPESA_PASSKEY.value(),
+    timestamp,
+    callbackUrl,
+  });
 
   const payload = await darajaFetch("/mpesa/stkpush/v1/processrequest", {
     method: "POST",
@@ -255,29 +498,23 @@ export async function stkPush(input: {
       Authorization: `Bearer ${await darajaToken()}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      BusinessShortCode: shortcode,
-      Password: stkPassword(shortcode, MPESA_PASSKEY.value(), timestamp),
-      Timestamp: timestamp,
-      // 4567483 is a Paybill (confirmed on the organisation portal), so PartyB
-      // is the same shortcode. A Buy Goods till would instead need
-      // CustomerBuyGoodsOnline, PartyB set to the till, and BusinessShortCode
-      // left as the head-office number.
-      TransactionType: "CustomerPayBillOnline",
-      Amount: input.amountKes,
-      PartyA: input.phone,
-      PartyB: shortcode,
-      PhoneNumber: input.phone,
-      // Sent per request, never left to a portal default, so a redeploy moves
-      // every new transaction to the new endpoint at once.
-      CallBackURL: MPESA_CALLBACK_URL.value(),
-      AccountReference: input.accountReference,
-      TransactionDesc: input.description,
-    }),
+    body: JSON.stringify(requestPayload),
   });
 
-  if (payload.ResponseCode !== "0" || typeof payload.CheckoutRequestID !== "string") {
-    logger.error("STK push refused", payload);
+  if (
+    payload.ResponseCode !== "0"
+    || typeof payload.CheckoutRequestID !== "string"
+    || payload.CheckoutRequestID.length < 1
+    || payload.CheckoutRequestID.length > 128
+    || typeof payload.MerchantRequestID !== "string"
+    || payload.MerchantRequestID.length < 1
+    || payload.MerchantRequestID.length > 128
+  ) {
+    logger.error("STK push refused or returned incomplete identifiers", {
+      responseCode: typeof payload.ResponseCode === "string"
+        ? payload.ResponseCode
+        : "unreadable",
+    });
     throw new HttpsError(
       "unavailable",
       typeof payload.errorMessage === "string"
@@ -288,7 +525,7 @@ export async function stkPush(input: {
 
   return {
     checkoutRequestId: payload.CheckoutRequestID,
-    merchantRequestId: String(payload.MerchantRequestID ?? ""),
+    merchantRequestId: payload.MerchantRequestID,
     customerMessage: String(payload.CustomerMessage ?? "Enter your M-Pesa PIN on the phone."),
   };
 }

@@ -4,6 +4,8 @@ const test = require("node:test");
 const {
   assertDiscountPermission,
   calculateSaleTotals,
+  hasProviderAuthorizedDiscount,
+  mpesaIntentMatchesSale,
   prepareSaleLines,
 } = require("../lib/modules/sales/domain.js");
 const {
@@ -120,4 +122,54 @@ test("idempotency fingerprints bind a key to the complete normalized request", (
 
   assert.equal(saleRequestFingerprint(original), saleRequestFingerprint(original));
   assert.notEqual(saleRequestFingerprint(original), saleRequestFingerprint(changed));
+});
+
+test("a verified M-Pesa membership discount is bound to the exact sale scope", () => {
+  const parsed = parseSaleInput(request({
+    lines: [{ productId: "product-1", qty: 2, discountMinor: 100 }],
+    payments: [
+      { method: "cash", amountMinor: 1_000 },
+      { method: "mpesa", amountMinor: 900, reference: "RKTQDM7W6S" },
+    ],
+  }));
+  const lines = prepareSaleLines(parsed.lines, [productDocument()], parsed.tenantId);
+  const intent = {
+    tenantId: parsed.tenantId,
+    branchId: parsed.branchId,
+    deviceId: parsed.deviceId,
+    authorizedStaffId: parsed.staffId,
+    customerId: parsed.customerId,
+    method: "mpesa",
+    status: "verified",
+    consumedSaleId: null,
+    reference: "RKTQDM7W6S",
+    amountMinor: 900,
+    cartGrossMinor: 2_000,
+    baseAmountMinor: 1_000,
+    cashAmountMinor: 1_000,
+    membershipDiscountMinor: 100,
+    membershipDiscountBasisPoints: 500,
+    membershipDiscountSource: "customer",
+    lines: [{ productId: "product-1", qty: 2 }],
+    lineDiscounts: [{ productId: "product-1", discountMinor: 100 }],
+  };
+  const document = { data: () => intent };
+  const mpesaPayment = parsed.payments[1];
+
+  assert.equal(mpesaIntentMatchesSale(parsed, lines, intent, mpesaPayment), true);
+  assert.equal(hasProviderAuthorizedDiscount(parsed, lines, [document]), true);
+  assert.doesNotThrow(() => assertDiscountPermission(lines, "cashier", true));
+
+  assert.equal(mpesaIntentMatchesSale(
+    { ...parsed, customerId: "another-customer" },
+    lines,
+    intent,
+    mpesaPayment,
+  ), false);
+  assert.equal(mpesaIntentMatchesSale(
+    parsed,
+    lines.map((line) => ({ ...line, discountMinor: 99 })),
+    intent,
+    mpesaPayment,
+  ), false);
 });

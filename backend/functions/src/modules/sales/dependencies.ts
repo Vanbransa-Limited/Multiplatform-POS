@@ -4,6 +4,7 @@ import { HttpsError } from "firebase-functions/v2/https";
 import { db } from "../../lib/firebase";
 import { deterministicId } from "../../shared/identifiers";
 import { needsProviderIntent } from "./constants";
+import { mpesaIntentMatchesSale } from "./domain";
 import type {
   ParsedSaleInput,
   PreparedLine,
@@ -99,6 +100,10 @@ export async function loadSaleDependencies(
       || intent.amountMinor !== expected.amountMinor
       || intent.status !== "verified"
       || intent.consumedSaleId
+      || (
+        expected.method === "mpesa"
+        && !mpesaIntentMatchesSale(input, preparedLines, intent, expected)
+      )
     ) {
       throw new HttpsError(
         "failed-precondition",

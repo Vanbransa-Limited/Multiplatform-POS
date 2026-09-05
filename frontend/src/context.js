@@ -7,6 +7,7 @@
  *   currentBranch: any,
  *   currentTenant: any,
  *   activeShift: any,
+ *   cloudShiftId: string|null,
  *   syncManager: any,
  *   views: Record<string, any>
  * }}
@@ -16,6 +17,7 @@ export const state = {
   currentBranch: null,
   currentTenant: null,
   activeShift: null,
+  cloudShiftId: null,
   syncManager: null,
   views: {}
 };

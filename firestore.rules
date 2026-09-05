@@ -140,7 +140,12 @@ service cloud.firestore {
     // The till watches its own pending push for the STK result. Writes stay
     // server-only: this document is what says a customer has actually paid.
     match /mpesa_payments/{documentId} {
-      allow read: if canReadTenantDocument();
+      allow read: if canReadTenantDocument()
+        && request.auth.token.staff_id is string
+        && (
+          resource.data.staffId == request.auth.token.staff_id
+          || managesTenant()
+        );
       allow write: if false;
     }
 

@@ -9,6 +9,7 @@ import {
   unavailableMpesaCapability
 } from '../services/mpesa-state';
 import { toMinor } from '../services/tender';
+import { enqueuePrintJob, isStationOnline } from '../services/print-queue';
 
 export class TillView {
   constructor(container) {
@@ -256,6 +257,7 @@ export class TillView {
           </div>
 
           <div style="display:flex; gap: 10px; width: 100%; margin-top: 16px;">
+            <button class="sec-btn" style="flex:1;" id="receipt-print-btn">Print</button>
             <button class="primary-btn" style="flex:1;" id="receipt-close-btn">Done (New Sale)</button>
           </div>
         </div>
@@ -364,6 +366,12 @@ export class TillView {
     document.getElementById('receipt-close-btn').addEventListener('click', () => {
       document.getElementById('receipt-modal').classList.remove('active');
       this.clearCart();
+    });
+
+    // A tablet cannot reach the counter's USB printer, so the receipt is queued
+    // for the print station rather than sent to this device's own printer.
+    document.getElementById('receipt-print-btn').addEventListener('click', () => {
+      void this.sendReceiptToCounter();
     });
 
     // Format switches
@@ -1116,7 +1124,9 @@ export class TillView {
         branchId: state.currentBranch?.id,
         deviceId: DEVICE_ID,
         idempotencyKey: attempt.idempotencyKey,
-        orderReference: attempt.idempotencyKey,
+        // The server caps orderReference at 40 characters; the key is 42
+        // ("mpesa_" + a 36-char UUID). Truncating keeps it unique per attempt.
+        orderReference: attempt.idempotencyKey.slice(0, 40),
         customerId: this.selectedCustomer?.id || null,
         lines: this.compactCartLines()
       });
@@ -1405,10 +1415,43 @@ export class TillView {
 
     // Construct receipt mock view
     const paperView = document.getElementById('receipt-paper-view');
-    
+
     // Simulate eTIMS records return, if background sync processed quickly.
     const fiscal = await db.fiscal_records.where('sale_id').equals(sale.id).first();
     const hasFiscal = !!fiscal;
+
+    // The print station is a different device and never receives this sale, so
+    // the receipt's own values travel with the job.
+    this.lastReceiptPayload = {
+      tenantName: state.currentTenant.trading_name,
+      branchName: state.currentBranch.name,
+      kraPin: state.currentTenant.kra_pin,
+      branchCode: state.currentBranch.etims_bhf_id,
+      invoiceNo: sale.invoice_no,
+      soldAt: new Date(sale.sold_at).toLocaleString(),
+      cashierName: state.currentUser.name,
+      customerName: selectCustomerName,
+      buyerPin: sale.buyer_pin || null,
+      lines: lines.map((line) => ({
+        name: prodMap.get(line.product_id)?.name || 'Unknown Item',
+        qty: line.qty,
+        unitPrice: line.unit_price,
+        lineTotal: line.line_total,
+        taxCode: line.tax_code
+      })),
+      subtotal: sale.subtotal,
+      taxTotal: sale.tax_total,
+      grandTotal: sale.grand_total,
+      paymentMethod: payment.method,
+      paymentReference: payment.reference || null,
+      fiscal: hasFiscal
+        ? {
+            cuSerial: fiscal.cu_serial,
+            signature: fiscal.receipt_signature,
+            invoiceNo: fiscal.cu_invoice_no
+          }
+        : null
+    };
 
     paperView.innerHTML = `
       <div class="receipt-header">
@@ -1489,6 +1532,48 @@ export class TillView {
     `;
 
     document.getElementById('receipt-modal').classList.add('active');
+  }
+
+  /**
+   * Hands the receipt to the counter station. Never claims success on its own:
+   * if the job did not reach the queue the cashier is told to print at the
+   * counter instead, because nothing else will produce that paper.
+   */
+  async sendReceiptToCounter() {
+    if (!this.lastReceiptPayload) {
+      showNotification('There is no receipt to print yet.', 'error');
+      return;
+    }
+
+    const paper = document.getElementById('receipt-paper-view');
+    const branchId = state.currentBranch?.id;
+    const [jobId, stationOnline] = await Promise.all([
+      enqueuePrintJob({
+        branchId,
+        receipt: this.lastReceiptPayload,
+        widthClass: paper?.className === 'receipt-paper-58'
+          ? 'receipt-paper-58'
+          : 'receipt-paper-80'
+      }),
+      isStationOnline(branchId)
+    ]);
+
+    if (!jobId) {
+      showNotification(
+        'The receipt could not be queued. Print it from the counter instead.',
+        'error'
+      );
+      return;
+    }
+
+    // Queued is not printed. With no station running the job waits indefinitely,
+    // and a server would stand at the counter waiting for paper that never came.
+    showNotification(
+      stationOnline
+        ? 'Sent to the counter printer.'
+        : 'Queued, but no print station is running. Start it at the counter.',
+      stationOnline ? 'success' : 'warning'
+    );
   }
 
   clearCart() {

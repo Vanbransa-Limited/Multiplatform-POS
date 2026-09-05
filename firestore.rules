@@ -154,6 +154,46 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // A tablet cannot reach the counter's USB printer, so it queues the receipt
+    // here and the station prints it. These carry no money decision: a job is a
+    // copy of a receipt, and printing one settles nothing.
+    match /print_jobs/{documentId} {
+      allow read: if canReadTenantDocument();
+      allow create: if hasTenantClaim(request.resource.data.tenantId)
+        && request.auth.token.staff_id is string
+        && request.resource.data.id == documentId
+        && request.resource.data.status == 'queued'
+        && request.resource.data.createdByStaffId == request.auth.token.staff_id
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.branchId is string
+        && request.resource.data.branchId.size() > 0
+        && request.resource.data.receipt is map
+        && request.resource.data.widthClass in ['receipt-paper-58', 'receipt-paper-80'];
+      // The only permitted change is one station claiming a waiting job, so a
+      // printed receipt can never be edited or re-queued from a browser.
+      allow update: if canReadTenantDocument()
+        && resource.data.status == 'queued'
+        && request.resource.data.status == 'printed'
+        && request.resource.data.printedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'printedAt',
+          'printedByDeviceId'
+        ]);
+      allow delete: if false;
+    }
+
+    // Presence only, so the till can tell a cashier whether paper will actually
+    // come out before it promises that it will.
+    match /print_stations/{deviceId} {
+      allow read: if canReadTenantDocument();
+      allow create, update: if hasTenantClaim(request.resource.data.tenantId)
+        && request.resource.data.deviceId == deviceId
+        && request.resource.data.branchId is string
+        && request.resource.data.lastSeenAt == request.time;
+      allow delete: if false;
+    }
+
     match /stock_movements/{documentId} {
       allow read: if canReadTenantDocument();
       allow write: if false;

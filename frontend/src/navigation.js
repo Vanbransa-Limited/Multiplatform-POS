@@ -25,7 +25,8 @@ export const NAV_GROUPS = [
     items: [
       { tab: 'till', icon: '🏪', label: 'Dashboard' },
       { tab: 'orders', icon: '🧾', label: 'Orders Viewer' },
-      { tab: 'shifts', icon: '💵', label: 'Shift Management' }
+      { tab: 'shifts', icon: '💵', label: 'Shift Management' },
+      { tab: 'print-station', icon: '🖨️', label: 'Print Station' }
     ]
   },
   {
@@ -73,6 +74,8 @@ export const RESTRICTED_TABS = {
   'store-stock': ['Owner', 'Store Manager', 'Supervisor', 'Store Keeper'],
   'house-stock': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff'],
   'orders': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff'],
+  // The station runs on the one machine holding the printer, not on a tablet.
+  'print-station': ['Owner', 'Store Manager', 'Supervisor'],
   'finance': ['Owner', 'Store Manager'],
   'qrtools': ['Owner', 'Store Manager', 'Supervisor'],
   'audit-logs': ['Owner', 'Store Manager']

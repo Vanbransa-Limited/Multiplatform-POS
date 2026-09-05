@@ -113,7 +113,7 @@ export class OrdersView {
 
           <!-- Printable Thermal Content -->
           <div style="flex: 1; overflow-y: auto; padding: 20px;">
-            <div id="orders-receipt-paper" class="receipt-paper-80" style="background: #fff; color: #000; padding: 20px; border-radius: 8px; font-family: monospace; font-size: 11px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
+            <div id="orders-receipt-paper" class="receipt-paper-58" style="background: #fff; color: #000; padding: 20px; border-radius: 8px; font-family: monospace; font-size: 11px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); max-width: 280px; margin: 0 auto;">
               <!-- Content loaded dynamically -->
             </div>
           </div>
@@ -121,8 +121,8 @@ export class OrdersView {
           <!-- Actions Footer -->
           <div style="padding: 16px 20px; border-top: 1px solid var(--border-color); display: flex; gap: 10px; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.02);">
             <div style="display: flex; gap: 6px;">
-              <button id="orders-format-58" style="background: rgba(255,255,255,0.1); color: #fff; border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 6px; font-size: 11px; cursor: pointer;">58mm</button>
-              <button id="orders-format-80" style="background: var(--color-primary, #e8a535); color: #000; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer;">80mm</button>
+              <button id="orders-format-58" style="background: var(--color-primary, #e8a535); color: #000; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer;">58mm</button>
+              <button id="orders-format-80" style="background: rgba(255,255,255,0.1); color: #fff; border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 6px; font-size: 11px; cursor: pointer;">80mm</button>
             </div>
             <div style="display: flex; gap: 10px;">
               <button id="orders-modal-print" style="background: #10b981; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px;">

@@ -108,6 +108,11 @@ export const importProducts = onCall(
     }
 
     const input = asRecord(request.data, "Request data");
+    // Stamped on every row this run writes, so a follow-up call can tell what
+    // the sheet covered from what was already here and did not appear in it.
+    const batchId = typeof input.batchId === "string" && input.batchId.length <= 64
+      ? input.batchId
+      : null;
     const rows = Array.isArray(input.rows) ? input.rows : null;
     if (!rows || rows.length === 0) {
       throw new HttpsError("invalid-argument", "The file contained no rows.");
@@ -236,6 +241,7 @@ export const importProducts = onCall(
           // Unpriced items exist but cannot be sold until someone prices them.
           isActive: sellPriceMinor > 0,
           updatedAt: Timestamp.now(),
+          ...(batchId ? { lastImportBatch: batchId } : {}),
           // Columns the sheet left out are not written at all, so a file
           // carrying only names and new prices cannot strip a product of its
           // category or unit on the way past.
@@ -454,3 +460,82 @@ export const retireProduct = onCall({ region: FUNCTION_REGION }, async (request)
     return { productId, name: data?.name ?? productId };
   });
 });
+
+/**
+ * Retires everything the last import did not mention.
+ *
+ * An import adds and updates; it has never removed. So a menu that was loaded
+ * twice - once from a stock export full of "WHITE CAP CAN (22/05/26)" rows,
+ * once cleaned up - keeps both, and the demo products a tenant was provisioned
+ * with sit there beside them. All of it reaches the customer menu.
+ *
+ * Retiring rather than deleting, because sales, stock movements and audit rows
+ * point at these products and must keep resolving. A retired product is off
+ * the menu and off the till, and its history still reads.
+ */
+export const retireMissingProducts = onCall(
+  { region: FUNCTION_REGION, timeoutSeconds: 300 },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Sign in first.");
+    const claims = request.auth.token;
+    const tenantId = typeof claims.tenant_id === "string" ? claims.tenant_id : null;
+    const staffId = typeof claims.staff_id === "string" ? claims.staff_id : null;
+    const role = typeof claims.staff_role === "string" ? claims.staff_role : "";
+    if (!tenantId || !staffId) {
+      throw new HttpsError("permission-denied", "This session carries no staff claims.");
+    }
+    if (!ADMIN_ROLES.has(role)) {
+      throw new HttpsError("permission-denied", "Only an owner or store manager can retire products.");
+    }
+
+    const input = asRecord(request.data, "Request data");
+    const batchId = typeof input.batchId === "string" ? input.batchId : "";
+    if (!batchId) {
+      throw new HttpsError("invalid-argument", "Which import? A batch id is required.");
+    }
+    const dryRun = input.dryRun === true;
+
+    const snapshot = await db
+      .collection("products")
+      .where("tenantId", "==", tenantId)
+      .get();
+
+    // Anything the run did not stamp: products from an older import, and the
+    // seed products the tenant was provisioned with, which carry no stamp at all.
+    const stale = snapshot.docs.filter((doc) => {
+      const data = doc.data() ?? {};
+      if (data.lastImportBatch === batchId) return false;
+      // Already off the menu and off the till: nothing left to do.
+      return data.isActive !== false || data.showOnMenu !== false;
+    });
+
+    const names = stale.map((doc) => String(doc.data()?.name ?? doc.id));
+    if (dryRun) return { retired: 0, candidates: stale.length, names: names.slice(0, 50) };
+
+    // Firestore caps a batch at 500 writes.
+    for (let start = 0; start < stale.length; start += 500) {
+      const batch = db.batch();
+      for (const doc of stale.slice(start, start + 500)) {
+        batch.set(
+          doc.ref,
+          { isActive: false, showOnMenu: false, retiredAt: Timestamp.now() },
+          { merge: true },
+        );
+      }
+      await batch.commit();
+    }
+
+    await db.collection("audit_logs").add({
+      tenantId,
+      branchId: null,
+      actorStaffId: staffId,
+      action: "catalogue.retired_missing",
+      entityType: "product",
+      entityId: null,
+      metadata: { batchId, retired: stale.length },
+      createdAt: Timestamp.now(),
+    });
+
+    return { retired: stale.length, candidates: stale.length, names: names.slice(0, 50) };
+  },
+);

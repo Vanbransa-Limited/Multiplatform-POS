@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { importProducts, priceCell, matchKey } = require('../lib/modules/catalogue');
+const { importProducts, retireMissingProducts, priceCell, matchKey } = require('../lib/modules/catalogue');
 const { db } = require('../lib/lib/firebase');
 
 /** Minimal in-memory Firestore covering the batch and query this module uses. */
@@ -13,7 +13,7 @@ function harness(docs) {
       get: async () => ({
         docs: [...docs]
           .filter(([path, data]) => path.startsWith(`${name}/`) && data[field] === value)
-          .map(([path, data]) => ({ id: path.split('/')[1], data: () => data })),
+          .map(([path, data]) => ({ id: path.split('/')[1], ref: { id: path.split('/')[1], path }, data: () => data })),
       }),
     }),
   });
@@ -32,6 +32,7 @@ function harness(docs) {
 
 const owner = { token: { tenant_id: 't1', staff_id: 's1', staff_role: 'owner' } };
 const run = (rows) => importProducts.run({ auth: owner, data: { rows } });
+const run2 = (rows, batchId) => importProducts.run({ auth: owner, data: { rows, batchId } });
 const products = (docs) => [...docs]
   .filter(([path]) => path.startsWith('products/'))
   .map(([, data]) => data);
@@ -177,6 +178,80 @@ test('a new product on a re-import is created alongside the ones being repriced'
     assert.equal(second.created, 1);
     assert.equal(second.updated, 1);
     assert.equal(products(docs).length, 2);
+  } finally {
+    restore();
+  }
+});
+
+const retire = (data) => retireMissingProducts.run({ auth: owner, data });
+
+test('a fresh import retires everything the sheet did not mention', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    // What is already there: an older import and a provisioned demo product.
+    await run([{ sku: 'OLD-1', name: 'WHITE CAP CAN (22/05/26)', sellPrice: '400' }]);
+    docs.set('products/seeded', {
+      id: 'seeded', tenantId: 't1', sku: 'BAR-BEE-03',
+      name: 'White Cap Lager 500ml', sellPriceMinor: 25000, isActive: true,
+    });
+
+    // The clean sheet, stamped.
+    await run2([{ sku: 'NEW-1', name: 'WHITECAP LAGER 500ML CAN', sellPrice: '400' }], 'batch-9');
+
+    const preview = await retire({ batchId: 'batch-9', dryRun: true });
+    assert.equal(preview.candidates, 2, 'the old row and the demo product should both be listed');
+    assert.equal(preview.retired, 0, 'a dry run must not write');
+    assert.equal(find(docs, 'White Cap Lager 500ml').isActive, true);
+
+    const done = await retire({ batchId: 'batch-9' });
+    assert.equal(done.retired, 2);
+    assert.equal(find(docs, 'White Cap Lager 500ml').isActive, false);
+    assert.equal(find(docs, 'White Cap Lager 500ml').showOnMenu, false);
+    assert.equal(find(docs, 'WHITE CAP CAN (22/05/26)').isActive, false);
+    // The sheet's own product is untouched and still sellable.
+    assert.equal(find(docs, 'WHITECAP LAGER 500ML CAN').isActive, true);
+    // Nothing is deleted: the history that points at these still resolves.
+    assert.equal(products(docs).length, 3);
+  } finally {
+    restore();
+  }
+});
+
+test('retiring twice does not keep counting the same products', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    await run([{ sku: 'OLD-2', name: 'Stale', sellPrice: '100' }]);
+    await run2([{ sku: 'NEW-2', name: 'Fresh', sellPrice: '100' }], 'batch-x');
+    assert.equal((await retire({ batchId: 'batch-x' })).retired, 1);
+    assert.equal((await retire({ batchId: 'batch-x' })).retired, 0);
+  } finally {
+    restore();
+  }
+});
+
+test('a batch id is required, so a slip cannot retire the whole menu', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    await run([{ sku: 'A', name: 'Anything', sellPrice: '100' }]);
+    await assert.rejects(() => retire({}), /batch id is required/);
+    assert.equal(find(docs, 'Anything').isActive, true);
+  } finally {
+    restore();
+  }
+});
+
+test('only an owner or store manager may retire', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    const keeper = { token: { tenant_id: 't1', staff_id: 's2', staff_role: 'store_keeper' } };
+    await assert.rejects(
+      () => retireMissingProducts.run({ auth: keeper, data: { batchId: 'b' } }),
+      /owner or store manager/
+    );
   } finally {
     restore();
   }

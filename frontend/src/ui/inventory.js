@@ -5,6 +5,7 @@ import { bindPager, pagerHtml, paginate } from '../services/paginate';
 import { ensureUniqueSkus, parseProductFile } from '../services/csv';
 import { callFunction } from '../services/firebase';
 import { pullCatalogue } from '../services/catalogue';
+import { escapeHtml } from '../services/print-receipt';
 
 export class InventoryView {
   constructor(container) {
@@ -173,6 +174,9 @@ export class InventoryView {
       const CHUNK = 500;
       const totals = { imported: 0, created: 0, updated: 0, repriced: [], unpriced: [], rejected: [] };
       let failure = null;
+      // Stamped on everything this file writes, so afterwards the server can
+      // tell the menu this sheet describes from whatever else is sitting there.
+      const batchId = crypto.randomUUID();
 
       for (let start = 0; start < rows.length; start += CHUNK) {
         const chunk = rows.slice(start, start + CHUNK);
@@ -183,7 +187,7 @@ export class InventoryView {
         );
 
         try {
-          const result = await callFunction('importProducts', { rows: chunk });
+          const result = await callFunction('importProducts', { rows: chunk, batchId });
           totals.imported += result.imported;
           totals.created += result.created || 0;
           totals.updated += result.updated || 0;
@@ -268,9 +272,53 @@ export class InventoryView {
         } catch (err) {
           lines.push(`<b style="color:var(--accent-amber)">Imported, but this till could not refresh its catalogue:</b> ${err.message || err}`);
         }
+
+        // An import has never removed anything, so a menu loaded twice keeps
+        // both copies and the products a tenant was provisioned with sit there
+        // beside them - all of it on the customer menu. Offer to clear out what
+        // this sheet did not mention, but never do it unasked.
+        try {
+          const preview = await callFunction('retireMissingProducts', { batchId, dryRun: true });
+          if (preview.candidates > 0) {
+            lines.push(
+              `<b style="color:var(--accent-amber)">${preview.candidates} products on the server were not in this file.</b><br>`
+                + '<span style="color:var(--text-muted)">'
+                + preview.names.slice(0, 8).map((n) => escapeHtml(n)).join(', ')
+                + (preview.candidates > 8 ? `, and ${preview.candidates - 8} more` : '')
+                + '</span><br><span style="color:var(--text-muted)">Retiring takes them off the customer menu and the till. '
+                + 'Their sales history stays readable.</span><br>'
+                + `<button id="ledg-retire-btn" class="sec-btn" style="margin-top:10px;">Retire these ${preview.candidates} products</button>`
+            );
+          }
+        } catch {
+          // Advisory: an import that worked must not read as a failure.
+        }
       }
 
       note(lines.join('<br>'), failure ? 'var(--accent-rose)' : 'var(--border-color)');
+
+      const retireBtn = document.getElementById('ledg-retire-btn');
+      if (retireBtn) {
+        retireBtn.addEventListener('click', async () => {
+          retireBtn.disabled = true;
+          retireBtn.textContent = 'Retiring...';
+          try {
+            const done = await callFunction('retireMissingProducts', { batchId });
+            await pullCatalogue();
+            showNotification(`${done.retired} products retired.`, 'success');
+            retireBtn.replaceWith(Object.assign(document.createElement('span'), {
+              style: 'color:var(--accent-green);font-weight:700;',
+              textContent: `${done.retired} products retired.`
+            }));
+            this.ledgerPage = 1;
+            await this.renderLedger(pane);
+          } catch (err) {
+            showNotification(err.message || 'Could not retire those products.', 'error');
+            retireBtn.disabled = false;
+            retireBtn.textContent = 'Retire';
+          }
+        });
+      }
       if (totals.imported) {
         showNotification(`Imported ${totals.imported} products.`, 'success');
         this.ledgerPage = 1;

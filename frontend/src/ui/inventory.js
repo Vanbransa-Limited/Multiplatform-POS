@@ -1,5 +1,5 @@
 import { db } from '../db/schema';
-import { getStockOnHand, getBatchStockOnHand, logAuditEvent } from '../db/index';
+import { getStockOnHand, logAuditEvent } from '../db/index';
 import { state, showNotification } from '../context';
 import { bindPager, pagerHtml, paginate } from '../services/paginate';
 import { ensureUniqueSkus, parseProductFile } from '../services/csv';
@@ -89,12 +89,6 @@ export class InventoryView {
   }
 
   /**
-   * Catalogue import from whatever spreadsheet the restaurant already keeps.
-   *
-   * The mapping it guessed is reported back alongside the result, because a
-   * column read as the wrong field is the failure that looks like a success.
-   */
-  /**
    * Quantity columns the menu import does not read.
    *
    * A stock export carries these next to the prices, so the same sheet looks
@@ -108,101 +102,11 @@ export class InventoryView {
   ]);
 
   /**
-   * Finds the same product listed more than once and keeps the dearer copy.
+   * Catalogue import from whatever spreadsheet the restaurant already keeps.
    *
-   * Always shown for review before anything is written: this decides which of
-   * two prices a customer is charged, so it is not something to run blind.
+   * The mapping it guessed is reported back alongside the result, because a
+   * column read as the wrong field is the failure that looks like a success.
    */
-  bindDedupeEvents(pane) {
-    const trigger = document.getElementById('ledg-dedupe-btn');
-    const report = document.getElementById('ledg-import-report');
-    if (!trigger || !report) return;
-
-    const note = (html, colour) => {
-      report.innerHTML = `<div style="margin:12px 0;padding:14px 16px;border:1px solid ${colour};border-radius:8px;font-size:13px;line-height:1.6;">${html}</div>`;
-    };
-    const money = (minor) => `KES ${(minor / 100).toFixed(2)}`;
-
-    trigger.addEventListener('click', async () => {
-      note('Checking the catalogue...', 'var(--border-color)');
-      let dupes;
-      let ghosts;
-      try {
-        // Two different messes: the same product listed twice, and the demo bar
-        // the tenant was provisioned with, which has no duplicate to match it
-        // and so survives every merge.
-        [dupes, ghosts] = await Promise.all([
-          callFunction('dedupeProducts', { dryRun: true }),
-          callFunction('retireSeedProducts', { dryRun: true }),
-        ]);
-      } catch (error) {
-        note(`<b style="color:var(--accent-rose)">Could not check the catalogue.</b><br>${escapeHtml(error.message || error)}`, 'var(--accent-rose)');
-        return;
-      }
-
-      const total = dupes.candidates + ghosts.candidates;
-      if (!total) {
-        note('<b style="color:var(--accent-green)">Nothing to clean up.</b> Every product is listed once, and no demo records are left.', 'var(--border-color)');
-        return;
-      }
-
-      const sections = [];
-      if (ghosts.candidates) {
-        sections.push(
-          `<b style="color:var(--accent-amber)">${ghosts.candidates} demo products left over from setup.</b><br>`
-            + '<span style="color:var(--text-muted)">Sample items written when the business was created. They are on the customer menu at their sample prices.</span>'
-            + `<div style="margin:8px 0;padding-left:10px;border-left:2px solid var(--border-color);color:var(--text-muted);">${
-              ghosts.names.map((name) => escapeHtml(name)).join('<br>')}</div>`
-        );
-      }
-      if (dupes.candidates) {
-        sections.push(
-          `<b style="color:var(--accent-amber)">${dupes.candidates} duplicate products.</b><br>`
-            + '<span style="color:var(--text-muted)">The dearest copy of each is kept, since the cheap one is usually the stale one. '
-            + 'Different sizes and containers are left alone.</span>'
-            + (dupes.groups || []).map((group) => `
-              <div style="margin:8px 0;padding-left:10px;border-left:2px solid var(--border-color);">
-                <div style="color:var(--accent-green);">Keep: <b>${escapeHtml(group.keep.name)}</b> - ${money(group.keep.sellPriceMinor)}</div>
-                ${group.retire.map((item) => `<div style="color:var(--text-muted);">Retire: ${escapeHtml(item.name)} - ${money(item.sellPriceMinor)}</div>`).join('')}
-              </div>`).join('')
-        );
-      }
-
-      note(
-        sections.join('<br>')
-          + '<br><span style="color:var(--text-muted)">Retiring takes these off the customer menu and the till. Their sales history stays readable.</span><br>'
-          + `<button id="ledg-dedupe-go" class="primary-btn" style="margin-top:10px;">Clean up these ${total} products</button>`,
-        'var(--accent-amber)'
-      );
-
-      document.getElementById('ledg-dedupe-go').addEventListener('click', async (event) => {
-        const button = event.currentTarget;
-        button.disabled = true;
-        button.textContent = 'Cleaning up...';
-        try {
-          // Demo records first: some of them are the cheap half of a duplicate,
-          // and clearing them leaves less for the merge to argue about.
-          const swept = await callFunction('retireSeedProducts', {});
-          const merged = await callFunction('dedupeProducts', {});
-          await pullCatalogue();
-          const done = swept.retired + merged.retired;
-          showNotification(`${done} products cleaned up.`, 'success');
-          note(
-            `<b style="color:var(--accent-green)">${done} products retired.</b> `
-              + `${swept.retired} demo records, ${merged.retired} duplicates. The menu now lists each product once.`,
-            'var(--border-color)'
-          );
-          this.ledgerPage = 1;
-          await this.renderLedger(pane);
-        } catch (error) {
-          showNotification(error.message || 'Could not clean up the catalogue.', 'error');
-          button.disabled = false;
-          button.textContent = 'Retry';
-        }
-      });
-    });
-  }
-
   bindImportEvents(pane) {
     const trigger = document.getElementById('ledg-import-btn');
     const picker = document.getElementById('ledg-import-file');
@@ -440,9 +344,7 @@ export class InventoryView {
         <input type="text" id="ledg-search" placeholder="Search ledger by SKU or name..." value="${this.ledgerSearch.replace(/"/g, '&quot;')}">
         ${this.canEditCatalogue ? `
         <button class="primary-btn" id="ledg-add-prod-btn">Add Product</button>
-        <button class="sec-btn" id="ledg-import-btn">📥 Import CSV / Excel</button>
-        <button class="sec-btn" id="ledg-dedupe-btn">🧹 Clean up catalogue</button>
-        <button class="sec-btn" id="ledg-adjust-btn">Manual Adjustment</button>` : `
+        <button class="sec-btn" id="ledg-import-btn">📥 Import CSV / Excel</button>` : `
         <span class="muted" style="font-size:12px;">Viewing only — an owner or store manager changes the catalogue.</span>`}
         <input type="file" id="ledg-import-file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none;">
       </div>
@@ -570,47 +472,9 @@ Past sales keep it. You can add it again later.`)) return;
 
     if (this.canEditCatalogue) {
       this.bindImportEvents(pane);
-      this.bindDedupeEvents(pane);
       this.bindProductEditorEvents(pane);
     }
 
-    // Manual adjustment modal event trigger (simulation).
-    // Guarded: the button is only rendered for roles that may change stock, and
-    // binding a missing element threw before the ledger finished rendering.
-    const adjustBtn = document.getElementById('ledg-adjust-btn');
-    if (adjustBtn) adjustBtn.addEventListener('click', async () => {
-      // Prompt adjustment
-      const sku = prompt('Enter SKU to adjust:');
-      if (!sku) return;
-
-      const prod = await db.products.where('sku').equals(sku).first();
-      if (!prod) {
-        alert('Product SKU not found.');
-        return;
-      }
-
-      const qty = parseInt(prompt('Enter quantity adjustment (positive to add, negative to reduce):'));
-      if (isNaN(qty)) return;
-
-      const locInput = prompt('Location (STORE or HOUSE):', 'STORE');
-      if (!locInput) return;
-      const location = locInput.toUpperCase();
-
-      await db.stock_movements.add({
-        id: `sm-${crypto.randomUUID()}`,
-        tenant_id: state.currentTenant?.id || 'tenant-01',
-        branch_id: state.currentBranch?.id || 'br-01',
-        product_id: prod.id,
-        batch_id: null,
-        type: qty > 0 ? 'ADJ_IN' : 'ADJ_OUT',
-        quantity: Math.abs(qty),
-        location,
-        ref_id: `MANUAL-${Date.now()}`,
-        created_at: new Date().toISOString()
-      });
-      showNotification('Stock adjusted successfully', 'success');
-      this.loadSubTab();
-    });
 
   }
 

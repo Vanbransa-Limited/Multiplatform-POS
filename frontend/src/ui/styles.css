@@ -759,13 +759,34 @@ body.dark-mode {
 .cat-filters {
   display: flex;
   gap: 8px;
-  /* Wrap rather than scroll: a horizontally scrolling strip clipped the last
-     chip mid-word with no affordance that anything was hidden. */
-  flex-wrap: wrap;
-  padding-bottom: 4px;
+  /* One scrolling line. Wrapping cost five rows of the product grid once a
+     till carried this many categories. The scrollbar below is left visible on
+     purpose - it is what tells someone the strip runs past the edge. */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-color) transparent;
+}
+
+.cat-filters::-webkit-scrollbar {
+  height: 4px;
+}
+
+.cat-filters::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.cat-filters::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 2px;
 }
 
 .filter-chip {
+  /* Never squeezed to fit: a chip narrower than its label is unreadable, and
+     the strip scrolls instead. */
+  flex: 0 0 auto;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border-color);
   color: var(--text-secondary);

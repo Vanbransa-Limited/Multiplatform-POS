@@ -64,7 +64,7 @@ const staffMapping = (mapping) => {
  * Shared by the CSV and workbook readers so both go through one mapper.
  */
 export function rowsFromGrid(headers, grid, aliases = FIELD_ALIASES, usable = productMapping) {
-  const mapping = matchColumns(headers, aliases);
+  const mapping = matchColumns(headers, aliases, grid);
   const missing = usable(mapping);
   if (missing) {
     return {
@@ -128,23 +128,58 @@ export function splitCsvLine(line, preserveWhitespace = false) {
   return cells;
 }
 
-/** Maps the file's headers onto our fields. Returns { field: headerName }. */
-export function matchColumns(headers, aliasMap = FIELD_ALIASES) {
+/**
+ * Maps the file's headers onto our fields. Returns { field: headerName }.
+ *
+ * Candidates are ranked, not taken in the order the file happens to list them.
+ * An export carrying both "description" and "name" put description first, and
+ * taking the leftmost match bound every product's name to a column that was
+ * blank in all 1,598 rows - so the whole sheet imported as nameless and was
+ * rejected. A column with values beats an empty one, and past that the closer
+ * alias wins: "name" is a better name column than "description" wherever the
+ * two sit.
+ */
+export function matchColumns(headers, aliasMap = FIELD_ALIASES, grid = null) {
   const mapping = {};
   const used = new Set();
 
+  const isEmpty = (position) => Array.isArray(grid)
+    && grid.length > 0
+    && grid.every((cells) => String(cells?.[position] ?? '').trim() === '');
+
   for (const [field, aliases] of Object.entries(aliasMap)) {
-    const index = headers.findIndex((header, position) => {
-      if (used.has(position)) return false;
-      return aliases.includes(normalise(header));
+    let best = -1;
+    let bestScore = null;
+
+    headers.forEach((header, position) => {
+      if (used.has(position)) return;
+      const rank = aliases.indexOf(normalise(header));
+      if (rank === -1) return;
+
+      // Lexicographic: carries data, then how strong the alias is, then order.
+      const score = [isEmpty(position) ? 1 : 0, rank, position];
+      if (compare(score, bestScore) < 0) {
+        bestScore = score;
+        best = position;
+      }
     });
-    if (index !== -1) {
-      mapping[field] = headers[index];
-      used.add(index);
+
+    if (best !== -1) {
+      mapping[field] = headers[best];
+      used.add(best);
     }
   }
 
   return mapping;
+}
+
+/** Lexicographic compare of two equal-length numeric tuples. */
+function compare(a, b) {
+  if (b === null) return -1;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
 }
 
 /**

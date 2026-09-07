@@ -112,3 +112,23 @@ test('a stock sheet is matched on what the item is and how many', async () => {
   const noQty = await parseStockFile(sheet('sku,name\nSKU-1,Tusker\n'));
   assert.match(noQty.error, /quantity column/);
 });
+
+test('a closer alias wins over one that merely appears first', () => {
+  // The export that broke: description sits left of name, so the leftmost
+  // match bound every product name to a column that was blank throughout.
+  const headers = ['id', 'price', 'category', 'description', 'name'];
+  assert.equal(matchColumns(headers).name, 'name');
+});
+
+test('a column with values beats an empty one carrying a better alias', () => {
+  const headers = ['name', 'item'];
+  const grid = [['', 'Tusker'], ['', 'Whitecap']];
+  // "name" is the stronger alias, but it holds nothing in this file.
+  assert.equal(matchColumns(headers, undefined, grid).name, 'item');
+  // With no grid to judge by, the stronger alias still wins.
+  assert.equal(matchColumns(headers).name, 'name');
+});
+
+test('an entirely blank file does not make every column look empty', () => {
+  assert.equal(matchColumns(['name', 'item'], undefined, []).name, 'name');
+});

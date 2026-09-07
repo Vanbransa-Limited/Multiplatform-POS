@@ -85,6 +85,19 @@ export class InventoryView {
    * The mapping it guessed is reported back alongside the result, because a
    * column read as the wrong field is the failure that looks like a success.
    */
+  /**
+   * Quantity columns the menu import does not read.
+   *
+   * A stock export carries these next to the prices, so the same sheet looks
+   * like it should set counts too. It does not - counts are booked in the stock
+   * screens - and saying so beats leaving somebody to find every count still
+   * at zero afterwards.
+   */
+  static IGNORED_QTY = new Set([
+    'qty', 'quantity', 'count', 'counted', 'onhand', 'stock',
+    'storestock', 'housestock', 'instock', 'balance', 'units', 'pieces'
+  ]);
+
   bindImportEvents(pane) {
     const trigger = document.getElementById('ledg-import-btn');
     const picker = document.getElementById('ledg-import-file');
@@ -123,6 +136,29 @@ export class InventoryView {
         .map(([field, header]) => `${field} &larr; <b>${header}</b>`)
         .join(' &middot; ');
 
+      // A file whose price column is not recognised imports every row and
+      // changes no price, which reads at a glance as a successful reprice.
+      const warnings = [];
+      if (!mapping.sellPrice) {
+        warnings.push(
+          '<b style="color:var(--accent-amber)">No price column was recognised, so no prices will change.</b><br>'
+            + `Headers read: <b>${parsed.headers.join(', ')}</b>. `
+            + 'Name the column Price, Sell Price or Menu Price and import again.'
+        );
+      }
+      // Quantities belong to the stock screens; a delivery sheet sent here
+      // would otherwise appear to import and leave every count untouched.
+      const qtyHeader = parsed.headers.find((header) => InventoryView.IGNORED_QTY.has(
+        String(header || '').toLowerCase().replace(/[^a-z]/g, '')
+      ));
+      if (qtyHeader) {
+        warnings.push(
+          `<b style="color:var(--accent-amber)">The "${qtyHeader}" column is ignored here.</b> `
+            + 'This screen imports the menu - names, prices, categories. '
+            + 'Stock counts are booked in Store Stock or House Stock, so quantities stay as they are.'
+        );
+      }
+
       // A Firestore batch holds 500 writes, so a real menu arrives in chunks.
       // Each one commits on its own: a failure part way through keeps whatever
       // already landed, and re-running the file is an upsert either way.
@@ -159,8 +195,20 @@ export class InventoryView {
         `<b style="color:${totals.imported ? 'var(--accent-green)' : 'var(--accent-rose)'}">`
           + `Imported ${totals.imported} of ${rows.length} products`
           + ` &mdash; ${totals.updated} updated, ${totals.created} new.</b>`,
-        `<span style="color:var(--text-muted)">${columns}</span>`
+        `<span style="color:var(--text-muted)">${columns}</span>`,
+        ...warnings
       ];
+
+      // Every row landing as new, on a till that already has a menu, means the
+      // sheet is not lining up with what is here rather than that the menu is
+      // genuinely all new.
+      if (totals.created > 0 && totals.updated === 0 && totals.created === totals.imported) {
+        lines.push(
+          '<span style="color:var(--text-muted)">Nothing in this file matched a product already on this till, '
+            + 'so every row came in as a new item. If it was meant to update the existing menu, '
+            + 'the names in the file do not match the names here.</span>'
+        );
+      }
 
       // The point of re-importing a sheet is usually the prices, so say which
       // ones actually moved rather than only that the file went through.

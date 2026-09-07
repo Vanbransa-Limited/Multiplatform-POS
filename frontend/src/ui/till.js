@@ -11,6 +11,7 @@ import {
 import { toMinor } from '../services/tender';
 import { enqueuePrintJob, isStationOnline } from '../services/print-queue';
 import { pullStock } from '../services/stock';
+import { pullCatalogue } from '../services/catalogue';
 import { isStaffPhoneNumber } from '../data/staff-directory';
 import { saleLineRate, recordedSaleTotals } from '../services/service-charges';
 
@@ -60,6 +61,38 @@ export class TillView {
     await this.loadProducts();
     await this.loadCustomerDropdown();
     this.updateCartUI();
+    this.refreshCatalogue();
+  }
+
+  /**
+   * Brings this till's prices back in line with the server, in the background.
+   *
+   * The cart prices from the local cache but the server prices the sale from
+   * its own catalogue, and refuses one whose payment does not match to the
+   * cent. So a till still holding yesterday's price takes the wrong money and
+   * the sale is then rejected outright. The counter is never made to wait on
+   * the network for this: the cached menu keeps selling, and the grid is only
+   * redrawn if a price or an item's availability actually moved.
+   */
+  async refreshCatalogue() {
+    const fingerprint = async () => (await db.products.toArray())
+      .map((product) => `${product.id}:${product.sell_price}:${product.is_active}`)
+      .sort()
+      .join('|');
+
+    try {
+      const before = await fingerprint();
+      await pullCatalogue();
+      if (await fingerprint() === before) return;
+      // Nobody awaits this, so the till may have been left for another screen
+      // while the pull was in flight. Redrawing then writes into a grid that
+      // is no longer on the page.
+      if (!this.container.isConnected) return;
+      await this.loadProducts();
+      showNotification('Prices updated from the server.', 'success');
+    } catch {
+      // Offline, which is the case the local cache exists for.
+    }
   }
 
   render() {

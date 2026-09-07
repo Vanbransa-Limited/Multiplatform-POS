@@ -17,6 +17,14 @@ export class InventoryView {
   async load() {
     this.render();
     this.bindEvents();
+    // The ledger reads this device's cache while the customer menu is served
+    // from the server, so without pulling first this screen can show one price
+    // and the QR menu another - and this is the screen people trust.
+    try {
+      await pullCatalogue();
+    } catch {
+      showNotification('Showing this till\'s cached menu - the server catalogue could not be read.', 'warning');
+    }
     await this.loadSubTab();
   }
 

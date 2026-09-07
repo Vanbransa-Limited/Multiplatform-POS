@@ -172,13 +172,30 @@ async function wipeAllTables(reason) {
 // Seed the DB with mock data if empty
 export async function seedDatabase() {
   const dbVer = localStorage.getItem('db_seed_ver');
-  if (dbVer !== 'v4_bar_data') {
+  // v5 clears the demo bar off tills that were seeded with it before the
+  // catalogue moved to the server. wipeAllTables refuses while sales are still
+  // queued and the marker only advances on a wipe that happened, so a till with
+  // an undrained outbox keeps its data and tries again next boot.
+  if (dbVer !== 'v5_server_catalogue') {
     console.warn('New DB version required. Wiping old data...');
     // Only advance the marker if the wipe actually happened, otherwise the
     // next boot would skip the migration entirely.
     if (await wipeAllTables('seed version change')) {
-      localStorage.setItem('db_seed_ver', 'v4_bar_data');
+      localStorage.setItem('db_seed_ver', 'v5_server_catalogue');
     }
+  }
+
+  // A till with a backend takes its catalogue, staff and branches from the
+  // server. Seeding the demo bar on top of that puts products on the menu that
+  // no customer can order and that no sale can be booked against, because the
+  // server prices every sale from its own catalogue and has never heard of
+  // them. Only the walk-in customer is local, because the till needs somebody
+  // to sell to before it has talked to anyone.
+  const { firebaseConfigured } = await import('../services/firebase.js');
+  if (firebaseConfigured) {
+    const walkIn = SEED.customers.find((customer) => customer.id === 'cust-walkin');
+    if (walkIn && !(await db.customers.get('cust-walkin'))) await db.customers.put(walkIn);
+    return;
   }
 
   const tenantCount = await db.tenants.count();

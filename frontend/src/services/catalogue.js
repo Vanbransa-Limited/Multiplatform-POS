@@ -221,7 +221,13 @@ export async function pullIdentity() {
   if (rows.length) {
     await db.branches.bulkPut(rows);
     const current = rows.find((row) => row.id === state.currentBranch?.id);
-    if (current) state.currentBranch = { ...state.currentBranch, ...current };
+    if (current) {
+      state.currentBranch = { ...state.currentBranch, ...current };
+    } else if (!state.currentBranch) {
+      // A till that has never been seeded has no branch to match, and without
+      // one it cannot open a shift, so nothing it sells reaches the server.
+      state.currentBranch = rows.find((row) => row.is_active === 1) || rows[0];
+    }
   }
 
   return tenant.trading_name;

@@ -566,8 +566,13 @@ Past sales keep it. You can add it again later.`)) return;
               <div style="display:flex; align-items:center; gap: 12px; margin-top:4px;">
                 <img id="pe-image-preview" src="${escapeAttribute(prod.image_data)}" style="width: 60px; height: 60px; object-fit: cover; border-radius: 6px; background: rgba(0,0,0,0.2); display: ${prod.image_data ? 'block' : 'none'};">
                 <div id="pe-image-placeholder" style="width: 60px; height: 60px; border-radius: 6px; background: rgba(0,0,0,0.2); display: ${prod.image_data ? 'none' : 'flex'}; align-items:center; justify-content:center; color: var(--text-muted); font-size: 20px;">📷</div>
-                <input type="file" id="pe-image-upload" accept="image/*" style="display:none;">
-                <button class="sec-btn" id="pe-image-btn" style="padding: 6px 12px; font-size: 11px;">Upload Image</button>
+                <div style="flex:1;">
+                  <input type="text" id="pe-image-path" class="pe-input" value="${escapeAttribute(prod.image_data)}"
+                    placeholder="/ai_images/chapati_beans.jpg or https://...">
+                  <p style="font-size:11px;color:var(--text-secondary);margin:6px 0 0 0;line-height:1.5;">
+                    The path to a picture this site serves, or a link to one. This is what the customer menu shows.
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -582,52 +587,27 @@ Past sales keep it. You can add it again later.`)) return;
 
       document.getElementById('pe-cancel-btn').addEventListener('click', () => modal.remove());
       
-      let currentImageData = prod.image_data || null;
-
-      const uploadBtn = document.getElementById('pe-image-btn');
-      const fileInput = document.getElementById('pe-image-upload');
+      // The image is a path this site serves, not a file baked into the record.
+      // The old control read a photo into a data URL, showed it, and sent
+      // nothing: upsertProduct only accepts an https:// or /-relative path, so
+      // a pasted-in photo was dropped on arrival and the upload was theatre.
+      const pathInput = document.getElementById('pe-image-path');
       const previewImg = document.getElementById('pe-image-preview');
       const placeholder = document.getElementById('pe-image-placeholder');
 
-      uploadBtn.addEventListener('click', () => fileInput.click());
-
-      fileInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          // Scale down image to save space
-          const img = new Image();
-          img.onload = () => {
-            const canvas = document.createElement('canvas');
-            const MAX_SIZE = 400;
-            let width = img.width;
-            let height = img.height;
-
-            if (width > height && width > MAX_SIZE) {
-              height *= MAX_SIZE / width;
-              width = MAX_SIZE;
-            } else if (height > MAX_SIZE) {
-              width *= MAX_SIZE / height;
-              height = MAX_SIZE;
-            }
-
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0, width, height);
-            currentImageData = canvas.toDataURL('image/jpeg', 0.8);
-
-            previewImg.src = currentImageData;
-            previewImg.style.display = 'block';
-            placeholder.style.display = 'none';
-          };
-          img.src = ev.target.result;
-        };
-        reader.readAsDataURL(file);
+      const showPreview = () => {
+        const value = pathInput.value.trim();
+        previewImg.src = value;
+        previewImg.style.display = value ? 'block' : 'none';
+        placeholder.style.display = value ? 'none' : 'flex';
+      };
+      // A path that 404s would otherwise leave a broken frame on the form.
+      previewImg.addEventListener('error', () => {
+        previewImg.style.display = 'none';
+        placeholder.style.display = 'flex';
       });
-      
+      pathInput.addEventListener('input', showPreview);
+
       // A type nobody can create is a fixed list; the menu groups by these, so
       // a new section of the menu starts here.
       document.getElementById('pe-new-category').addEventListener('click', async () => {
@@ -674,6 +654,9 @@ Past sales keep it. You can add it again later.`)) return;
             isService,
             trackStock: !isService && document.getElementById('pe-counted').checked,
             showOnMenu: document.getElementById('pe-on-menu').checked,
+            // The field the customer menu actually reads. Without it the
+            // picture only ever existed in this device's cache.
+            imagePath: document.getElementById('pe-image-path').value.trim() || null,
           });
           await pullCatalogue();
           showNotification('Product saved to the catalogue.', 'success');

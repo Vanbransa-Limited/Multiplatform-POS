@@ -124,48 +124,78 @@ export class InventoryView {
     const money = (minor) => `KES ${(minor / 100).toFixed(2)}`;
 
     trigger.addEventListener('click', async () => {
-      note('Looking for duplicates...', 'var(--border-color)');
-      let preview;
+      note('Checking the catalogue...', 'var(--border-color)');
+      let dupes;
+      let ghosts;
       try {
-        preview = await callFunction('dedupeProducts', { dryRun: true });
+        // Two different messes: the same product listed twice, and the demo bar
+        // the tenant was provisioned with, which has no duplicate to match it
+        // and so survives every merge.
+        [dupes, ghosts] = await Promise.all([
+          callFunction('dedupeProducts', { dryRun: true }),
+          callFunction('retireSeedProducts', { dryRun: true }),
+        ]);
       } catch (error) {
-        note(`<b style="color:var(--accent-rose)">Could not check for duplicates.</b><br>${escapeHtml(error.message || error)}`, 'var(--accent-rose)');
+        note(`<b style="color:var(--accent-rose)">Could not check the catalogue.</b><br>${escapeHtml(error.message || error)}`, 'var(--accent-rose)');
         return;
       }
 
-      if (!preview.candidates) {
-        note('<b style="color:var(--accent-green)">No duplicates found.</b> Every product on the menu is listed once.', 'var(--border-color)');
+      const total = dupes.candidates + ghosts.candidates;
+      if (!total) {
+        note('<b style="color:var(--accent-green)">Nothing to clean up.</b> Every product is listed once, and no demo records are left.', 'var(--border-color)');
         return;
       }
 
-      const groups = (preview.groups || []).map((group) => `
-        <div style="margin:8px 0;padding-left:10px;border-left:2px solid var(--border-color);">
-          <div style="color:var(--accent-green);">Keep: <b>${escapeHtml(group.keep.name)}</b> - ${money(group.keep.sellPriceMinor)}</div>
-          ${group.retire.map((item) => `<div style="color:var(--text-muted);">Retire: ${escapeHtml(item.name)} - ${money(item.sellPriceMinor)}</div>`).join('')}
-        </div>`).join('');
+      const sections = [];
+      if (ghosts.candidates) {
+        sections.push(
+          `<b style="color:var(--accent-amber)">${ghosts.candidates} demo products left over from setup.</b><br>`
+            + '<span style="color:var(--text-muted)">Sample items written when the business was created. They are on the customer menu at their sample prices.</span>'
+            + `<div style="margin:8px 0;padding-left:10px;border-left:2px solid var(--border-color);color:var(--text-muted);">${
+              ghosts.names.map((name) => escapeHtml(name)).join('<br>')}</div>`
+        );
+      }
+      if (dupes.candidates) {
+        sections.push(
+          `<b style="color:var(--accent-amber)">${dupes.candidates} duplicate products.</b><br>`
+            + '<span style="color:var(--text-muted)">The dearest copy of each is kept, since the cheap one is usually the stale one. '
+            + 'Different sizes and containers are left alone.</span>'
+            + (dupes.groups || []).map((group) => `
+              <div style="margin:8px 0;padding-left:10px;border-left:2px solid var(--border-color);">
+                <div style="color:var(--accent-green);">Keep: <b>${escapeHtml(group.keep.name)}</b> - ${money(group.keep.sellPriceMinor)}</div>
+                ${group.retire.map((item) => `<div style="color:var(--text-muted);">Retire: ${escapeHtml(item.name)} - ${money(item.sellPriceMinor)}</div>`).join('')}
+              </div>`).join('')
+        );
+      }
 
       note(
-        `<b style="color:var(--accent-amber)">${preview.candidates} duplicate products found.</b><br>`
-          + '<span style="color:var(--text-muted)">The dearest copy of each is kept, since the cheap one is usually the stale one. '
-          + 'Different sizes and containers are left alone. Retiring takes the rest off the menu and the till; their sales history stays readable.</span>'
-          + groups
-          + `<button id="ledg-dedupe-go" class="primary-btn" style="margin-top:10px;">Retire these ${preview.candidates} duplicates</button>`,
+        sections.join('<br>')
+          + '<br><span style="color:var(--text-muted)">Retiring takes these off the customer menu and the till. Their sales history stays readable.</span><br>'
+          + `<button id="ledg-dedupe-go" class="primary-btn" style="margin-top:10px;">Clean up these ${total} products</button>`,
         'var(--accent-amber)'
       );
 
       document.getElementById('ledg-dedupe-go').addEventListener('click', async (event) => {
         const button = event.currentTarget;
         button.disabled = true;
-        button.textContent = 'Retiring...';
+        button.textContent = 'Cleaning up...';
         try {
-          const done = await callFunction('dedupeProducts', {});
+          // Demo records first: some of them are the cheap half of a duplicate,
+          // and clearing them leaves less for the merge to argue about.
+          const swept = await callFunction('retireSeedProducts', {});
+          const merged = await callFunction('dedupeProducts', {});
           await pullCatalogue();
-          showNotification(`${done.retired} duplicates retired.`, 'success');
-          note(`<b style="color:var(--accent-green)">${done.retired} duplicates retired.</b> The menu now lists each product once.`, 'var(--border-color)');
+          const done = swept.retired + merged.retired;
+          showNotification(`${done} products cleaned up.`, 'success');
+          note(
+            `<b style="color:var(--accent-green)">${done} products retired.</b> `
+              + `${swept.retired} demo records, ${merged.retired} duplicates. The menu now lists each product once.`,
+            'var(--border-color)'
+          );
           this.ledgerPage = 1;
           await this.renderLedger(pane);
         } catch (error) {
-          showNotification(error.message || 'Could not retire the duplicates.', 'error');
+          showNotification(error.message || 'Could not clean up the catalogue.', 'error');
           button.disabled = false;
           button.textContent = 'Retry';
         }
@@ -411,7 +441,7 @@ export class InventoryView {
         ${this.canEditCatalogue ? `
         <button class="primary-btn" id="ledg-add-prod-btn">Add Product</button>
         <button class="sec-btn" id="ledg-import-btn">📥 Import CSV / Excel</button>
-        <button class="sec-btn" id="ledg-dedupe-btn">🧹 Find duplicates</button>
+        <button class="sec-btn" id="ledg-dedupe-btn">🧹 Clean up catalogue</button>
         <button class="sec-btn" id="ledg-adjust-btn">Manual Adjustment</button>` : `
         <span class="muted" style="font-size:12px;">Viewing only — an owner or store manager changes the catalogue.</span>`}
         <input type="file" id="ledg-import-file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none;">

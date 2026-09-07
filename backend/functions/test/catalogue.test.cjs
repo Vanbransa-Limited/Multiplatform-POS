@@ -2,11 +2,19 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { importProducts, retireMissingProducts, dedupeProducts, priceCell, matchKey } = require('../lib/modules/catalogue');
 const { productKey } = require('../lib/modules/catalogue/product-key');
+const { retireSeedProducts } = require('../lib/modules/catalogue');
+const { isSeedProduct } = require('../lib/modules/catalogue/seed-products');
 const { db } = require('../lib/lib/firebase');
 
 /** Minimal in-memory Firestore covering the batch and query this module uses. */
 function harness(docs) {
-  const original = { collection: db.collection, batch: db.batch };
+  const original = { collection: db.collection, batch: db.batch, getAll: db.getAll };
+  db.getAll = async (...refs) => refs.map((ref) => ({
+    id: ref.id,
+    ref,
+    exists: docs.has(ref.path),
+    data: () => docs.get(ref.path),
+  }));
   db.collection = (name) => ({
     doc: (id = `auto-${docs.size}`) => ({ id, path: `${name}/${id}` }),
     add: async (data) => { docs.set(`${name}/auto-${docs.size}`, data); },
@@ -28,7 +36,11 @@ function harness(docs) {
       commit: async () => writes.forEach(([path, data]) => docs.set(path, data)),
     };
   };
-  return () => { db.collection = original.collection; db.batch = original.batch; };
+  return () => {
+    db.collection = original.collection;
+    db.batch = original.batch;
+    db.getAll = original.getAll;
+  };
 }
 
 const owner = { token: { tenant_id: 't1', staff_id: 's1', staff_role: 'owner' } };
@@ -386,6 +398,89 @@ test('an already retired copy is not counted again', async () => {
     put(docs, 'keep', 'SNAPP CAN 330ML', 35000);
     put(docs, 'gone', 'SNAPP DRY CIDER CAN 330ML', 30000, { isActive: false, showOnMenu: false });
     assert.equal((await dedupe()).retired, 0);
+  } finally {
+    restore();
+  }
+});
+
+const sweep = (data = {}) => retireSeedProducts.run({ auth: owner, data });
+
+test('a demo record is recognised by its id and sku together', () => {
+  assert.equal(isSeedProduct('prod-whitecap', { sku: 'BAR-BEE-03' }), true);
+  // Same id, but the tenant reused it for something of their own.
+  assert.equal(isSeedProduct('prod-whitecap', { sku: 'WC-500-CAN' }), false);
+  // An import covered it, so it is part of the real menu now.
+  assert.equal(isSeedProduct('prod-whitecap', { sku: 'BAR-BEE-03', lastImportBatch: 'b1' }), false);
+  // Service charges are never demo ghosts, whatever their id.
+  assert.equal(isSeedProduct('prod-table-service', { sku: 'SRV-TBL-01' }), false);
+  assert.equal(isSeedProduct('some-real-product', { sku: 'BAR-BEE-03' }), false);
+});
+
+test('the demo bar is swept off a live catalogue, service charges left standing', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    // The ghost from the customer menu, with no duplicate to match it.
+    docs.set('products/prod-whitecap', {
+      id: 'prod-whitecap', tenantId: 't1', sku: 'BAR-BEE-03',
+      name: 'White Cap Lager 500ml', sellPriceMinor: 25000, isActive: true, isService: false,
+    });
+    docs.set('products/prod-coca-cola', {
+      id: 'prod-coca-cola', tenantId: 't1', sku: 'BAR-SFT-01',
+      name: 'Coca-Cola 300ml', sellPriceMinor: 10000, isActive: true, isService: false,
+    });
+    docs.set('products/prod-table-service', {
+      id: 'prod-table-service', tenantId: 't1', sku: 'SRV-TBL-01',
+      name: 'VIP Service Charge', sellPriceMinor: 10000, isActive: true, isService: true,
+    });
+    // A real product of theirs that happens to sit on a seed id.
+    docs.set('products/prod-water', {
+      id: 'prod-water', tenantId: 't1', sku: 'THEIR-OWN-SKU',
+      name: 'KERINGET 1L', sellPriceMinor: 25000, isActive: true, isService: false,
+    });
+
+    const preview = await sweep({ dryRun: true });
+    assert.equal(preview.candidates, 2);
+    assert.deepEqual(preview.names.sort(), ['Coca-Cola 300ml', 'White Cap Lager 500ml']);
+    assert.equal(find(docs, 'White Cap Lager 500ml').isActive, true, 'a dry run must not write');
+
+    const done = await sweep();
+    assert.equal(done.retired, 2);
+    assert.equal(find(docs, 'White Cap Lager 500ml').isActive, false);
+    assert.equal(find(docs, 'White Cap Lager 500ml').showOnMenu, false);
+    assert.equal(find(docs, 'Coca-Cola 300ml').isActive, false);
+    assert.equal(find(docs, 'VIP Service Charge').isActive, true, 'the till toggles this by id');
+    assert.equal(find(docs, 'KERINGET 1L').isActive, true, 'their own product on a seed id must survive');
+  } finally {
+    restore();
+  }
+});
+
+test('sweeping twice retires nothing the second time', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    docs.set('products/prod-fanta', {
+      id: 'prod-fanta', tenantId: 't1', sku: 'BAR-SFT-02',
+      name: 'Fanta Orange 300ml', sellPriceMinor: 10000, isActive: true, isService: false,
+    });
+    assert.equal((await sweep()).retired, 1);
+    assert.equal((await sweep()).retired, 0);
+  } finally {
+    restore();
+  }
+});
+
+test('another tenant demo record is never touched', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    docs.set('products/prod-guinness', {
+      id: 'prod-guinness', tenantId: 'someone-else', sku: 'BAR-BEE-02',
+      name: 'Guinness Foreign Extra 500ml', sellPriceMinor: 28000, isActive: true, isService: false,
+    });
+    assert.equal((await sweep()).retired, 0);
+    assert.equal(find(docs, 'Guinness Foreign Extra 500ml').isActive, true);
   } finally {
     restore();
   }

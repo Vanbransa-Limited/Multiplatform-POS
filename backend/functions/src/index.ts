@@ -11,7 +11,7 @@ export {
   mpesaC2bConfirmation,
   mpesaC2bValidation,
 } from "./modules/mpesa/c2b";
-export { importProducts, upsertProduct, upsertCategory, retireProduct, retireMissingProducts, dedupeProducts } from "./modules/catalogue";
+export { importProducts, upsertProduct, upsertCategory, retireProduct, retireMissingProducts, dedupeProducts, retireSeedProducts } from "./modules/catalogue";
 export { createSale } from "./modules/sales";
 export {
   createStaffUser,

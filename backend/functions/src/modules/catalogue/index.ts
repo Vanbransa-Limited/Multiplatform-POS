@@ -20,6 +20,7 @@ import { deterministicId } from "../../shared/identifiers";
 import { ADMIN_ROLES } from "../../shared/roles";
 import { asRecord, documentId } from "../../shared/validation";
 import { productKey, stripDates } from "./product-key";
+import { SEED_PRODUCTS, isSeedProduct } from "./seed-products";
 import { TAX_BASIS_POINTS } from "../sales/constants";
 
 /**
@@ -701,5 +702,73 @@ export const dedupeProducts = onCall(
     });
 
     return { retired: ids.length, candidates: ids.length, groups: duplicates.slice(0, 100) };
+  },
+);
+
+/**
+ * Clears the demo products a tenant was provisioned with off a live catalogue.
+ *
+ * These reach the customer menu at their seeded prices - a White Cap at 250
+ * beside nothing, because no import ever mentioned them and no duplicate ever
+ * matched them. Nothing else removes them.
+ *
+ * Only records still carrying their seeded id and sku are touched, so a tenant
+ * who repurposed one keeps it, and the service charges are never in scope.
+ */
+export const retireSeedProducts = onCall(
+  { region: FUNCTION_REGION, timeoutSeconds: 120 },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Sign in first.");
+    const claims = request.auth.token;
+    const tenantId = typeof claims.tenant_id === "string" ? claims.tenant_id : null;
+    const staffId = typeof claims.staff_id === "string" ? claims.staff_id : null;
+    const role = typeof claims.staff_role === "string" ? claims.staff_role : "";
+    if (!tenantId || !staffId) {
+      throw new HttpsError("permission-denied", "This session carries no staff claims.");
+    }
+    if (!ADMIN_ROLES.has(role)) {
+      throw new HttpsError("permission-denied", "Only an owner or store manager can remove the demo products.");
+    }
+
+    const input = asRecord(request.data, "Request data");
+    const dryRun = input.dryRun === true;
+
+    const refs = [...SEED_PRODUCTS.keys()].map((id) => db.collection("products").doc(id));
+    const docs = await db.getAll(...refs);
+
+    const ghosts = docs.filter((doc) => {
+      const data = doc.data();
+      if (!doc.exists || !data || data.tenantId !== tenantId) return false;
+      if (data.isActive === false && data.showOnMenu === false) return false;
+      return isSeedProduct(doc.id, data);
+    });
+
+    const names = ghosts.map((doc) => String(doc.data()?.name ?? doc.id));
+    if (dryRun) return { retired: 0, candidates: ghosts.length, names };
+
+    if (ghosts.length) {
+      const batch = db.batch();
+      for (const doc of ghosts) {
+        batch.set(
+          doc.ref,
+          { isActive: false, showOnMenu: false, retiredAt: Timestamp.now() },
+          { merge: true },
+        );
+      }
+      await batch.commit();
+
+      await db.collection("audit_logs").add({
+        tenantId,
+        branchId: null,
+        actorStaffId: staffId,
+        action: "catalogue.demo_products_retired",
+        entityType: "product",
+        entityId: null,
+        metadata: { retired: ghosts.length, names },
+        createdAt: Timestamp.now(),
+      });
+    }
+
+    return { retired: ghosts.length, candidates: ghosts.length, names };
   },
 );

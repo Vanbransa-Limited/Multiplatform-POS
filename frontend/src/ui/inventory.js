@@ -127,7 +127,7 @@ export class InventoryView {
       // Each one commits on its own: a failure part way through keeps whatever
       // already landed, and re-running the file is an upsert either way.
       const CHUNK = 500;
-      const totals = { imported: 0, unpriced: [], rejected: [] };
+      const totals = { imported: 0, created: 0, updated: 0, repriced: [], unpriced: [], rejected: [] };
       let failure = null;
 
       for (let start = 0; start < rows.length; start += CHUNK) {
@@ -141,6 +141,9 @@ export class InventoryView {
         try {
           const result = await callFunction('importProducts', { rows: chunk });
           totals.imported += result.imported;
+          totals.created += result.created || 0;
+          totals.updated += result.updated || 0;
+          for (const change of (result.repriced || [])) totals.repriced.push(change);
           // Row numbers come back relative to the chunk; restate them against
           // the file the person is actually looking at.
           for (const issue of result.unpriced) totals.unpriced.push({ ...issue, row: issue.row + start });
@@ -151,11 +154,26 @@ export class InventoryView {
         }
       }
 
+      const money = (minor) => `KES ${(minor / 100).toFixed(2)}`;
       const lines = [
         `<b style="color:${totals.imported ? 'var(--accent-green)' : 'var(--accent-rose)'}">`
-          + `Imported ${totals.imported} of ${rows.length} products.</b>`,
+          + `Imported ${totals.imported} of ${rows.length} products`
+          + ` &mdash; ${totals.updated} updated, ${totals.created} new.</b>`,
         `<span style="color:var(--text-muted)">${columns}</span>`
       ];
+
+      // The point of re-importing a sheet is usually the prices, so say which
+      // ones actually moved rather than only that the file went through.
+      if (totals.repriced.length) {
+        lines.push(
+          `<b style="color:var(--accent-cyan)">${totals.repriced.length} price${totals.repriced.length === 1 ? '' : 's'} changed:</b><br>`
+            + totals.repriced.slice(0, 15).map((change) =>
+              `${change.name}: ${money(change.fromMinor)} &rarr; <b>${money(change.toMinor)}</b>`).join('<br>')
+            + (totals.repriced.length > 15 ? `<br>and ${totals.repriced.length - 15} more` : '')
+        );
+      } else if (totals.updated) {
+        lines.push('<span style="color:var(--text-muted)">No prices changed - the sheet matched what is already on the till.</span>');
+      }
 
       if (failure) {
         lines.push(`<b style="color:var(--accent-rose)">Stopped early:</b> ${failure}. Anything already imported was kept - re-run the file to continue.`);

@@ -35,6 +35,21 @@ export interface ImportIssue {
   message: string;
 }
 
+/** A price the sheet actually moved, so the report can show the change. */
+export interface PriceChange {
+  sku: string;
+  name: string;
+  fromMinor: number;
+  toMinor: number;
+}
+
+interface ExistingProduct {
+  id: string;
+  sellPriceMinor: number;
+  costPriceMinor: number;
+  taxCode: string;
+}
+
 function text(value: unknown, fallback = ""): string {
   if (typeof value === "number") return String(value);
   if (typeof value !== "string") return fallback;
@@ -57,6 +72,24 @@ export function priceToMinor(value: unknown): number | null {
 
   const minor = Math.round(parsed * 100);
   return Number.isSafeInteger(minor) ? minor : null;
+}
+
+/**
+ * A price cell, keeping "the sheet said nothing" apart from "the sheet said 0".
+ *
+ * An import re-run to change prices carries a column that is only filled in for
+ * the items being changed. Reading a blank cell as zero would wipe the price of
+ * every product the sheet did not mention and take it off sale.
+ */
+export function priceCell(value: unknown): number | null | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "string" && value.trim() === "") return undefined;
+  return priceToMinor(value);
+}
+
+/** Products are matched across sheets on this, so spacing and case cannot fork one item into two. */
+export function matchKey(value: string): string {
+  return value.trim().toUpperCase().replace(/\s+/g, " ");
 }
 
 export const importProducts = onCall(
@@ -86,11 +119,40 @@ export const importProducts = onCall(
       );
     }
 
+    // What the tenant already sells, so a second sheet updates those products
+    // instead of standing up a parallel set beside them. Matched on SKU first
+    // and on name second, because plenty of menus carry no product codes.
+    const existingSnap = await db
+      .collection("products")
+      .where("tenantId", "==", tenantId)
+      .get();
+    const bySku = new Map<string, ExistingProduct>();
+    const byName = new Map<string, ExistingProduct>();
+    existingSnap.docs.forEach((doc) => {
+      const data = doc.data() ?? {};
+      const found: ExistingProduct = {
+        id: doc.id,
+        sellPriceMinor: typeof data.sellPriceMinor === "number" ? data.sellPriceMinor : 0,
+        costPriceMinor: typeof data.costPriceMinor === "number" ? data.costPriceMinor : 0,
+        taxCode: typeof data.taxCode === "string" ? data.taxCode.toUpperCase() : "",
+      };
+      const sku = typeof data.sku === "string" ? matchKey(data.sku) : "";
+      const name = typeof data.name === "string" ? matchKey(data.name) : "";
+      // First writer wins: a catalogue with two products under one name keeps
+      // pointing at the same one rather than alternating between them.
+      if (sku && !bySku.has(sku)) bySku.set(sku, found);
+      if (name && !byName.has(name)) byName.set(name, found);
+    });
+
     const rejected: ImportIssue[] = [];
     const unpriced: ImportIssue[] = [];
+    const repriced: PriceChange[] = [];
     const batch = db.batch();
     const seen = new Set<string>();
+    const claimed = new Set<string>();
     let imported = 0;
+    let created = 0;
+    let updated = 0;
 
     rows.forEach((raw, index) => {
       // Row 1 is the header in the file the person is looking at.
@@ -112,25 +174,54 @@ export const importProducts = onCall(
         return;
       }
 
-      const taxCode = text(row.taxCode, "A").toUpperCase();
+      const sellCell = priceCell(row.sellPrice);
+      const costCell = priceCell(row.costPrice);
+      if (sellCell === null || costCell === null) {
+        rejected.push({ row: line, sku, message: "Price is not a number." });
+        return;
+      }
+
+      const existing = bySku.get(matchKey(sku)) ?? byName.get(matchKey(name));
+
+      // A sheet with no tax column must not move an 8% or exempt item onto the
+      // standard rate. Only a new product falls back to A.
+      const taxCode = text(row.taxCode).toUpperCase() || existing?.taxCode || "A";
       if (!Object.prototype.hasOwnProperty.call(TAX_BASIS_POINTS, taxCode)) {
         rejected.push({ row: line, sku, message: `Unknown tax code "${taxCode}".` });
         return;
       }
 
-      const sellPriceMinor = priceToMinor(row.sellPrice);
-      const costPriceMinor = priceToMinor(row.costPrice);
-      if (sellPriceMinor === null || costPriceMinor === null) {
-        rejected.push({ row: line, sku, message: "Price is not a number." });
-        return;
-      }
+      // A blank price keeps whatever the product already sells for; on a new
+      // product there is nothing to keep, so it comes in unpriced.
+      const sellPriceMinor = sellCell ?? existing?.sellPriceMinor ?? 0;
+      const costPriceMinor = costCell ?? existing?.costPriceMinor ?? 0;
 
       if (sellPriceMinor === 0) {
         unpriced.push({ row: line, sku, message: `${name} imported with no price.` });
       }
+      if (existing && sellPriceMinor !== existing.sellPriceMinor) {
+        repriced.push({
+          sku,
+          name,
+          fromMinor: existing.sellPriceMinor,
+          toMinor: sellPriceMinor,
+        });
+      }
 
       seen.add(sku);
-      const id = deterministicId("product", `${tenantId}:${sku}`);
+      const id = existing?.id ?? deterministicId("product", `${tenantId}:${sku}`);
+      if (claimed.has(id)) {
+        rejected.push({
+          row: line,
+          sku,
+          message: `Another row in this file already updates "${name}".`,
+        });
+        return;
+      }
+      claimed.add(id);
+
+      const category = text(row.categoryId);
+      const uom = text(row.uom);
       batch.set(
         db.collection("products").doc(id),
         {
@@ -138,8 +229,6 @@ export const importProducts = onCall(
           tenantId,
           sku,
           name,
-          categoryId: text(row.categoryId) || null,
-          uom: text(row.uom, "EACH"),
           sellPriceMinor,
           costPriceMinor,
           taxCode,
@@ -147,10 +236,17 @@ export const importProducts = onCall(
           // Unpriced items exist but cannot be sold until someone prices them.
           isActive: sellPriceMinor > 0,
           updatedAt: Timestamp.now(),
+          // Columns the sheet left out are not written at all, so a file
+          // carrying only names and new prices cannot strip a product of its
+          // category or unit on the way past.
+          ...(category || !existing ? { categoryId: category || null } : {}),
+          ...(uom || !existing ? { uom: uom || "EACH" } : {}),
         },
         { merge: true },
       );
       imported += 1;
+      if (existing) updated += 1;
+      else created += 1;
     });
 
     // A chunk where every row is unusable is reported, not thrown: the caller
@@ -164,11 +260,18 @@ export const importProducts = onCall(
       action: "catalogue.imported",
       entityType: "product",
       entityId: null,
-      metadata: { imported, unpriced: unpriced.length, rejected: rejected.length },
+      metadata: {
+        imported,
+        created,
+        updated,
+        repriced: repriced.length,
+        unpriced: unpriced.length,
+        rejected: rejected.length,
+      },
       createdAt: Timestamp.now(),
     });
 
-    return { imported, unpriced, rejected };
+    return { imported, created, updated, repriced, unpriced, rejected };
   },
 );
 

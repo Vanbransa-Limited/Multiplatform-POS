@@ -27,6 +27,24 @@ export const firebaseConfigured = Boolean(cfg.apiKey && cfg.projectId && cfg.app
 let bootPromise = null;
 
 /**
+ * Whether this page is being served from the machine running the emulators.
+ *
+ * The emulator flag is a build-time value, so a build made with it left on
+ * shipped a till that pointed its sign-in at 127.0.0.1 and could only answer
+ * `auth/network-request-failed`. A deployed till is never the emulator host, so
+ * the origin decides this and the flag alone cannot take the counter down.
+ */
+export function servedLocally(hostname) {
+  const host = hostname
+    ?? (typeof window === 'undefined' ? '' : window.location.hostname);
+  return host === 'localhost'
+    || host === '127.0.0.1'
+    || host === '[::1]'
+    || host === '::1'
+    || host.endsWith('.localhost');
+}
+
+/**
  * Loads the Firebase SDK on first use. Kept as a dynamic import so a till with
  * no Firebase config never pays the bundle cost.
  */
@@ -43,7 +61,7 @@ async function boot() {
   const dbInstance = firestore.getFirestore(app);
   const fnInstance = functions.getFunctions(app, REGION);
 
-  if (process.env.NEXT_PUBLIC_USE_EMULATORS === '1') {
+  if (process.env.NEXT_PUBLIC_USE_EMULATORS === '1' && servedLocally()) {
     auth.connectAuthEmulator(authInstance, 'http://127.0.0.1:9099', { disableWarnings: true });
     firestore.connectFirestoreEmulator(dbInstance, '127.0.0.1', 8080);
     functions.connectFunctionsEmulator(fnInstance, '127.0.0.1', 5001);

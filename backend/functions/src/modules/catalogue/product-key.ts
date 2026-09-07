@@ -48,11 +48,13 @@ export function sizeToMl(text: string): number | null {
 export function productKey(rawName: unknown): string {
   const name = stripDates(rawName).toUpperCase();
   const size = sizeToMl(name);
-  const container = CONTAINERS.find((c) => new RegExp(`\\b${c}\\b`).test(name)) ?? "";
+  // Plural or not, it is the same container: the catalogue carries both
+  // "TUSKER LAGER CAN 500ML" and "TUSKER LAGER CANS 500ML" at the same price.
+  const container = CONTAINERS.find((c) => new RegExp(`\\b${c}S?\\b`).test(name)) ?? "";
 
   const brand = name
     .replace(/\d+(?:\.\d+)?\s*(?:ML|CL|L|LT|LTR|LITERS?|LITRES?)\b/g, " ")
-    .replace(new RegExp(`\\b(?:${CONTAINERS.join("|")})\\b`, "g"), " ")
+    .replace(new RegExp(`\\b(?:${CONTAINERS.join("|")})S?\\b`, "g"), " ")
     .split(/[^A-Z0-9]+/)
     .filter((word) => word && !FILLER.has(word))
     .join("");

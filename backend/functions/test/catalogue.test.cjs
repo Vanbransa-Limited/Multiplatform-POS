@@ -320,6 +320,13 @@ test('one product written many ways lands on one key', () => {
   assert.notEqual(productKey('TUSKER'), productKey('TUSKER LITE'));
   // A litre is a litre however it was typed.
   assert.equal(productKey('KERINGET 1L'), productKey('KERINGET 1000ML'));
+  // Plural or not, it is the same container.
+  assert.equal(productKey('TUSKER LAGER CAN 500ML'), productKey('TUSKER LAGER CANS 500ML'));
+  assert.equal(productKey('TUSKER CIDER CAN 500ML'), productKey('TUSKER CIDER CANS 500ML'));
+  assert.equal(productKey('SMIRNOFF BOTTLE 300ML'), productKey('SMIRNOFF BOTTLES 300ML'));
+  // But a can is still not a bottle, and 330ml is still not 500ml.
+  assert.notEqual(productKey('TUSKER LAGER CANS 500ML'), productKey('TUSKER LAGER BOTTLE 500ML'));
+  assert.notEqual(productKey('TUSKER LAGER CANS 500ML'), productKey('TUSKER LAGER CAN 330ML'));
 });
 
 test('the dearer copy survives and the stale cheap one is retired', async () => {

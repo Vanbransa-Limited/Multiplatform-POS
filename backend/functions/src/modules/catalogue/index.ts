@@ -21,6 +21,7 @@ import { ADMIN_ROLES } from "../../shared/roles";
 import { asRecord, documentId } from "../../shared/validation";
 import { productKey, stripDates } from "./product-key";
 import { SEED_PRODUCTS, isSeedProduct } from "./seed-products";
+import { imageForName } from "./product-images";
 import { TAX_BASIS_POINTS } from "../sales/constants";
 
 /**
@@ -50,6 +51,7 @@ interface ExistingProduct {
   sellPriceMinor: number;
   costPriceMinor: number;
   taxCode: string;
+  imagePath: string;
 }
 
 function text(value: unknown, fallback = ""): string {
@@ -142,6 +144,7 @@ export const importProducts = onCall(
         sellPriceMinor: typeof data.sellPriceMinor === "number" ? data.sellPriceMinor : 0,
         costPriceMinor: typeof data.costPriceMinor === "number" ? data.costPriceMinor : 0,
         taxCode: typeof data.taxCode === "string" ? data.taxCode.toUpperCase() : "",
+        imagePath: typeof data.imagePath === "string" ? data.imagePath : "",
       };
       const sku = typeof data.sku === "string" ? matchKey(data.sku) : "";
       const name = typeof data.name === "string" ? matchKey(data.name) : "";
@@ -160,6 +163,7 @@ export const importProducts = onCall(
     let imported = 0;
     let created = 0;
     let updated = 0;
+    let illustrated = 0;
 
     rows.forEach((raw, index) => {
       // Row 1 is the header in the file the person is looking at.
@@ -229,6 +233,14 @@ export const importProducts = onCall(
 
       const category = text(row.categoryId);
       const uom = text(row.uom);
+      // A picture is only ever filled in, never replaced: a product someone
+      // chose an image for keeps it, and a sheet that carries its own wins over
+      // the name rules.
+      const imagePath = text(row.imagePath) || text(row.image)
+        || existing?.imagePath
+        || imageForName(name)
+        || "";
+      if (imagePath && imagePath !== existing?.imagePath) illustrated += 1;
       batch.set(
         db.collection("products").doc(id),
         {
@@ -249,6 +261,7 @@ export const importProducts = onCall(
           // category or unit on the way past.
           ...(category || !existing ? { categoryId: category || null } : {}),
           ...(uom || !existing ? { uom: uom || "EACH" } : {}),
+          ...(imagePath ? { imagePath } : {}),
         },
         { merge: true },
       );
@@ -272,6 +285,7 @@ export const importProducts = onCall(
         imported,
         created,
         updated,
+        illustrated,
         repriced: repriced.length,
         unpriced: unpriced.length,
         rejected: rejected.length,
@@ -279,7 +293,7 @@ export const importProducts = onCall(
       createdAt: Timestamp.now(),
     });
 
-    return { imported, created, updated, repriced, unpriced, rejected };
+    return { imported, created, updated, illustrated, repriced, unpriced, rejected };
   },
 );
 

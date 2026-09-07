@@ -492,3 +492,74 @@ test('another tenant demo record is never touched', async () => {
     restore();
   }
 });
+
+const { imageForName, IMAGE_RULES } = require('../lib/modules/catalogue/product-images');
+
+test('the specific rule wins over the general one', () => {
+  // These sat in one list where order was the only thing separating them.
+  assert.equal(imageForName('JAMESON 750ML'), '/ai_images/jameson_bottle.jpg');
+  assert.equal(imageForName('JACK DANIELS 750ML'), '/ai_images/whiskey_glass.jpg');
+  assert.equal(imageForName('JOHNNIE WALKER BLACK LABEL'), '/ai_images/johnnie_walker.jpg');
+  assert.equal(imageForName('WILLIAM LAWSON 1L'), '/ai_images/william_lawson.jpg');
+  assert.equal(imageForName('CHAPATI & BEANS'), '/ai_images/chapati_beans.jpg');
+  assert.equal(imageForName('TUSKER LAGER CAN 500ML'), '/ai_images/tusker_lager.jpg');
+});
+
+test('an exclusion keeps a rule off something it only looks like', () => {
+  assert.equal(imageForName('WATERMELON JUICE'), '/ai_images/fresh_juice.jpg');
+  assert.equal(imageForName('TONIC WATER'), null);
+  assert.equal(imageForName('COFFEE BEANS'), null);
+  assert.equal(imageForName('GINGER ALE'), null);
+});
+
+test('a product no rule claims gets no picture rather than a wrong one', () => {
+  // The rules read the name and nothing else, so a spirit sold under a brand
+  // alone - most of the whisky shelf - matches nothing and stays blank. Blank
+  // is the right answer; a wrong picture is worse than none.
+  assert.equal(imageForName('AMRUT FUSION 700ML'), null);
+  assert.equal(imageForName('ABERLOUR 10YRS'), null);
+  assert.equal(imageForName('TAKE AWAY CONTAINER'), null);
+  assert.equal(imageForName(''), null);
+  assert.equal(imageForName(undefined), null);
+});
+
+test('every rule points at an image that ships', () => {
+  const { existsSync } = require('node:fs');
+  const path = require('node:path');
+  const root = path.resolve(__dirname, '../../../frontend/public');
+  for (const rule of IMAGE_RULES) {
+    assert.ok(existsSync(path.join(root, rule.path)), `missing image file: ${rule.path}`);
+  }
+});
+
+test('an import gives a product its picture, and never replaces a chosen one', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    const first = await run([{ sku: 'W-1', name: 'JAMESON 750ML', sellPrice: '6500' }]);
+    assert.equal(first.illustrated, 1);
+    assert.equal(find(docs, 'JAMESON 750ML').imagePath, '/ai_images/jameson_bottle.jpg');
+
+    // Somebody then picks a different picture by hand.
+    docs.set('products/' + find(docs, 'JAMESON 750ML').id,
+      { ...find(docs, 'JAMESON 750ML'), imagePath: '/ai_images/their_own.jpg' });
+
+    await run([{ sku: 'W-1', name: 'JAMESON 750ML', sellPrice: '6800' }]);
+    assert.equal(find(docs, 'JAMESON 750ML').imagePath, '/ai_images/their_own.jpg',
+      'a re-import must not undo a picture someone chose');
+    assert.equal(find(docs, 'JAMESON 750ML').sellPriceMinor, 680000);
+  } finally {
+    restore();
+  }
+});
+
+test('a sheet carrying its own image column beats the name rules', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    await run([{ sku: 'T-1', name: 'TUSKER LAGER 500ML', sellPrice: '400', image: '/ai_images/beer_glass.jpg' }]);
+    assert.equal(find(docs, 'TUSKER LAGER 500ML').imagePath, '/ai_images/beer_glass.jpg');
+  } finally {
+    restore();
+  }
+});

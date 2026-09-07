@@ -172,7 +172,7 @@ export class InventoryView {
       // Each one commits on its own: a failure part way through keeps whatever
       // already landed, and re-running the file is an upsert either way.
       const CHUNK = 500;
-      const totals = { imported: 0, created: 0, updated: 0, repriced: [], unpriced: [], rejected: [] };
+      const totals = { imported: 0, created: 0, updated: 0, illustrated: 0, repriced: [], unpriced: [], rejected: [] };
       let failure = null;
       // Stamped on everything this file writes, so afterwards the server can
       // tell the menu this sheet describes from whatever else is sitting there.
@@ -191,6 +191,7 @@ export class InventoryView {
           totals.imported += result.imported;
           totals.created += result.created || 0;
           totals.updated += result.updated || 0;
+          totals.illustrated += result.illustrated || 0;
           for (const change of (result.repriced || [])) totals.repriced.push(change);
           // Row numbers come back relative to the chunk; restate them against
           // the file the person is actually looking at.
@@ -210,6 +211,13 @@ export class InventoryView {
         `<span style="color:var(--text-muted)">${columns}</span>`,
         ...warnings
       ];
+
+      if (totals.illustrated) {
+        lines.push(
+          `<span style="color:var(--text-muted)">${totals.illustrated} products were given a picture from their name. `
+            + 'The rest show a placeholder until one is set on the product.</span>'
+        );
+      }
 
       // Every row landing as new, on a till that already has a menu, means the
       // sheet is not lining up with what is here rather than that the menu is

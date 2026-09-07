@@ -19,6 +19,7 @@ import { db } from "../../lib/firebase";
 import { deterministicId } from "../../shared/identifiers";
 import { ADMIN_ROLES } from "../../shared/roles";
 import { asRecord, documentId } from "../../shared/validation";
+import { productKey, stripDates } from "./product-key";
 import { TAX_BASIS_POINTS } from "../sales/constants";
 
 /**
@@ -541,5 +542,164 @@ export const retireMissingProducts = onCall(
     });
 
     return { retired: stale.length, candidates: stale.length, names: names.slice(0, 50) };
+  },
+);
+
+interface DuplicateGroup {
+  key: string;
+  keep: { id: string; name: string; sellPriceMinor: number };
+  retire: { id: string; name: string; sellPriceMinor: number }[];
+}
+
+/**
+ * Finds the same product listed more than once and keeps the dearer copy.
+ *
+ * A catalogue loaded from a stock export, loaded again after a tidy-up, and
+ * provisioned with demo products on top of that ends up offering one beer four
+ * ways at two prices. The customer menu shows all of them.
+ *
+ * The survivor is the highest priced, because the cheap copy is almost always
+ * the stale one: the demo product at its seeded price, or a row from before the
+ * last increase. Where the price ties, the fuller name wins, since "WHITECAP
+ * LAGER 500ML CAN" says more than "WHITE CAP".
+ *
+ * Different sizes and different containers are different products and are never
+ * merged - a 500ml can at 400 and a 500ml bottle at 350 both survive.
+ */
+export const dedupeProducts = onCall(
+  { region: FUNCTION_REGION, timeoutSeconds: 300 },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Sign in first.");
+    const claims = request.auth.token;
+    const tenantId = typeof claims.tenant_id === "string" ? claims.tenant_id : null;
+    const staffId = typeof claims.staff_id === "string" ? claims.staff_id : null;
+    const role = typeof claims.staff_role === "string" ? claims.staff_role : "";
+    if (!tenantId || !staffId) {
+      throw new HttpsError("permission-denied", "This session carries no staff claims.");
+    }
+    if (!ADMIN_ROLES.has(role)) {
+      throw new HttpsError("permission-denied", "Only an owner or store manager can merge duplicates.");
+    }
+
+    const input = asRecord(request.data, "Request data");
+    const dryRun = input.dryRun === true;
+
+    const snapshot = await db
+      .collection("products")
+      .where("tenantId", "==", tenantId)
+      .get();
+
+    const groups = new Map<string, { id: string; name: string; sellPriceMinor: number }[]>();
+    for (const doc of snapshot.docs) {
+      const data = doc.data() ?? {};
+      // Already retired, or a service charge the till toggles by id.
+      if (data.isActive === false && data.showOnMenu === false) continue;
+      if (data.isService === true) continue;
+
+      const name = String(data.name ?? doc.id);
+      const key = productKey(name);
+      // A product with no usable name at all is left well alone.
+      if (key === "||") continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push({
+        id: doc.id,
+        name,
+        sellPriceMinor: typeof data.sellPriceMinor === "number" ? data.sellPriceMinor : 0,
+      });
+    }
+
+    // A row that never said its size or container is not a different product,
+    // it is the same one written short: "White Cap Lager 500ml" beside
+    // "WHITECAP LAGER 500ML CAN". Fold those into the fuller entry, most
+    // specific first, so the vaguest joins what is left rather than being
+    // stranded between several halves of itself.
+    const byBrand = new Map<string, string[]>();
+    for (const key of groups.keys()) {
+      const brand = key.split("|")[0];
+      if (!byBrand.has(brand)) byBrand.set(brand, []);
+      byBrand.get(brand)!.push(key);
+    }
+
+    const detail = (key: string) => {
+      const [, size, container] = key.split("|");
+      return { size, container, rank: (size ? 1 : 0) + (container ? 1 : 0) };
+    };
+
+    for (const keys of byBrand.values()) {
+      if (keys.length < 2) continue;
+      const ordered = [...keys].sort((a, b) => detail(b).rank - detail(a).rank);
+      for (const vagueKey of ordered) {
+        const vague = groups.get(vagueKey);
+        if (!vague) continue;
+        const here = detail(vagueKey);
+
+        const candidates = ordered.filter((other) => {
+          if (other === vagueKey || !groups.has(other)) return false;
+          const there = detail(other);
+          if (there.rank <= here.rank) return false;
+          // Compatible: what this row did say has to agree.
+          return (!here.size || here.size === there.size)
+            && (!here.container || here.container === there.container);
+        });
+        if (candidates.length === 0) continue;
+
+        // Where it could belong to more than one, it joins the dearest, which
+        // is the copy that survives anyway.
+        const priceOf = (key: string) => Math.max(...groups.get(key)!.map((m) => m.sellPriceMinor));
+        const winner = candidates.sort((a, b) => priceOf(b) - priceOf(a))[0];
+        groups.get(winner)!.push(...vague);
+        groups.delete(vagueKey);
+      }
+    }
+
+    const duplicates: DuplicateGroup[] = [];
+    for (const [key, members] of groups) {
+      if (members.length < 2) continue;
+      // Dearest first. Then the name a customer should read: one still carrying
+      // "(STOCK OF 2/06/2026)" is longer than the clean one and would otherwise
+      // win on length alone. Only then does a fuller name beat a shorter one.
+      const clean = (name: string) => (stripDates(name) === name.trim() ? 0 : 1);
+      const ranked = [...members].sort((a, b) =>
+        b.sellPriceMinor - a.sellPriceMinor
+        || clean(a.name) - clean(b.name)
+        || b.name.length - a.name.length
+        || a.id.localeCompare(b.id));
+      duplicates.push({ key, keep: ranked[0], retire: ranked.slice(1) });
+    }
+
+    const toRetire = duplicates.flatMap((group) => group.retire);
+    if (dryRun) {
+      return {
+        retired: 0,
+        candidates: toRetire.length,
+        groups: duplicates.slice(0, 100),
+      };
+    }
+
+    const ids = toRetire.map((entry) => entry.id);
+    for (let start = 0; start < ids.length; start += 500) {
+      const batch = db.batch();
+      for (const id of ids.slice(start, start + 500)) {
+        batch.set(
+          db.collection("products").doc(id),
+          { isActive: false, showOnMenu: false, retiredAt: Timestamp.now() },
+          { merge: true },
+        );
+      }
+      await batch.commit();
+    }
+
+    await db.collection("audit_logs").add({
+      tenantId,
+      branchId: null,
+      actorStaffId: staffId,
+      action: "catalogue.duplicates_retired",
+      entityType: "product",
+      entityId: null,
+      metadata: { groups: duplicates.length, retired: ids.length },
+      createdAt: Timestamp.now(),
+    });
+
+    return { retired: ids.length, candidates: ids.length, groups: duplicates.slice(0, 100) };
   },
 );

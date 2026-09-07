@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { importProducts, retireMissingProducts, priceCell, matchKey } = require('../lib/modules/catalogue');
+const { importProducts, retireMissingProducts, dedupeProducts, priceCell, matchKey } = require('../lib/modules/catalogue');
+const { productKey } = require('../lib/modules/catalogue/product-key');
 const { db } = require('../lib/lib/firebase');
 
 /** Minimal in-memory Firestore covering the batch and query this module uses. */
@@ -283,6 +284,108 @@ test('a menu tidy-up does not sweep away the service charges', async () => {
     assert.equal(find(docs, 'Coca-Cola 300ml').isActive, false);
     assert.equal(find(docs, 'VIP Service Charge').isActive, true, 'the VIP charge must survive a menu import');
     assert.equal(find(docs, 'Corkage Fee').isActive, true);
+  } finally {
+    restore();
+  }
+});
+
+const dedupe = (data = {}) => dedupeProducts.run({ auth: owner, data });
+const put = (docs, id, name, price, extra = {}) =>
+  docs.set(`products/${id}`, { id, tenantId: 't1', name, sellPriceMinor: price, isActive: true, ...extra });
+
+test('one product written many ways lands on one key', () => {
+  const same = [
+    'WHITE CAP CAN 500ML',
+    'WHITE CAP CAN 500ML (STOCK OF 2/06/2026)',
+    'WHITECAP LAGER 500ML CAN',
+    'WHITE CAP CAN (22/05/26) 500ML',
+  ].map(productKey);
+  assert.equal(new Set(same).size, 1, `expected one key, got ${[...new Set(same)].join(', ')}`);
+
+  // Size and container are what actually separate two orderable things.
+  assert.notEqual(productKey('WHITECAP LAGER 500ML CAN'), productKey('WHITECAP LAGER BOTTLE 500ML'));
+  assert.notEqual(productKey('TUSKER LAGER CAN 500ML'), productKey('TUSKER LAGER CAN 330ML'));
+  assert.notEqual(productKey('TUSKER'), productKey('TUSKER LITE'));
+  // A litre is a litre however it was typed.
+  assert.equal(productKey('KERINGET 1L'), productKey('KERINGET 1000ML'));
+});
+
+test('the dearer copy survives and the stale cheap one is retired', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    // Exactly what the live menu was showing.
+    put(docs, 'demo', 'White Cap Lager 500ml', 25000, { isService: false });
+    put(docs, 'imported', 'WHITECAP LAGER 500ML CAN', 40000);
+    put(docs, 'dated', 'WHITE CAP CAN 500ML (STOCK OF 2/06/2026)', 40000);
+    // A genuinely different product at a lower price: must not be touched.
+    put(docs, 'bottle', 'WHITECAP LAGER BOTTLE 500ML', 35000);
+
+    const preview = await dedupe({ dryRun: true });
+    assert.equal(preview.candidates, 2);
+    assert.equal(preview.retired, 0, 'a dry run must not write');
+    assert.equal(find(docs, 'White Cap Lager 500ml').isActive, true);
+
+    const done = await dedupe();
+    assert.equal(done.retired, 2);
+    assert.equal(find(docs, 'White Cap Lager 500ml').isActive, false, 'the 250 demo copy should go');
+    assert.equal(find(docs, 'WHITE CAP CAN 500ML (STOCK OF 2/06/2026)').isActive, false);
+    // The dearest of the group, and the bottle, both stand.
+    assert.equal(find(docs, 'WHITECAP LAGER 500ML CAN').isActive, true);
+    assert.equal(find(docs, 'WHITECAP LAGER BOTTLE 500ML').isActive, true);
+  } finally {
+    restore();
+  }
+});
+
+test('on a tie the fuller name wins', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    put(docs, 'short', 'WHITE CAP', 40000);
+    put(docs, 'full', 'WHITECAP LAGER CAN', 40000);
+    await dedupe();
+    assert.equal(find(docs, 'WHITECAP LAGER CAN').isActive, true);
+    assert.equal(find(docs, 'WHITE CAP').isActive, false);
+  } finally {
+    restore();
+  }
+});
+
+test('service charges are never merged away', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    put(docs, 'vip', 'VIP Service Charge', 10000, { isService: true });
+    put(docs, 'vip2', 'VIP SERVICE CHARGE', 0, { isService: true });
+    assert.equal((await dedupe()).retired, 0);
+    assert.equal(find(docs, 'VIP SERVICE CHARGE').isActive, true);
+  } finally {
+    restore();
+  }
+});
+
+test('a catalogue with nothing repeated is left completely alone', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    put(docs, 'a', 'TUSKER LAGER CAN 500ML', 40000);
+    put(docs, 'b', 'TUSKER LAGER CAN 330ML', 35000);
+    put(docs, 'c', 'TUSKER LITE CAN 500ML', 40000);
+    assert.equal((await dedupe()).retired, 0);
+    assert.equal(products(docs).filter((p) => p.isActive).length, 3);
+  } finally {
+    restore();
+  }
+});
+
+test('an already retired copy is not counted again', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    put(docs, 'keep', 'SNAPP CAN 330ML', 35000);
+    put(docs, 'gone', 'SNAPP DRY CIDER CAN 330ML', 30000, { isActive: false, showOnMenu: false });
+    assert.equal((await dedupe()).retired, 0);
   } finally {
     restore();
   }

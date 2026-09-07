@@ -107,6 +107,72 @@ export class InventoryView {
     'storestock', 'housestock', 'instock', 'balance', 'units', 'pieces'
   ]);
 
+  /**
+   * Finds the same product listed more than once and keeps the dearer copy.
+   *
+   * Always shown for review before anything is written: this decides which of
+   * two prices a customer is charged, so it is not something to run blind.
+   */
+  bindDedupeEvents(pane) {
+    const trigger = document.getElementById('ledg-dedupe-btn');
+    const report = document.getElementById('ledg-import-report');
+    if (!trigger || !report) return;
+
+    const note = (html, colour) => {
+      report.innerHTML = `<div style="margin:12px 0;padding:14px 16px;border:1px solid ${colour};border-radius:8px;font-size:13px;line-height:1.6;">${html}</div>`;
+    };
+    const money = (minor) => `KES ${(minor / 100).toFixed(2)}`;
+
+    trigger.addEventListener('click', async () => {
+      note('Looking for duplicates...', 'var(--border-color)');
+      let preview;
+      try {
+        preview = await callFunction('dedupeProducts', { dryRun: true });
+      } catch (error) {
+        note(`<b style="color:var(--accent-rose)">Could not check for duplicates.</b><br>${escapeHtml(error.message || error)}`, 'var(--accent-rose)');
+        return;
+      }
+
+      if (!preview.candidates) {
+        note('<b style="color:var(--accent-green)">No duplicates found.</b> Every product on the menu is listed once.', 'var(--border-color)');
+        return;
+      }
+
+      const groups = (preview.groups || []).map((group) => `
+        <div style="margin:8px 0;padding-left:10px;border-left:2px solid var(--border-color);">
+          <div style="color:var(--accent-green);">Keep: <b>${escapeHtml(group.keep.name)}</b> - ${money(group.keep.sellPriceMinor)}</div>
+          ${group.retire.map((item) => `<div style="color:var(--text-muted);">Retire: ${escapeHtml(item.name)} - ${money(item.sellPriceMinor)}</div>`).join('')}
+        </div>`).join('');
+
+      note(
+        `<b style="color:var(--accent-amber)">${preview.candidates} duplicate products found.</b><br>`
+          + '<span style="color:var(--text-muted)">The dearest copy of each is kept, since the cheap one is usually the stale one. '
+          + 'Different sizes and containers are left alone. Retiring takes the rest off the menu and the till; their sales history stays readable.</span>'
+          + groups
+          + `<button id="ledg-dedupe-go" class="primary-btn" style="margin-top:10px;">Retire these ${preview.candidates} duplicates</button>`,
+        'var(--accent-amber)'
+      );
+
+      document.getElementById('ledg-dedupe-go').addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        button.textContent = 'Retiring...';
+        try {
+          const done = await callFunction('dedupeProducts', {});
+          await pullCatalogue();
+          showNotification(`${done.retired} duplicates retired.`, 'success');
+          note(`<b style="color:var(--accent-green)">${done.retired} duplicates retired.</b> The menu now lists each product once.`, 'var(--border-color)');
+          this.ledgerPage = 1;
+          await this.renderLedger(pane);
+        } catch (error) {
+          showNotification(error.message || 'Could not retire the duplicates.', 'error');
+          button.disabled = false;
+          button.textContent = 'Retry';
+        }
+      });
+    });
+  }
+
   bindImportEvents(pane) {
     const trigger = document.getElementById('ledg-import-btn');
     const picker = document.getElementById('ledg-import-file');
@@ -345,6 +411,7 @@ export class InventoryView {
         ${this.canEditCatalogue ? `
         <button class="primary-btn" id="ledg-add-prod-btn">Add Product</button>
         <button class="sec-btn" id="ledg-import-btn">📥 Import CSV / Excel</button>
+        <button class="sec-btn" id="ledg-dedupe-btn">🧹 Find duplicates</button>
         <button class="sec-btn" id="ledg-adjust-btn">Manual Adjustment</button>` : `
         <span class="muted" style="font-size:12px;">Viewing only — an owner or store manager changes the catalogue.</span>`}
         <input type="file" id="ledg-import-file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none;">
@@ -473,6 +540,7 @@ Past sales keep it. You can add it again later.`)) return;
 
     if (this.canEditCatalogue) {
       this.bindImportEvents(pane);
+      this.bindDedupeEvents(pane);
       this.bindProductEditorEvents(pane);
     }
 

@@ -53,6 +53,14 @@ const menu = {
     await page.goto('https://menu.test/menu.html');
     assert.equal(await page.locator('.menu-card').count(), menu.products.length);
 
+    // With nothing typed the menu reads alphabetically, whatever order the
+    // server handed the products over in.
+    const listed = (await page.locator('.menu-card').allInnerTexts())
+      .map((text) => text.split('\n')[0].trim());
+    const alphabetical = [...listed].sort((a, b) =>
+      new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare(a, b));
+    assert.deepEqual(listed, alphabetical, 'the menu is not in alphabetical order');
+
     await page.locator('#menu-search').fill('Water');
     const names = await page.locator('.menu-card .card-name, .menu-card .card-title, .menu-card h3').allInnerTexts()
       .catch(() => []);

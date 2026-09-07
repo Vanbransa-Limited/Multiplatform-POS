@@ -3,6 +3,7 @@ import { state } from '../context';
 import { pullStock, changeStock, storeIsEnabled, pullStockMovements, importStock } from '../services/stock';
 import { parseStockFile } from '../services/csv';
 import { escapeHtml as esc } from '../services/print-receipt';
+import { compareNames } from '../services/catalogue';
 
 /** How a movement row reads to the person looking at it. */
 const MOVEMENT_LABELS = {
@@ -90,7 +91,7 @@ export class StockView {
       product,
       qty: Number(here.get(product.id)?.qty || 0),
       storeQty: Number(store.get(product.id)?.qty || 0),
-    })).sort((a, b) => a.product.name.localeCompare(b.product.name));
+    })).sort((a, b) => compareNames(a.product.name, b.product.name));
   }
 
   copy() {

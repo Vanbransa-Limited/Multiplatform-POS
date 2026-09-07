@@ -14,6 +14,19 @@
 // need a browser, and importing them at module scope would stop the mapping
 // below from being exercised in a plain node test.
 
+/**
+ * Orders products the way somebody scanning a list looks for one.
+ *
+ * Case-insensitive, because the catalogue mixes "WHITE CAP" with "White Cap"
+ * and a plain sort files those pages apart. Numeric, so 500ML follows 330ML
+ * instead of leading it, which is what a string sort does with "5" and "3".
+ */
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+export function compareNames(a, b) {
+  return collator.compare(String(a ?? ''), String(b ?? ''));
+}
+
 /** Firestore's product document -> the row shape the till's screens read. */
 export function toLocalProduct(doc) {
   return {

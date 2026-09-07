@@ -4,7 +4,7 @@ import { state, showNotification } from '../context';
 import { bindPager, pagerHtml, paginate } from '../services/paginate';
 import { ensureUniqueSkus, parseProductFile } from '../services/csv';
 import { callFunction } from '../services/firebase';
-import { pullCatalogue } from '../services/catalogue';
+import { pullCatalogue, compareNames } from '../services/catalogue';
 import { escapeHtml } from '../services/print-receipt';
 
 export class InventoryView {
@@ -332,9 +332,10 @@ export class InventoryView {
     // Retired products keep their row for history but leave the ledger.
     const live = all.filter((product) => product.is_active !== 0);
     const needle = this.ledgerSearch.trim().toLowerCase();
-    const products = needle
+    const products = (needle
       ? live.filter((product) => `${product.name} ${product.sku}`.toLowerCase().includes(needle))
-      : live;
+      : live
+    ).sort((a, b) => compareNames(a.name, b.name));
     // Page before the per-row stock lookups: each one is another Dexie read.
     const view = paginate(products, this.ledgerPage);
     this.ledgerPage = view.page;

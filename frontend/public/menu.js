@@ -79,6 +79,10 @@ function renderCategories() {
 /** Higher means further down the results; this one means it does not match. */
 const NO_MATCH = 99;
 
+// Case-insensitive, because the menu mixes "WHITE CAP" with "White Cap" and a
+// plain sort files those pages apart. Numeric, so 500ML follows 330ML.
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
 /**
  * How well a product answers what was typed.
  *
@@ -107,11 +111,15 @@ function renderGrid() {
   const shown = products
     .filter((p) => (category === 'all' || p.categoryId === category)
       && (!needle || matchRank(p, needle) < NO_MATCH))
-    // A search for "water" matched Coca-Cola, because its category is called
-    // "Soft Drinks & Water" - and then showed it above the actual water. The
-    // category is still worth searching, it just comes after the things whose
-    // own name is what was typed.
-    .sort((a, b) => (needle ? matchRank(a, needle) - matchRank(b, needle) : 0));
+    // Alphabetical, so a customer can find a name by scanning; the server hands
+    // these over in no order a reader would guess.
+    //
+    // A search sorts by how well each answers what was typed first - "water"
+    // matched Coca-Cola through its "Soft Drinks & Water" category and put it
+    // above the actual water - and alphabetically within each tier.
+    .sort((a, b) =>
+      (needle ? matchRank(a, needle) - matchRank(b, needle) : 0)
+      || collator.compare(String(a.name || ''), String(b.name || '')));
   if (!shown.length) {
     const empty = document.createElement('div');
     empty.className = 'menu-empty';

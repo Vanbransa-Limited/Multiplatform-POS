@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { toLocalProduct } from './catalogue.js';
+import { toLocalProduct, compareNames } from './catalogue.js';
 
 test('minor units become the KES floats the till prices in', () => {
   // The backend settles in integer cents; the cart and every screen still work
@@ -34,4 +34,27 @@ test('booleans become the 0/1 Dexie indexes on', () => {
 test('a product with no name falls back to something displayable', () => {
   assert.equal(toLocalProduct({ id: 'p5', tenantId: 't1', sku: 'BAR-77' }).name, 'BAR-77');
   assert.equal(toLocalProduct({ id: 'p6', tenantId: 't1' }).name, 'p6');
+});
+
+const sorted = (names) => [...names].sort(compareNames);
+
+test('the catalogue reads alphabetically whatever case it was typed in', () => {
+  // The real catalogue mixes an imported "WHITE CAP" with a seeded "White Cap
+  // Lager"; a plain sort files every capitalised name ahead of every other.
+  assert.deepEqual(
+    sorted(['White Cap Lager', 'AMARULA', 'coca-cola', 'Balozi']),
+    ['AMARULA', 'Balozi', 'coca-cola', 'White Cap Lager'],
+  );
+});
+
+test('sizes count as numbers, so 500ml follows 330ml', () => {
+  assert.deepEqual(
+    sorted(['TUSKER 500ML', 'TUSKER 1000ML', 'TUSKER 330ML']),
+    ['TUSKER 330ML', 'TUSKER 500ML', 'TUSKER 1000ML'],
+  );
+});
+
+test('a missing name sorts without throwing', () => {
+  assert.equal(compareNames(undefined, undefined), 0);
+  assert.equal(compareNames(null, 'Anything') < 0, true);
 });

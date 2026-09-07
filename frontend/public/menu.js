@@ -76,11 +76,42 @@ function renderCategories() {
   }
 }
 
+/** Higher means further down the results; this one means it does not match. */
+const NO_MATCH = 99;
+
+/**
+ * How well a product answers what was typed.
+ *
+ * Name before category, and within the name, the start of a word before the
+ * middle of one: somebody typing "water" wants Mineral Water, not the cola
+ * that happens to be filed under "Soft Drinks & Water".
+ */
+function matchRank(product, needle) {
+  const name = String(product.name || '').toLowerCase();
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (name === needle) return 0;
+  // The whole word, wherever it sits: "Mineral Water" and "Sparkling Water"
+  // both answer "water", and both beat "Watermelon Juice", which only happens
+  // to start with those letters.
+  if (new RegExp(`\\b${escaped}\\b`).test(name)) return 1;
+  if (name.startsWith(needle)) return 2;
+  if (new RegExp(`\\b${escaped}`).test(name)) return 3;
+  if (name.includes(needle)) return 4;
+  if (String(categories[product.categoryId] || '').toLowerCase().includes(needle)) return 5;
+  return NO_MATCH;
+}
+
 function renderGrid() {
   const grid = $('menu-grid'); grid.replaceChildren();
   const needle = search.trim().toLowerCase();
-  const shown = products.filter((p) => (category === 'all' || p.categoryId === category)
-    && (!needle || p.name.toLowerCase().includes(needle) || (categories[p.categoryId] || '').toLowerCase().includes(needle)));
+  const shown = products
+    .filter((p) => (category === 'all' || p.categoryId === category)
+      && (!needle || matchRank(p, needle) < NO_MATCH))
+    // A search for "water" matched Coca-Cola, because its category is called
+    // "Soft Drinks & Water" - and then showed it above the actual water. The
+    // category is still worth searching, it just comes after the things whose
+    // own name is what was typed.
+    .sort((a, b) => (needle ? matchRank(a, needle) - matchRank(b, needle) : 0));
   if (!shown.length) {
     const empty = document.createElement('div');
     empty.className = 'menu-empty';

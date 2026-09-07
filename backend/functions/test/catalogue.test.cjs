@@ -256,3 +256,34 @@ test('only an owner or store manager may retire', async () => {
     restore();
   }
 });
+
+test('a menu tidy-up does not sweep away the service charges', async () => {
+  const docs = new Map();
+  const restore = harness(docs);
+  try {
+    // What provisioning left behind: demo drinks, and the charges the till
+    // toggles by id. A price sheet contains neither.
+    docs.set('products/prod-coca-cola', {
+      id: 'prod-coca-cola', tenantId: 't1', name: 'Coca-Cola 300ml',
+      sellPriceMinor: 10000, isActive: true, isService: false,
+    });
+    docs.set('products/prod-table-service', {
+      id: 'prod-table-service', tenantId: 't1', name: 'VIP Service Charge',
+      sellPriceMinor: 10000, isActive: true, isService: true,
+    });
+    docs.set('products/prod-corkage', {
+      id: 'prod-corkage', tenantId: 't1', name: 'Corkage Fee',
+      sellPriceMinor: 300000, isActive: true, isService: true,
+    });
+
+    await run2([{ sku: 'W-1', name: 'WHITECAP LAGER 500ML CAN', sellPrice: '400' }], 'batch-7');
+    const done = await retire({ batchId: 'batch-7' });
+
+    assert.equal(done.retired, 1, 'only the demo drink should go');
+    assert.equal(find(docs, 'Coca-Cola 300ml').isActive, false);
+    assert.equal(find(docs, 'VIP Service Charge').isActive, true, 'the VIP charge must survive a menu import');
+    assert.equal(find(docs, 'Corkage Fee').isActive, true);
+  } finally {
+    restore();
+  }
+});

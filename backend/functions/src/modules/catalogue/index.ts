@@ -505,6 +505,10 @@ export const retireMissingProducts = onCall(
     const stale = snapshot.docs.filter((doc) => {
       const data = doc.data() ?? {};
       if (data.lastImportBatch === batchId) return false;
+      // Service charges are not menu items and never appear in a price sheet.
+      // Sweeping them would take the VIP charge, corkage and the staff discount
+      // off the till the first time somebody tidied the menu.
+      if (data.isService === true) return false;
       // Already off the menu and off the till: nothing left to do.
       return data.isActive !== false || data.showOnMenu !== false;
     });

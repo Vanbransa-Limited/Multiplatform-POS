@@ -1,5 +1,6 @@
 import { db } from './schema';
 import * as SEED from './seed-data';
+import { firebaseConfigured } from '../services/firebase';
 
 // Helper to compute SHA-256 hash using native Web Crypto API with custom fallback for non-secure contexts
 export async function computeHash(message) {
@@ -109,6 +110,10 @@ export async function getStockOnHand(productId, branchId, location = null) {
   if (!productId) return 0;
   const targetPid = String(productId);
   const targetBid = branchId ? String(branchId) : null;
+  if (firebaseConfigured) {
+    const rows = await db.stock_balances.where('productId').equals(targetPid).toArray();
+    return rows.filter((row) => (!targetBid || row.branchId === targetBid) && (!location || row.location === location)).reduce((sum, row) => sum + Number(row.qty || 0) - Number(row.reservedQty || 0), 0);
+  }
 
   const movements = await db.stock_movements.toArray();
   const filtered = movements.filter(m => {
@@ -129,6 +134,7 @@ export async function getStoreStock(productId, branchId) {
   return getStockOnHand(productId, branchId, 'STORE');
 }
 
+/** The House always exists and is always what service draws from. */
 export async function getHouseStock(productId, branchId) {
   return getStockOnHand(productId, branchId, 'HOUSE');
 }
@@ -227,4 +233,3 @@ export async function seedDatabase() {
 
   console.log('IndexedDB seed complete.');
 }
-

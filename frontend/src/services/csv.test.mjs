@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ensureUniqueSkus, matchColumns, parseProductCsv, splitCsvLine } from './csv.js';
+import { ensureUniqueSkus, matchColumns, parseProductCsv, splitCsvLine, parseStockFile } from './csv.js';
 
 test('a repeated code carrying different products keeps every one of them', () => {
   // The failure this exists for: a Category column read as the SKU collapses
@@ -99,4 +99,16 @@ test('a file with no name or SKU column is refused with its headers shown', () =
 
 test('a header-only file is refused', () => {
   assert.match(parseProductCsv('SKU,Name,Price\n').error, /at least one product/);
+});
+
+test('a stock sheet is matched on what the item is and how many', async () => {
+  const sheet = (body) => ({ name: 's.csv', type: 'text/csv', text: async () => body });
+  const ok = await parseStockFile(sheet('Item Code,Description,Counted\nSKU-1,Tusker,24\nSKU-2,Fanta,6\n'));
+  assert.ok(!ok.error, ok.error);
+  assert.equal(ok.rows.length, 2);
+  assert.equal(ok.rows[0].sku, 'SKU-1');
+  assert.equal(ok.rows[0].qty, '24');
+  // A sheet with no quantity is a catalogue, not a delivery note; say so.
+  const noQty = await parseStockFile(sheet('sku,name\nSKU-1,Tusker\n'));
+  assert.match(noQty.error, /quantity column/);
 });

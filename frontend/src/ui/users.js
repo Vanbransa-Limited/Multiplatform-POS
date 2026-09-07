@@ -1,7 +1,16 @@
 import { db } from '../db/schema';
 import { state, showNotification } from '../context';
 import { callFunction } from '../services/firebase';
-import { ROLE_CODES } from '../services/roles';
+import { parseStaffFile } from '../services/csv';
+import { ROLE_CODES, roleCode } from '../services/roles';
+import { downloadStaffTemplate, pullStaff } from '../services/staff';
+
+/**
+ * Each row is a Firebase Auth account creation, so the server takes them a
+ * hundred at a time. A larger roster is sent in chunks.
+ */
+const IMPORT_CHUNK = 100;
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 
 export class UsersView {
   constructor(container) {
@@ -10,8 +19,22 @@ export class UsersView {
 
   async load() {
     this.render();
-    await this.populateUsers();
+    await this.refresh();
     this.bindEvents();
+  }
+
+  /**
+   * The roster lives on the server; Dexie is only this till's cache of it, so
+   * anything created or disabled elsewhere - or by an import - is only visible
+   * here after a pull.
+   */
+  async refresh() {
+    try {
+      await pullStaff();
+    } catch {
+      // An offline till still shows whoever it already knows about.
+    }
+    await this.populateUsers();
   }
 
   render() {
@@ -25,14 +48,22 @@ export class UsersView {
             <p style="margin: 0; font-size: 13px; color: var(--text-secondary);">Manage dashboard access and staff.</p>
           </div>
           <div style="display: flex; gap: 12px;">
-            <button style="background: rgba(255,255,255,0.1); color: #fff; border: 1px solid var(--border-color); padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px;">
-              📄 Export CSV
+            <button id="user-template-btn" style="background: rgba(255,255,255,0.1); color: #fff; border: 1px solid var(--border-color); padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px;">
+              📄 Download Template
             </button>
+            <button id="user-import-btn" style="background: rgba(255,255,255,0.1); color: #fff; border: 1px solid var(--border-color); padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px;">
+              📥 Import Users
+            </button>
+            <input type="file" id="user-import-file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none;">
             <button id="add-user-btn" style="background: #F59E0B; color: #000; border: none; padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 8px;">
               👤+ Add User
             </button>
           </div>
         </div>
+
+        <p style="font-size:13px;line-height:1.6">Download the template, replace the example rows with your staff, then import CSV or Excel. Include name, unique login email, access level and a password of 8–128 characters. Phone is optional. Blank access defaults to Cashier.</p>
+        <label style="display:block;margin-bottom:16px;font-size:13px"><input id="user-import-cashier-only" type="checkbox" checked> Cashier-only import (reject higher access levels)</label>
+        <div id="user-import-report" role="status" aria-live="polite"></div>
 
         <!-- Users Table -->
         <div style="background: var(--bg-element); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden;">
@@ -113,23 +144,25 @@ export class UsersView {
       let levelColor = 'var(--accent-blue)';
       if (u.role === 'Owner') { level = 'Level 4'; levelColor = '#F59E0B'; }
       else if (u.role === 'Store Manager') { level = 'Level 3'; levelColor = 'var(--accent-purple)'; }
-      else if (u.role === 'Supervisor') { level = 'Level 2'; levelColor = 'var(--accent-green)'; }
+      else if (u.role === 'Supervisor') { level = 'Level 2.5'; levelColor = 'var(--accent-green)'; }
+      else if (u.role === 'Store Keeper') { level = 'Level 2'; }
+      else if (u.role === 'Bar Staff') { level = 'Level 1.5'; }
 
       return `
         <tr style="border-bottom: 1px solid var(--border-color);">
           <td style="padding: 16px 24px; display: flex; align-items: center; gap: 12px;">
             <div style="width: 32px; height: 32px; background: rgba(255,255,255,0.05); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; color: #F59E0B;">
-              ${initial}
+              ${escapeHtml(initial)}
             </div>
-            <span style="font-size: 14px; font-weight: 700; color: #fff;">${u.name}</span>
+            <span style="font-size: 14px; font-weight: 700; color: #fff;">${escapeHtml(u.name)}</span>
           </td>
           <td style="padding: 16px 24px;">
             <span style="background: rgba(255,255,255,0.1); color: ${levelColor}; padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 700;">
-              ${level}
+              ${escapeHtml(u.role)} · ${level}
             </span>
           </td>
           <td style="padding: 16px 24px; font-size: 13px; color: var(--text-secondary);">
-            ${u.email || '-'}
+            ${escapeHtml(u.email || '-')}
           </td>
           <td style="padding: 16px 24px; text-align: right;">
             <button class="edit-user-btn" data-id="${u.id}" style="background: transparent; border: none; color: var(--accent-blue); cursor: pointer; padding: 4px;">✏️</button>
@@ -142,14 +175,163 @@ export class UsersView {
     tbody.innerHTML = rowsHtml;
   }
 
+  /**
+   * Bulk roster import.
+   *
+   * Every row is validated here before anything is sent, because half of them
+   * are passwords: a row the server would reject anyway is better caught while
+   * the operator is still looking at their own file. The server validates again
+   * regardless - this check is for the message, not for the safety.
+   */
+  bindImportEvents() {
+    const trigger = document.getElementById('user-import-btn');
+    const picker = document.getElementById('user-import-file');
+    const report = document.getElementById('user-import-report');
+    if (!trigger || !picker || !report) return;
+
+    document.getElementById('user-template-btn')
+      .addEventListener('click', () => downloadStaffTemplate());
+
+    trigger.addEventListener('click', () => picker.click());
+
+    picker.addEventListener('change', async () => {
+      const file = picker.files && picker.files[0];
+      if (!file) return;
+      picker.value = '';
+      if (this.importing) return;
+      this.importing = true;
+      trigger.disabled = true;
+      const cashierOnly = document.getElementById('user-import-cashier-only').checked;
+      try {
+
+      const note = (html, colour) => {
+        report.innerHTML = `<div style="margin:0 0 24px;padding:14px 16px;border:1px solid ${colour};border-radius:8px;font-size:13px;line-height:1.6;color:var(--text-primary);">${html}</div>`;
+      };
+
+      note(`Reading ${escapeHtml(file.name)}...`, 'var(--border-color)');
+
+      const parsed = await parseStaffFile(file);
+      if (parsed.error) {
+        note(`<b style="color:var(--accent-rose)">Could not read that file.</b><br>${escapeHtml(parsed.error)}`, 'var(--accent-rose)');
+        return;
+      }
+
+      const columns = Object.entries(parsed.mapping)
+        .map(([field, header]) => `${field} &larr; <b>${escapeHtml(header)}</b>`)
+        .join(' &middot; ');
+
+      const rows = [];
+      const sourceLines = [];
+      const rejected = [];
+      const seen = new Set();
+
+      parsed.rows.forEach((row, index) => {
+        // Row 1 is the header in the file the person is looking at.
+        const line = index + 2;
+        const name = String(row.name ?? '').trim();
+        const email = String(row.email ?? '').trim().toLowerCase();
+        const password = String(row.password ?? '');
+        const role = roleCode(row.role);
+
+        if (!name && !email) return; // A trailing blank line in the sheet.
+        if (!name) rejected.push({ row: line, email, message: 'No name.' });
+        else if (!email) rejected.push({ row: line, email: '', message: 'No email to sign in with.' });
+        else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) rejected.push({ row: line, email, message: 'Enter a valid login email.' });
+        else if (seen.has(email)) rejected.push({ row: line, email, message: 'This email appears twice in the file.' });
+        else if (!role) rejected.push({ row: line, email, message: `"${row.role}" is not one of the access levels.` });
+        else if (cashierOnly && role !== 'cashier') rejected.push({ row: line, email, message: 'Cashier-only import accepts only Cashier access.' });
+        else if (password.length < 8 || password.length > 128) {
+          rejected.push({ row: line, email, message: 'Password must be 8–128 characters.' });
+        } else {
+          seen.add(email);
+          rows.push({ name, email, password, role, phone: String(row.phone ?? '').trim() });
+          sourceLines.push(line);
+        }
+      });
+
+      if (rows.length === 0) {
+        note(
+          `<b style="color:var(--accent-rose)">Nothing in that file could be imported.</b><br>`
+            + `<span style="color:var(--text-muted)">${columns}</span><br>`
+            + rejected.slice(0, 10).map((issue) => `row ${issue.row}: ${escapeHtml(issue.message)}`).join('<br>'),
+          'var(--accent-rose)',
+        );
+        return;
+      }
+
+      // Each chunk lands on its own: a failure part way through keeps the
+      // accounts already created, and re-running the file skips them as
+      // already-registered rather than duplicating anyone.
+      const totals = { imported: 0, rejected: [...rejected] };
+      let failure = null;
+
+      for (let start = 0; start < rows.length; start += IMPORT_CHUNK) {
+        const chunk = rows.slice(start, start + IMPORT_CHUNK);
+        note(
+          `Creating ${Math.min(start + IMPORT_CHUNK, rows.length)} of ${rows.length} accounts...`
+            + `<br><span style="color:var(--text-muted)">${columns}</span>`,
+          'var(--border-color)',
+        );
+
+        try {
+          const result = await callFunction('importStaff', { rows: chunk, cashierOnly });
+          totals.imported += result.imported;
+          // Row numbers come back relative to the chunk; restate them against
+          // the file the person is actually looking at.
+          for (const issue of result.rejected) totals.rejected.push({ ...issue, row: sourceLines[start + issue.row - 2] });
+        } catch (err) {
+          failure = err.message || String(err);
+          break;
+        }
+      }
+
+      const lines = [
+        `<b style="color:${totals.imported ? 'var(--accent-green)' : 'var(--accent-rose)'}">`
+          + `Created ${totals.imported} of ${parsed.rows.length} users.</b>`,
+        `<span style="color:var(--text-muted)">${columns}</span>`
+      ];
+
+      if (failure) {
+        lines.push(`<b style="color:var(--accent-rose)">Stopped early:</b> ${escapeHtml(failure)}. Anyone already created was kept - re-run the file to continue.`);
+      }
+      if (totals.rejected.length) {
+        lines.push(
+          `<b style="color:var(--accent-rose)">${totals.rejected.length} rows were skipped:</b><br>`
+            + totals.rejected.slice(0, 10).map((issue) => `row ${issue.row}${issue.email ? ` (${escapeHtml(issue.email)})` : ''}: ${escapeHtml(issue.message)}`).join('<br>')
+            + (totals.rejected.length > 10 ? `<br>and ${totals.rejected.length - 10} more` : '')
+        );
+      }
+      if (totals.imported) {
+        lines.push('<span style="color:var(--text-muted)">Each person signs in with the email and password from the file. Hand those over directly.</span>');
+      }
+
+      note(lines.join('<br>'), failure ? 'var(--accent-rose)' : 'var(--border-color)');
+
+      if (totals.imported) {
+        showNotification(`Created ${totals.imported} users.`, 'success');
+        // The import writes to the server; this table reads Dexie.
+        await this.refresh();
+      }
+      } catch {
+        report.textContent = 'Import could not finish. Refresh the list before retrying; existing accounts will be skipped.';
+      } finally {
+        this.importing = false;
+        trigger.disabled = false;
+      }
+    });
+  }
+
   bindEvents() {
     const modal = document.getElementById('user-modal-overlay');
     const form = document.getElementById('user-form');
-    
+
+    this.bindImportEvents();
+
     // Add User button
     document.getElementById('add-user-btn').addEventListener('click', () => {
       document.getElementById('user-modal-title').textContent = 'Add User';
       form.reset();
+      document.getElementById('user-email').readOnly = false;
       document.getElementById('user-id').value = '';
       modal.classList.remove('hidden');
     });
@@ -186,7 +368,7 @@ export class UsersView {
         }
 
         modal.classList.add('hidden');
-        await this.populateUsers();
+        await this.refresh();
       } catch (err) {
         showNotification(err.message || 'Could not save that user.', 'error');
       }
@@ -218,7 +400,7 @@ export class UsersView {
           try {
             await callFunction('setStaffActive', { staffId: id, active: false });
             showNotification('User disabled', 'success');
-            await this.populateUsers();
+            await this.refresh();
           } catch (err) {
             showNotification(err.message || 'Could not disable that user.', 'error');
           }

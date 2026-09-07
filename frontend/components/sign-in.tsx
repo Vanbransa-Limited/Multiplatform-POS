@@ -58,15 +58,14 @@ export function SignIn() {
         <div className="tablet-screen">
           <div
             className="modal-content pin-switcher-content"
-            style={{ border: "none", background: "transparent", boxShadow: "none", padding: "24px 24px 12px 24px", maxWidth: "100%" }}
+            style={{ border: "none", background: "transparent", boxShadow: "none", padding: "28px 24px 20px", width: "100%", maxWidth: "100%" }}
           >
-            <h2>Sign In</h2>
-            <p>Enter the email and password your manager gave you</p>
+            <h2 style={{ margin: 0 }}>Sign In</h2>
 
             {/* .modal-content centres its children, which would otherwise
                 shrink the form to its content and leave the fields narrower
                 than the card they sit in. */}
-            <form onSubmit={(event) => void submit(event)} style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 20, textAlign: "left", alignSelf: "stretch" }}>
+            <form onSubmit={(event) => void submit(event)} style={{ display: "flex", flexDirection: "column", gap: 20, marginTop: 28, textAlign: "left", alignSelf: "stretch" }}>
               <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <span style={{ fontSize: 11, color: "var(--text-secondary)", letterSpacing: 1, textTransform: "uppercase" }}>Email</span>
                 <input
@@ -102,9 +101,9 @@ export function SignIn() {
               </button>
             </form>
 
-            <p className="error-msg" id="signin-error" role="alert">{error}</p>
+            <p className="error-msg" id="signin-error" role="alert" style={{ margin: error ? "16px 0 0" : 0, minHeight: 0 }}>{error}</p>
 
-            <div className="brand-footer" style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid rgba(200, 130, 42, 0.15)", width: "100%", textAlign: "center" }}>
+            <div className="brand-footer" style={{ marginTop: 28, paddingTop: 16, borderTop: "1px solid rgba(200, 130, 42, 0.15)", width: "100%", textAlign: "center" }}>
               <div style={{ fontFamily: "var(--font-display)", fontSize: 11, fontWeight: 800, color: "var(--accent-amber)", letterSpacing: 2, textTransform: "uppercase", opacity: 0.85 }}>
                 Vanbransa ProPos
               </div>

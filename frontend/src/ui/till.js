@@ -10,6 +10,7 @@ import {
 } from '../services/mpesa-state';
 import { toMinor } from '../services/tender';
 import { enqueuePrintJob, isStationOnline } from '../services/print-queue';
+import { pullStock } from '../services/stock';
 
 export class TillView {
   constructor(container) {
@@ -18,8 +19,7 @@ export class TillView {
     this.parkedCarts = []; // Suspended carts
     this.selectedCustomer = null;
     this.mpesa = new MpesaService();
-    this.selectedPaymentMethod = 'CASH'; // CASH, MPESA, CREDIT, SPLIT
-    this.splitDetails = { cash: 0, mpesa: 0 };
+    this.selectedPaymentMethod = 'CASH'; // CASH, MPESA, CARD, CREDIT
     this.mpesaRef = null;
     // Only ever set from a backend-confirmed payment; gates finalizeInvoice.
     this.mpesaVerified = false;
@@ -30,17 +30,9 @@ export class TillView {
   }
 
   async load() {
-    if (state.currentUser?.role === 'Supervisor') {
-      this.container.innerHTML = `
-        <div style="padding: 48px; text-align: center; color: var(--text-primary); max-width: 500px; margin: 100px auto; background: #140e08; border: 1px solid var(--border-color); border-radius: 16px; box-shadow: var(--glass-shadow); font-family: var(--font-main);">
-          <span style="font-size: 60px;">🚫</span>
-          <h2 style="margin: 24px 0 12px 0; font-weight: 800; color: #fff; font-size: 22px;">Sales Terminal Restricted</h2>
-          <p style="color: var(--text-secondary); line-height: 1.6; font-size: 14px; margin-bottom: 24px;">Supervisors are restricted from performing till sales. Please log in with a Cashier, Bar Staff, Manager, or Owner account to register sales.</p>
-        </div>
-      `;
-      return;
-    }
-    
+    // A supervisor runs the floor and covers the till when it is busy, so they
+    // sell alongside cashiers. The server agrees: `supervisor` is in
+    // SELLING_ROLES. Discounting is still owner and manager only.
     this.selectedCustomer = await db.customers.where('id').equals('cust-walkin').first();
     if (!this.selectedCustomer) {
       // Safety fallback to prevent app crashing if DB record is missing
@@ -61,9 +53,6 @@ export class TillView {
             <div class="search-input-wrapper">
               <input type="text" id="till-search" placeholder="Search by name, SKU or barcode...">
             </div>
-            <button class="barcode-scanner-btn" id="till-scan-sim">
-              <span>📷</span> Simulate Barcode
-            </button>
             <button class="sec-btn" id="till-park-btn">Park Cart</button>
             <button class="sec-btn" id="till-resume-btn">Resume Carts (<span id="parked-count">0</span>)</button>
           </div>
@@ -158,18 +147,18 @@ export class TillView {
                   <p id="payment-method-mpesa-note">Checking M-Pesa availability...</p>
                 </div>
               </div>
+              <div class="payment-method-card" data-method="CARD">
+                <span style="font-size:20px;">💳</span>
+                <div>
+                  <h4>Card</h4>
+                  <p>Taken on the card terminal</p>
+                </div>
+              </div>
               <div class="payment-method-card" data-method="CREDIT">
                 <span style="font-size:20px;">💳</span>
                 <div>
                   <h4>On Account (Credit)</h4>
                   <p>Charge against debtor limits</p>
-                </div>
-              </div>
-              <div class="payment-method-card" data-method="SPLIT" id="payment-method-split">
-                <span style="font-size:20px;">⚖️</span>
-                <div>
-                  <h4>Split Payment</h4>
-                  <p id="payment-method-split-note">Combine Cash and M-Pesa</p>
                 </div>
               </div>
             </div>
@@ -183,13 +172,13 @@ export class TillView {
 
               <!-- Table Number -->
               <div class="checkout-inputs" style="margin-bottom: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; display: block !important;">
-                <label style="font-size:11px;color:var(--text-secondary)">Table Number (Optional)</label>
+                <label style="font-size:13px;color:var(--text-secondary)">Table Number (Optional)</label>
                 <input type="text" id="checkout-table-number" placeholder="e.g. 12 or Patio 3" style="width: 100%;">
               </div>
 
               <!-- Cash Input fields -->
               <div class="checkout-inputs" id="payment-inputs-cash">
-                <label style="font-size:11px;color:var(--text-secondary)">Tendered Cash Amount</label>
+                <label style="font-size:13px;color:var(--text-secondary)">Tendered Cash Amount</label>
                 <input type="number" id="pay-cash-tendered" placeholder="Enter amount received...">
                 <div class="summary-row" style="margin-top:8px;">
                   <span>Change Due:</span>
@@ -199,12 +188,22 @@ export class TillView {
 
               <!-- M-Pesa Input fields -->
               <div class="checkout-inputs hidden" id="payment-inputs-mpesa">
-                <label style="font-size:11px;color:var(--text-secondary)">M-Pesa Mobile Number</label>
+                <label style="font-size:13px;color:var(--text-secondary)">M-Pesa Mobile Number</label>
                 <input type="text" id="pay-mpesa-phone" placeholder="e.g. 0712345678">
                 <button class="primary-btn" id="pay-trigger-stk" style="margin-top:4px;">Initiate STK Push</button>
                 <div id="stk-status-area" class="hidden" style="margin-top:8px;text-align:center;font-size:12px;">
                   <span class="badge warning" id="stk-status-badge">Awaiting User PIN...</span>
                 </div>
+              </div>
+
+              <!-- Card fields. The terminal charges the card; recording the
+                   reference it prints is the only thread back to that slip. -->
+              <div class="checkout-inputs hidden" id="payment-inputs-card">
+                <label style="font-size:13px;color:var(--text-secondary)">Card Reference Number</label>
+                <input type="text" id="pay-card-reference" maxlength="60" placeholder="Reference from the card slip...">
+                <p style="font-size:13px;color:var(--text-secondary);margin-top:8px;line-height:1.5;">
+                  There is no card integration: the terminal takes the money and this records that it did.
+                </p>
               </div>
 
               <!-- Credit Limit check fields -->
@@ -218,19 +217,6 @@ export class TillView {
                   <span id="pay-credit-balance">KES 0.00</span>
                 </div>
                 <p id="credit-warn-text" class="error-msg"></p>
-              </div>
-
-              <!-- Split payment inputs -->
-              <div class="checkout-inputs hidden" id="payment-inputs-split">
-                <label style="font-size:11px;color:var(--text-secondary)">Amount Cash</label>
-                <input type="number" id="pay-split-cash" placeholder="Cash portion...">
-                <label style="font-size:11px;color:var(--text-secondary)">Amount M-Pesa (Send STK)</label>
-                <input type="number" id="pay-split-mpesa" placeholder="M-Pesa portion...">
-                <input type="text" id="pay-split-phone" placeholder="M-Pesa Phone Number" style="margin-top:4px;">
-                <button class="primary-btn" id="pay-split-trigger-stk">Trigger M-Pesa STK</button>
-                <div id="split-stk-status-area" class="hidden" style="margin-top:8px;text-align:center;font-size:12px;">
-                  <span class="badge warning" id="split-stk-status-badge">Awaiting User PIN...</span>
-                </div>
               </div>
 
               <div style="display:flex;gap:10px;margin-top:auto;">
@@ -283,11 +269,6 @@ export class TillView {
       });
     });
 
-    // Simulate Barcode Scanner action
-    document.getElementById('till-scan-sim').addEventListener('click', () => {
-      this.simulateBarcodeScan();
-    });
-
     // Customer attach dropdown selection
     const custSelect = document.getElementById('cart-customer-select');
     custSelect.addEventListener('change', async (e) => {
@@ -331,26 +312,10 @@ export class TillView {
     document.getElementById('pay-mpesa-phone').addEventListener('input', () => {
       this.invalidateMpesaAttempt();
     });
-    document.getElementById('pay-split-phone').addEventListener('input', () => {
-      this.invalidateMpesaAttempt();
-    });
-    document.getElementById('pay-split-cash').addEventListener('input', (e) => {
-      this.balanceSplitFrom('cash', parseFloat(e.target.value) || 0);
-      this.invalidateMpesaAttempt();
-    });
-    document.getElementById('pay-split-mpesa').addEventListener('input', (e) => {
-      this.balanceSplitFrom('mpesa', parseFloat(e.target.value) || 0);
-      this.invalidateMpesaAttempt();
-    });
 
     // STK Push Trigger
     document.getElementById('pay-trigger-stk').addEventListener('click', () => {
       this.triggerMpesaStk();
-    });
-
-    // Split STK Trigger
-    document.getElementById('pay-split-trigger-stk').addEventListener('click', () => {
-      this.triggerSplitMpesaStk();
     });
 
     // Cancel / Close buttons
@@ -487,24 +452,6 @@ export class TillView {
     });
   }
 
-  async simulateBarcodeScan() {
-    // Mock simple scanner inputting a barcode
-    const barcodes = ['6161234567890', '6161234567891', '6161234567892', '6161234567893'];
-    const randomBarcode = barcodes[Math.floor(Math.random() * barcodes.length)];
-    
-    showNotification(`Scanned Barcode: ${randomBarcode}`, 'success');
-
-    const barcodeRecord = await db.barcodes.where('barcode').equals(randomBarcode).first();
-    if (barcodeRecord) {
-      const prod = await db.products.get(barcodeRecord.product_id);
-      if (prod) {
-        this.addToCart(prod);
-      }
-    } else {
-      showNotification('Barcode not found in catalogue.', 'error');
-    }
-  }
-
   async addToCart(product) {
     // If batch tracked, resolve first expiry batch (FEFO Suggestion)
     let selectedBatch = null;
@@ -576,7 +523,7 @@ export class TillView {
 
       div.innerHTML = `
         <div class="cart-item-header" style="display: flex; align-items: center; gap: 8px;">
-          ${item.product.image_data ? `<img src="${item.product.image_data}" style="width: 24px; height: 24px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(200, 130, 42, 0.2);">` : `<div style="width: 24px; height: 24px; border-radius: 4px; background: rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--text-muted);">📷</div>`}
+          ${item.product.image_data ? `<img src="${item.product.image_data}" style="width: 24px; height: 24px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(200, 130, 42, 0.2);">` : `<div style="width: 24px; height: 24px; border-radius: 4px; background: rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--text-muted);">📷</div>`}
           <span class="cart-item-title" style="flex: 1;">${item.product.name}</span>
           <button class="cart-item-remove" data-idx="${index}">✕</button>
         </div>
@@ -726,22 +673,20 @@ export class TillView {
     }
 
     const confirm = document.getElementById('pay-confirm-btn');
-    if (confirm && (this.selectedPaymentMethod === 'MPESA' || this.selectedPaymentMethod === 'SPLIT')) {
+    if (confirm && this.selectedPaymentMethod === 'MPESA') {
       confirm.disabled = true;
     }
 
     if (this.mpesaCapability.available) {
       document.getElementById('stk-status-area')?.classList.add('hidden');
-      document.getElementById('split-stk-status-area')?.classList.add('hidden');
     } else {
       this.applyMpesaCapabilityToUi();
     }
   }
 
   showMpesaStatus(kind, message, level = 'warning') {
-    const split = kind === 'split';
-    const area = document.getElementById(split ? 'split-stk-status-area' : 'stk-status-area');
-    const badge = document.getElementById(split ? 'split-stk-status-badge' : 'stk-status-badge');
+    const area = document.getElementById('stk-status-area');
+    const badge = document.getElementById('stk-status-badge');
     if (!area || !badge) return;
     area.classList.remove('hidden');
     badge.className = `badge ${level}`;
@@ -759,7 +704,7 @@ export class TillView {
           ? 'Send prompt directly to customer phone'
           : 'Unavailable until the server confirms activation';
 
-    for (const id of ['payment-method-mpesa', 'payment-method-split']) {
+    for (const id of ['payment-method-mpesa']) {
       const card = document.getElementById(id);
       if (!card) continue;
       card.style.opacity = unavailable ? '0.55' : '';
@@ -769,25 +714,20 @@ export class TillView {
     }
 
     const mpesaNote = document.getElementById('payment-method-mpesa-note');
-    const splitNote = document.getElementById('payment-method-split-note');
     if (mpesaNote) mpesaNote.innerText = statusLabel;
-    if (splitNote) splitNote.innerText = unavailable ? statusLabel : 'Combine Cash and M-Pesa';
 
     const offline = state.syncManager?.connectionStatus === 'OFFLINE';
     const trigger = document.getElementById('pay-trigger-stk');
-    const splitTrigger = document.getElementById('pay-split-trigger-stk');
     if (trigger) trigger.disabled = unavailable || offline || this.mpesaVerified;
-    if (splitTrigger) splitTrigger.disabled = unavailable || offline || this.mpesaVerified;
 
     if (unavailable) {
       this.showMpesaStatus('mpesa', capability.message, 'warning');
-      this.showMpesaStatus('split', capability.message, 'warning');
     }
 
     const confirm = document.getElementById('pay-confirm-btn');
     if (
       confirm
-      && (this.selectedPaymentMethod === 'MPESA' || this.selectedPaymentMethod === 'SPLIT')
+      && this.selectedPaymentMethod === 'MPESA'
       && !this.mpesaVerified
     ) {
       confirm.disabled = true;
@@ -803,22 +743,6 @@ export class TillView {
     this.mpesaCapability = capability;
     this.applyMpesaCapabilityToUi();
     return capability;
-  }
-
-  balanceSplitFrom(source, amountKes) {
-    const bounded = Math.min(this.totals.total, Math.max(0, amountKes));
-    const other = Math.max(0, this.totals.total - bounded);
-    const target = document.getElementById(
-      source === 'cash' ? 'pay-split-mpesa' : 'pay-split-cash'
-    );
-    if (target) target.value = other.toFixed(2);
-  }
-
-  splitAmountsMinor() {
-    return {
-      cashMinor: toMinor(parseFloat(document.getElementById('pay-split-cash')?.value) || 0),
-      mpesaMinor: toMinor(parseFloat(document.getElementById('pay-split-mpesa')?.value) || 0)
-    };
   }
 
   cartLineGrossMinor(item) {
@@ -926,11 +850,8 @@ export class TillView {
     }
 
     const discountedCartMinor = cartGrossMinor - discountMinor;
-    const cashMinor = kind === 'split' ? attempt.cashAmountMinor : 0;
-    if (
-      (kind === 'split' && cashMinor + amountMinor !== discountedCartMinor)
-      || (kind !== 'split' && amountMinor !== discountedCartMinor)
-    ) {
+    // One tender per sale, so the M-Pesa amount is the whole discounted cart.
+    if (amountMinor !== discountedCartMinor) {
       return {
         ok: false,
         message: 'The discounted M-Pesa amount no longer settles the cart exactly.'
@@ -952,16 +873,12 @@ export class TillView {
       return { ok: false, message: 'The discounted cart could not be represented exactly on this till.' };
     }
 
-    if (kind === 'split') {
-      document.getElementById('pay-split-cash').value = (cashMinor / 100).toFixed(2);
-      document.getElementById('pay-split-mpesa').value = (amountMinor / 100).toFixed(2);
-    }
     document.getElementById('checkout-due-amount').innerText = `KES ${this.totals.total.toFixed(2)}`;
 
     attempt.pricingApplied = true;
     attempt.pricing = pricing;
     attempt.settledAmountMinor = amountMinor;
-    attempt.fingerprint = this.paymentAttemptFingerprint(phone, amountMinor, cashMinor);
+    attempt.fingerprint = this.paymentAttemptFingerprint(phone, amountMinor, 0);
     return { ok: true, amountMinor };
   }
 
@@ -987,7 +904,7 @@ export class TillView {
     document.getElementById('payment-inputs-cash').classList.add('hidden');
     document.getElementById('payment-inputs-mpesa').classList.add('hidden');
     document.getElementById('payment-inputs-credit').classList.add('hidden');
-    document.getElementById('payment-inputs-split').classList.add('hidden');
+    document.getElementById('payment-inputs-card').classList.add('hidden');
 
     // Every tender starts confirmable; only the credit check takes that away.
     // Without this reset, a breached credit limit left the button disabled for
@@ -1008,12 +925,8 @@ export class TillView {
     } else if (method === 'CREDIT') {
       document.getElementById('payment-inputs-credit').classList.remove('hidden');
       this.applyCreditLimit();
-    } else if (method === 'SPLIT') {
-      document.getElementById('payment-inputs-split').classList.remove('hidden');
-      document.getElementById('pay-split-cash').value = (this.totals.total / 2).toFixed(2);
-      document.getElementById('pay-split-mpesa').value = (this.totals.total / 2).toFixed(2);
-      document.getElementById('pay-split-phone').value = this.selectedCustomer.phone || '';
-      document.getElementById('pay-split-trigger-stk').disabled = true;
+    } else if (method === 'CARD') {
+      document.getElementById('payment-inputs-card').classList.remove('hidden');
     }
 
     this.applyMpesaCapabilityToUi();
@@ -1081,23 +994,10 @@ export class TillView {
     await this.runMpesaAttempt('mpesa');
   }
 
-  async triggerSplitMpesaStk() {
-    await this.runMpesaAttempt('split');
-  }
-
   async runMpesaAttempt(kind) {
-    const split = kind === 'split';
-    const phone = document.getElementById(split ? 'pay-split-phone' : 'pay-mpesa-phone').value;
-    const trigger = document.getElementById(split ? 'pay-split-trigger-stk' : 'pay-trigger-stk');
-    const { cashMinor, mpesaMinor } = split
-      ? this.splitAmountsMinor()
-      : { cashMinor: 0, mpesaMinor: toMinor(this.totals.total) };
-
-    if (split && cashMinor + mpesaMinor !== toMinor(this.totals.total)) {
-      this.showMpesaStatus(kind, 'Cash and M-Pesa must exactly equal the sale total.', 'danger');
-      showNotification('Split tender amounts must exactly equal the sale total.', 'error');
-      return;
-    }
+    const phone = document.getElementById('pay-mpesa-phone').value;
+    const trigger = document.getElementById('pay-trigger-stk');
+    const mpesaMinor = toMinor(this.totals.total);
     if (mpesaMinor <= 0) {
       this.showMpesaStatus(kind, 'Enter an M-Pesa amount greater than zero.', 'danger');
       return;
@@ -1107,7 +1007,7 @@ export class TillView {
       return;
     }
 
-    const attempt = this.beginMpesaAttempt(phone, mpesaMinor, cashMinor);
+    const attempt = this.beginMpesaAttempt(phone, mpesaMinor, 0);
     if (this.mpesaVerified && this.mpesaAttempt === attempt) {
       this.showMpesaStatus(kind, `Already confirmed. Code: ${this.mpesaRef}`, 'success');
       return;
@@ -1170,7 +1070,7 @@ export class TillView {
           && attempt.fingerprint === this.paymentAttemptFingerprint(
             phone,
             expectedAmountMinor,
-            split ? attempt.cashAmountMinor : 0
+            0
           );
 
         if (!priced.ok || !amountMatches || !fingerprintMatches) {
@@ -1219,10 +1119,9 @@ export class TillView {
   /**
    * One row per tender actually taken.
    *
-   * A split used to be written as a single 'SPLIT' row carrying the whole
-   * total, which the backend has no method for and which lost the cash/M-Pesa
-   * breakdown the drawer count and the M-Pesa ledger both need. Splits now
-   * settle as the two payments they really are.
+   * Split tenders were removed: they were the only path that wrote two rows,
+   * and the cash half was self-certified at the counter while the M-Pesa half
+   * waited on a provider. One tender per sale keeps settlement unambiguous.
    */
   buildPaymentRecords(saleId) {
     const now = new Date().toISOString();
@@ -1239,22 +1138,17 @@ export class TillView {
       received_at: now
     });
 
-    if (this.selectedPaymentMethod === 'SPLIT') {
-      const { cashMinor, mpesaMinor } = this.splitAmountsMinor();
-      const rows = [];
-      if (cashMinor > 0) rows.push(row('CASH', cashMinor / 100, '', true));
-      rows.push(row('MPESA', mpesaMinor / 100, this.mpesaRef, this.mpesaVerified, {
-        phone: document.getElementById('pay-split-phone')?.value || '',
-        attemptId: this.mpesaAttempt?.attemptId || null
-      }));
-      return rows;
-    }
-
     if (this.selectedPaymentMethod === 'MPESA') {
       return [row('MPESA', this.totals.total, this.mpesaRef, this.mpesaVerified, {
         phone: document.getElementById('pay-mpesa-phone')?.value || '',
         attemptId: this.mpesaAttempt?.attemptId || null
       })];
+    }
+
+    if (this.selectedPaymentMethod === 'CARD') {
+      // The terminal already took the money; its reference is the only thread
+      // back to the slip if the charge is ever queried.
+      return [row('CARD', this.totals.total, document.getElementById('pay-card-reference')?.value.trim() || '', true)];
     }
 
     // Cash is settled at the drawer and credit is a receivable on the books;
@@ -1265,16 +1159,12 @@ export class TillView {
   mpesaProofMatchesCurrentCart() {
     if (!this.mpesaVerified || !this.mpesaAttempt || !this.mpesaRef) return false;
 
-    const split = this.selectedPaymentMethod === 'SPLIT';
-    const phone = document.getElementById(split ? 'pay-split-phone' : 'pay-mpesa-phone')?.value || '';
-    const { cashMinor, mpesaMinor } = split
-      ? this.splitAmountsMinor()
-      : { cashMinor: 0, mpesaMinor: toMinor(this.totals.total) };
-    if (cashMinor + mpesaMinor !== toMinor(this.totals.total)) return false;
+    const phone = document.getElementById('pay-mpesa-phone')?.value || '';
+    const mpesaMinor = toMinor(this.totals.total);
     if (this.mpesaConfirmedAmountMinor !== mpesaMinor) return false;
 
     return this.mpesaAttempt.fingerprint
-      === this.paymentAttemptFingerprint(phone, mpesaMinor, cashMinor);
+      === this.paymentAttemptFingerprint(phone, mpesaMinor, 0);
   }
 
   async finalizeInvoice() {
@@ -1294,7 +1184,7 @@ export class TillView {
     // A sale is never booked against an M-Pesa payment the backend has not
     // confirmed. Cash and credit are settled at the counter; M-Pesa is not.
     if (
-      (this.selectedPaymentMethod === 'MPESA' || this.selectedPaymentMethod === 'SPLIT')
+      this.selectedPaymentMethod === 'MPESA'
       && !this.mpesaProofMatchesCurrentCart()
     ) {
       this.invalidateMpesaAttempt();
@@ -1463,7 +1353,7 @@ export class TillView {
         ${state.currentTenant.phone ? `<p>Tel: ${state.currentTenant.phone}</p>` : ''}
       </div>
       <div class="receipt-divider"></div>
-      <div style="font-size:10px; margin-bottom: 8px;">
+      <div style="font-size:13px; margin-bottom: 8px;">
         <div><b>Invoice:</b> ${sale.invoice_no}</div>
         <div><b>Date:</b> ${new Date(sale.sold_at).toLocaleString()}</div>
         <div><b>Cashier:</b> ${state.currentUser.name}</div>
@@ -1480,7 +1370,7 @@ export class TillView {
                 <span>${prod ? prod.name : 'Unknown Item'}</span>
                 <span>${line.line_total.toFixed(2)}</span>
               </div>
-              <div style="font-size:9px; color:#555;">
+              <div style="font-size:12px; color:#555;">
                 ${line.qty} x ${line.unit_price.toFixed(2)} (Tax: ${line.tax_code})
               </div>
             </div>
@@ -1501,14 +1391,14 @@ export class TillView {
         <span>KES ${sale.grand_total.toFixed(2)}</span>
       </div>
       <div class="receipt-divider"></div>
-      <div style="font-size:10px; margin-bottom: 8px;">
+      <div style="font-size:13px; margin-bottom: 8px;">
         <div><b>Settlement:</b> ${payment.method}</div>
         ${payment.reference ? `<div><b>Ref:</b> ${payment.reference}</div>` : ''}
       </div>
       <div class="receipt-divider"></div>
       
       <!-- eTIMS block -->
-      <div class="receipt-header" style="font-size:9px;">
+      <div class="receipt-header" style="font-size:12px;">
         <p><b>*** KRA eTIMS FISCAL RECORD ***</b></p>
         ${hasFiscal ? `
           <p>CU Serial: ${fiscal.cu_serial}</p>
@@ -1526,13 +1416,20 @@ export class TillView {
         `}
       </div>
       <div class="receipt-divider"></div>
-      <div class="receipt-header" style="font-size:9px; margin-top:8px;">
+      <div class="receipt-header" style="font-size:12px; margin-top:8px;">
         <p>Thank you for shopping with us!</p>
         <p>Powered by KPOS Pro Systems</p>
       </div>
     `;
 
     document.getElementById('receipt-modal').classList.add('active');
+
+    // The server decremented the House when it took the sale, but the till
+    // reads a local copy of those balances. Without this refresh the on-hand
+    // figures sit frozen at whatever they were when the app booted.
+    void pullStock()
+      .then(() => this.loadProducts())
+      .catch(() => {});
   }
 
   /**

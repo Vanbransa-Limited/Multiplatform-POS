@@ -1,4 +1,16 @@
 // Global shared context to eliminate circular dependencies.
+
+/**
+ * A module telling the session it is deliberately still working.
+ *
+ * The idle timer signs out after fifteen minutes without a pointer or key
+ * event. The print station is a machine at the counter nobody touches on
+ * purpose, so it signed itself out mid-service and took the printer with it.
+ * Emitting this on `window` resets that timer; stop emitting and the normal
+ * idle timeout resumes.
+ */
+export const ACTIVITY_EVENT = 'pos-activity';
+
 // The annotation stops TypeScript inferring `null` as the only permitted type
 // for these slots when the TSX shell reads them.
 /**

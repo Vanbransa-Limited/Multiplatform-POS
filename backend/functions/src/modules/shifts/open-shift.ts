@@ -31,7 +31,7 @@ export const openShift = onCall(
     const input = asRecord(request.data, "Request data");
     const branchId = documentId(input.branchId, "branchId");
     const deviceId = documentId(input.deviceId, "deviceId");
-    const openingFloatMinor = input.openingFloatMinor === undefined
+    const requestedFloatMinor = input.openingFloatMinor === undefined
       ? 0
       : minorUnits(input.openingFloatMinor, "openingFloatMinor");
 
@@ -45,8 +45,10 @@ export const openShift = onCall(
     const shiftRef = db.collection("shifts").doc(shiftId);
 
     return db.runTransaction(async (transaction) => {
-      const [deviceDocument, branchDocument, shiftDocument] =
-        await transaction.getAll(deviceRef, branchRef, shiftRef);
+      const [deviceDocument, branchDocument, shiftDocument, settingsDocument] =
+        await transaction.getAll(deviceRef, branchRef, shiftRef, db.collection('tenant_settings').doc(tenantId));
+      const settings = settingsDocument.data();
+      const openingFloatMinor = settings?.cashEnabled === true && settings?.acceptedPaymentMethods?.includes('cash') ? requestedFloatMinor : 0;
 
       const device = deviceDocument.data() ?? {};
       if (
@@ -78,7 +80,7 @@ export const openShift = onCall(
               : 0,
           });
         }
-        return { shiftId, reused: true, openedAt: existing.openedAt ?? null };
+        return { shiftId, reused: true, openingFloatMinor: existing.openingFloatMinor || 0, openedAt: existing.openedAt ?? null };
       }
 
       transaction.set(shiftRef, {
@@ -95,7 +97,7 @@ export const openShift = onCall(
         closedAt: null,
       });
 
-      return { shiftId, reused: false, openedAt: now.toDate().toISOString() };
+      return { shiftId, reused: false, openingFloatMinor, openedAt: now.toDate().toISOString() };
     });
   },
 );

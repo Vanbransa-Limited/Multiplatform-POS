@@ -7,7 +7,7 @@
  * configured, so the app keeps selling on a laptop with no project attached.
  */
 
-import { roleLabel } from './roles';
+import { roleLabel } from './roles.js';
 
 const cfg = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -157,7 +157,7 @@ export async function signOutTill() {
 export async function callFunction(name, payload) {
   const fb = await getFirebase();
   if (!fb) throw new Error('Firebase is not configured on this till.');
-  const call = fb.functions.httpsCallable(fb.fnInstance, name);
+  const call = fb.functions.httpsCallable(fb.fnInstance, name, { timeout: name === 'importStaff' ? 360000 : 70000 });
   const { data } = await call(payload);
   return data;
 }

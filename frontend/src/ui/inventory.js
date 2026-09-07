@@ -11,6 +11,7 @@ export class InventoryView {
     this.container = container;
     this.activeSubTab = 'ledger'; // ledger, takes, expiries
     this.ledgerPage = 1;
+    this.ledgerSearch = '';
   }
 
   async load() {
@@ -50,6 +51,20 @@ export class InventoryView {
         this.loadSubTab();
       });
     });
+  }
+
+  /**
+   * Menu Admin is readable by supervisors and store keepers, but the catalogue
+   * callables are owner and manager only. Without this the form filled in, the
+   * save was pressed, and only then did the server say no.
+   */
+  get canEditCatalogue() {
+    return ['Owner', 'Store Manager'].includes(state.currentUser?.role);
+  }
+
+  /** Counted and on-menu are stock decisions, so a keeper may flip them. */
+  get canFlagProducts() {
+    return ['Owner', 'Store Manager', 'Store Keeper'].includes(state.currentUser?.role);
   }
 
   async loadSubTab() {
@@ -191,18 +206,25 @@ export class InventoryView {
   }
 
   async renderLedger(pane) {
-    const products = await db.products.toArray();
+    const all = await db.products.toArray();
+    // Retired products keep their row for history but leave the ledger.
+    const live = all.filter((product) => product.is_active !== 0);
+    const needle = this.ledgerSearch.trim().toLowerCase();
+    const products = needle
+      ? live.filter((product) => `${product.name} ${product.sku}`.toLowerCase().includes(needle))
+      : live;
     // Page before the per-row stock lookups: each one is another Dexie read.
     const view = paginate(products, this.ledgerPage);
     this.ledgerPage = view.page;
 
     pane.innerHTML = `
       <div class="control-bar">
-        <input type="text" id="ledg-search" placeholder="Search ledger by SKU or name...">
+        <input type="text" id="ledg-search" placeholder="Search ledger by SKU or name..." value="${this.ledgerSearch.replace(/"/g, '&quot;')}">
+        ${this.canEditCatalogue ? `
         <button class="primary-btn" id="ledg-add-prod-btn">Add Product</button>
         <button class="sec-btn" id="ledg-import-btn">📥 Import CSV / Excel</button>
-        <button class="sec-btn" id="ledg-autofill-btn">✨ Auto-fill Images</button>
-        <button class="sec-btn" id="ledg-adjust-btn">Manual Adjustment</button>
+        <button class="sec-btn" id="ledg-adjust-btn">Manual Adjustment</button>` : `
+        <span class="muted" style="font-size:12px;">Viewing only — an owner or store manager changes the catalogue.</span>`}
         <input type="file" id="ledg-import-file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none;">
       </div>
       <div id="ledg-import-report"></div>
@@ -215,7 +237,9 @@ export class InventoryView {
               <th>Product Name</th>
               <th>UOM</th>
               <th>Category</th>
-              <th>Tracked</th>
+              <th>Batch</th>
+              <th>Counted</th>
+              <th>On menu</th>
               <th>On Hand Quantity</th>
               <th>Sell Price</th>
               <th>Actions</th>
@@ -250,12 +274,30 @@ export class InventoryView {
             ${prod.is_batch_tracked ? 'Batch' : 'Standard'}
           </span>
         </td>
+        <td>
+          ${prod.is_service
+            ? '<span class="badge">Service</span>'
+            : this.canFlagProducts
+              ? `<button type="button" class="stk-edit track-stock-btn" data-id="${prod.id}" data-tracked="${prod.track_stock ? '1' : ''}">
+                 ${prod.track_stock ? '✓ Counted' : 'Not counted'}
+               </button>`
+              : `<span class="muted">${prod.track_stock ? 'Counted' : 'Not counted'}</span>`}
+        </td>
+        <td>
+          ${this.canFlagProducts
+            ? `<button type="button" class="stk-edit menu-visible-btn" data-id="${prod.id}" data-shown="${prod.show_on_menu === 0 ? '' : '1'}">
+            ${prod.show_on_menu === 0 ? 'Store only' : '✓ On menu'}
+          </button>`
+            : `<span class="muted">${prod.show_on_menu === 0 ? 'Store only' : 'On menu'}</span>`}
+        </td>
         <td style="font-weight:700; color:${stock <= 10 && !prod.is_service ? 'var(--accent-rose)' : 'var(--text-primary)'}">
           ${prod.is_service ? 'N/A (Service)' : stock}
         </td>
         <td style="font-family:var(--font-display);font-weight:600;">KES ${prod.sell_price.toFixed(2)}</td>
         <td>
+          ${this.canEditCatalogue ? `
           <button class="primary-btn edit-prod-btn" data-id="${prod.id}" style="padding:4px 8px;font-size:10px;">Edit</button>
+          <button class="stk-edit remove-prod-btn" data-id="${prod.id}" data-name="${prod.name.replace(/"/g, '&quot;')}" style="padding:4px 8px;font-size:10px;margin-left:6px;">Remove</button>` : ''}
         </td>
       `;
       tbody.appendChild(tr);
@@ -270,11 +312,53 @@ export class InventoryView {
       });
     }
 
-    this.bindImportEvents(pane);
-    this.bindProductEditorEvents(pane);
+    // The box existed but nothing listened to it. Re-rendering on every
+    // keystroke would take the focus with it, so the caret is put back.
+    const search = document.getElementById('ledg-search');
+    if (search) {
+      search.addEventListener('input', async (event) => {
+        this.ledgerSearch = event.target.value;
+        this.ledgerPage = 1;
+        await this.renderLedger(pane);
+        const again = document.getElementById('ledg-search');
+        if (again) {
+          again.focus();
+          again.setSelectionRange(again.value.length, again.value.length);
+        }
+      });
+    }
 
-    // Manual adjustment modal event trigger (simulation)
-    document.getElementById('ledg-adjust-btn').addEventListener('click', async () => {
+    // Removing keeps the row and marks it retired: sale lines and stock
+    // movements point at it, so deleting the record would strand them.
+    pane.addEventListener('click', async (event) => {
+      const button = event.target.closest('.remove-prod-btn');
+      if (!button) return;
+      const name = button.getAttribute('data-name');
+      if (!window.confirm(`Remove "${name}" from the menu and the till?
+
+Past sales keep it. You can add it again later.`)) return;
+      button.disabled = true;
+      try {
+        await callFunction('retireProduct', { productId: button.getAttribute('data-id') });
+        await pullCatalogue();
+        showNotification(`"${name}" removed.`, 'success');
+        await this.renderLedger(pane);
+      } catch (error) {
+        showNotification(error.message || 'Could not remove that product.', 'error');
+        button.disabled = false;
+      }
+    });
+
+    if (this.canEditCatalogue) {
+      this.bindImportEvents(pane);
+      this.bindProductEditorEvents(pane);
+    }
+
+    // Manual adjustment modal event trigger (simulation).
+    // Guarded: the button is only rendered for roles that may change stock, and
+    // binding a missing element threw before the ledger finished rendering.
+    const adjustBtn = document.getElementById('ledg-adjust-btn');
+    if (adjustBtn) adjustBtn.addEventListener('click', async () => {
       // Prompt adjustment
       const sku = prompt('Enter SKU to adjust:');
       if (!sku) return;
@@ -308,118 +392,6 @@ export class InventoryView {
       this.loadSubTab();
     });
 
-    document.getElementById('ledg-autofill-btn').addEventListener('click', async (e) => {
-      const btn = e.target;
-      btn.disabled = true;
-      btn.innerText = 'Applying AI Images...';
-      
-      const aiImageMap = [
-        { keywords: ['savanna', 'cider'], url: '/ai_images/cider_glass.jpg' },
-        { keywords: ['guinness', 'stout'], url: '/ai_images/stout_glass.jpg' },
-        { keywords: ['tusker', 'white cap', 'whitecap', 'pilsner'], url: '/ai_images/beer_glass.jpg' },
-        { keywords: ['beer', 'lager', 'senator'], url: '/ai_images/beer_bottle.jpg' },
-        { keywords: ['smirnoff', 'vodka'], url: '/ai_images/vodka_glass.jpg' },
-        { keywords: ['jameson', 'whiskey'], url: '/ai_images/whiskey_glass.jpg' },
-        { keywords: ['konyagi', 'gin'], url: '/ai_images/gin_glass.jpg' },
-        { keywords: ['wine', 'red wine'], url: '/ai_images/red_wine_glass.jpg' },
-        { keywords: ['coca-cola', 'coca cola', 'coke'], url: '/ai_images/coke_bottle.png' },
-        { keywords: ['fanta'], url: '/ai_images/fanta_glass.jpg' },
-        { keywords: ['juice'], url: '/ai_images/fresh_juice.jpg' },
-        { keywords: ['mineral water', 'water', 'aqua'], url: '/ai_images/mineral_water.jpg' },
-        { keywords: ['nyama choma', 'roasted meat', 'goat ribs', 'pork ribs'], url: '/ai_images/nyama_choma.jpg' },
-        { keywords: ['chicken', 'grilled chicken'], url: '/ai_images/grilled_chicken.jpg' },
-        { keywords: ['pilau', 'rice', 'biryani'], url: '/ai_images/pilau_rice.jpg' },
-        { keywords: ['fish', 'tilapia', 'omena', 'fillet'], url: '/ai_images/fish_chips.jpg' },
-        { keywords: ['ugali', 'beef stew', 'stew', 'beans'], url: '/ai_images/ugali_nyama.jpg' },
-        { keywords: ['samosa'], url: '/ai_images/beef_samosas.jpg' }
-      ];
-
-
-      try {
-        const products = await db.products.where('is_active').equals(1).toArray();
-        let updatedCount = 0;
-        
-        for (const prod of products) {
-          // Allow auto-fill to overwrite empty/missing images
-          if (prod.image_data && prod.image_data.startsWith('data:image')) continue;
-          
-          const lowerName = prod.name.toLowerCase();
-          
-          // Find matching AI image
-          const match = aiImageMap.find(mapping => 
-            mapping.keywords.some(kw => lowerName.includes(kw))
-          );
-          
-          let imgUrl = null;
-          
-          if (match) {
-            imgUrl = match.url;
-          } else {
-            // Fallback to wikimedia for basic terms like "coca-cola", "water", "juice"
-            const cleanName = prod.name.replace(/[0-9]+(ml|g|kg|l|pcs)/gi, '').replace(/\(.*\)/g, '').trim();
-            const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(cleanName)}&gsrnamespace=6&gsrlimit=1&prop=imageinfo&iiprop=url&iiurlwidth=400&format=json&origin=*`;
-            try {
-              const res = await fetch(searchUrl);
-              const data = await res.json();
-              if (data.query && data.query.pages) {
-                const pages = Object.values(data.query.pages);
-                if (pages.length > 0 && pages[0].imageinfo && pages[0].imageinfo.length > 0) {
-                  imgUrl = pages[0].imageinfo[0].thumburl;
-                }
-              }
-            } catch(e) {}
-          }
-
-          if (imgUrl) {
-            try {
-              const imgRes = await fetch(imgUrl);
-              const blob = await imgRes.blob();
-              const reader = new FileReader();
-              const base64Data = await new Promise(resolve => {
-                reader.onloadend = () => resolve(reader.result);
-                reader.readAsDataURL(blob);
-              });
-              
-              // Only apply canvas compression if it's the large AI images
-              if (imgUrl.startsWith('/ai_images/')) {
-                 const img = new Image();
-                 const compressedBase64 = await new Promise(res => {
-                    img.onload = () => {
-                      const canvas = document.createElement('canvas');
-                      const MAX = 400;
-                      let w = img.width, h = img.height;
-                      if (w > h && w > MAX) { h *= MAX/w; w = MAX; }
-                      else if (h > MAX) { w *= MAX/h; h = MAX; }
-                      canvas.width = w; canvas.height = h;
-                      const ctx = canvas.getContext('2d');
-                      ctx.drawImage(img, 0, 0, w, h);
-                      res(canvas.toDataURL('image/jpeg', 0.8));
-                    };
-                    img.src = base64Data;
-                 });
-                 prod.image_data = compressedBase64;
-              } else {
-                 prod.image_data = base64Data;
-              }
-
-              await db.products.put(prod);
-              updatedCount++;
-            } catch(err) {
-              console.error('Failed to fetch image for', prod.name, err);
-            }
-          }
-        }
-        
-        showNotification(`Auto-fill complete. Applied ${updatedCount} AI images.`, 'success');
-        this.loadSubTab(); // Reload table
-      } catch (err) {
-        console.error(err);
-        showNotification('Error during auto-fill.', 'error');
-      } finally {
-        btn.disabled = false;
-        btn.innerText = '✨ Auto-fill Images';
-      }
-    });
   }
 
   async bindProductEditorEvents(pane) {
@@ -452,9 +424,12 @@ export class InventoryView {
             </div>
             <div>
               <label>Category</label>
-              <select id="pe-category" class="pe-input">
-                ${categories.map(c => `<option value="${c.id}" ${c.id === prod.category_id ? 'selected' : ''}>${c.name}</option>`).join('')}
-              </select>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <select id="pe-category" class="pe-input" style="flex:1;">
+                  ${categories.map(c => `<option value="${c.id}" ${c.id === prod.category_id ? 'selected' : ''}>${c.name}</option>`).join('')}
+                </select>
+                <button type="button" id="pe-new-category" class="stk-edit" title="Create a new product type">+ New type</button>
+              </div>
             </div>
             <div>
               <label>Sell Price (KES)</label>
@@ -484,6 +459,16 @@ export class InventoryView {
             <div style="display:flex; align-items:center; gap:8px; margin-top:8px;">
               <input type="checkbox" id="pe-batch" ${prod.is_batch_tracked ? 'checked' : ''}>
               <label for="pe-batch" style="margin:0;">Batch Tracked?</label>
+            </div>
+            <!-- Store-only stock is sold at the till but never advertised.
+                 Absent means shown, so existing items keep their place. -->
+            <div style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+              <input type="checkbox" id="pe-on-menu" ${prod.show_on_menu === 0 ? '' : 'checked'}>
+              <label for="pe-on-menu" style="margin:0;">Show on customer menu?</label>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+              <input type="checkbox" id="pe-counted" ${prod.track_stock ? 'checked' : ''}>
+              <label for="pe-counted" style="margin:0;">Counted stock?</label>
             </div>
             <div style="grid-column: span 2; margin-top: 8px;">
               <label>Product Image</label>
@@ -552,33 +537,61 @@ export class InventoryView {
         reader.readAsDataURL(file);
       });
       
+      // A type nobody can create is a fixed list; the menu groups by these, so
+      // a new section of the menu starts here.
+      document.getElementById('pe-new-category').addEventListener('click', async () => {
+        const name = window.prompt('Name the new product type (it becomes a heading on the customer menu):');
+        if (!name?.trim()) return;
+        const button = document.getElementById('pe-new-category');
+        button.disabled = true;
+        try {
+          const created = await callFunction('upsertCategory', { name: name.trim() });
+          await pullCatalogue();
+          const select = document.getElementById('pe-category');
+          if (![...select.options].some((option) => option.value === created.id)) {
+            select.add(new Option(created.name, created.id));
+          }
+          select.value = created.id;
+          showNotification(created.created ? `"${created.name}" added.` : `"${created.name}" already exists.`, 'success');
+        } catch (error) {
+          showNotification(error.message || 'Could not add that product type.', 'error');
+        } finally {
+          button.disabled = false;
+        }
+      });
+
       document.getElementById('pe-save-btn').addEventListener('click', async () => {
         const name = document.getElementById('pe-name').value;
         const sku = document.getElementById('pe-sku').value || `SKU-${Date.now().toString().slice(-6)}`;
         if (!name) return showNotification('Name is required', 'error');
 
-        const newProd = {
-          ...prod,
-          id: prod.id || `prod-${crypto.randomUUID()}`,
-          tenant_id: state.currentTenant?.id || 'tenant-01',
-          name,
-          sku,
-          category_id: document.getElementById('pe-category').value,
-          sell_price: parseFloat(document.getElementById('pe-sell').value) || 0,
-          cost_price: parseFloat(document.getElementById('pe-cost').value) || 0,
-          uom: document.getElementById('pe-uom').value || 'EA',
-          tax_code: document.getElementById('pe-tax').value,
-          is_service: document.getElementById('pe-service').checked ? 1 : 0,
-          is_batch_tracked: document.getElementById('pe-batch').checked ? 1 : 0,
-          is_active: 1,
-          image_data: currentImageData,
-          etims_registered_at: prod.etims_registered_at || new Date().toISOString()
-        };
-
-        await db.products.put(newProd);
-        showNotification('Product saved successfully', 'success');
-        modal.remove();
-        this.loadSubTab(); // refresh ledger
+        const isService = document.getElementById('pe-service').checked;
+        const saveBtn = document.getElementById('pe-save-btn');
+        saveBtn.disabled = true;
+        try {
+          // Products live in the central catalogue. Saving locally only meant an
+          // item existed on one device and never reached the menu or the tills.
+          await callFunction('upsertProduct', {
+            id: prod.id || undefined,
+            name,
+            sku,
+            categoryId: document.getElementById('pe-category').value,
+            sellPrice: parseFloat(document.getElementById('pe-sell').value) || 0,
+            costPrice: parseFloat(document.getElementById('pe-cost').value) || 0,
+            uom: document.getElementById('pe-uom').value || 'EACH',
+            taxCode: document.getElementById('pe-tax').value,
+            isService,
+            trackStock: !isService && document.getElementById('pe-counted').checked,
+            showOnMenu: document.getElementById('pe-on-menu').checked,
+          });
+          await pullCatalogue();
+          showNotification('Product saved to the catalogue.', 'success');
+          modal.remove();
+          this.loadSubTab(); // refresh ledger
+        } catch (error) {
+          saveBtn.disabled = false;
+          showNotification(error.message || 'Could not save the product.', 'error');
+        }
       });
     };
 
@@ -590,6 +603,32 @@ export class InventoryView {
       if (btn) {
         const id = btn.getAttribute('data-id');
         openEditor(id);
+      }
+    });
+
+    // Counted items are the ones the public menu holds to their House balance,
+    // so this writes to the server catalogue rather than the local cache.
+    pane.addEventListener('click', async (e) => {
+      const btn = e.target.closest('.track-stock-btn, .menu-visible-btn');
+      if (!btn) return;
+      const menu = btn.classList.contains('menu-visible-btn');
+      const change = menu
+        ? { showOnMenu: !btn.getAttribute('data-shown') }
+        : { trackStock: !btn.getAttribute('data-tracked') };
+      btn.disabled = true;
+      try {
+        await callFunction('setProductTracking', { productId: btn.getAttribute('data-id'), ...change });
+        await pullCatalogue();
+        showNotification(
+          menu
+            ? (change.showOnMenu ? 'Item now shows on the customer menu.' : 'Item is store only; it stays sellable at the till.')
+            : (change.trackStock ? 'Item is now counted; the menu will hide it when it runs out.' : 'Item is no longer counted; it always shows on the menu.'),
+          'success',
+        );
+        this.loadSubTab();
+      } catch (error) {
+        showNotification(error.message || 'Could not change this item.', 'error');
+        btn.disabled = false;
       }
     });
   }

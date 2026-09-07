@@ -54,6 +54,7 @@ export async function executeCreateSale(
       input,
       preparedLines,
       timestamp,
+      context.settings,
     );
     assertDiscountPermission(
       preparedLines,

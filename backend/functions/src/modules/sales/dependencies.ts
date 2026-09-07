@@ -5,15 +5,16 @@ import { db } from "../../lib/firebase";
 import { deterministicId } from "../../shared/identifiers";
 import { needsProviderIntent } from "./constants";
 import { mpesaIntentMatchesSale } from "./domain";
+import { sellingLocation } from '../stock';
 import type {
   ParsedSaleInput,
   PreparedLine,
   SaleDependencies,
 } from "./types";
 
-function stockBalanceId(branchId: string, productId: string): string {
+function stockBalanceId(branchId: string, productId: string, location: string): string {
   // This is an existing persistence contract. Changing it requires a data migration.
-  return `${branchId}_${productId}_HOUSE`;
+  return `${branchId}_${productId}_${location}`;
 }
 
 export async function loadSaleDependencies(
@@ -21,11 +22,13 @@ export async function loadSaleDependencies(
   input: ParsedSaleInput,
   preparedLines: readonly PreparedLine[],
   timestamp: Timestamp,
+  settings: Record<string, unknown> = {},
 ): Promise<SaleDependencies> {
+  const location = sellingLocation();
   const physicalLines = preparedLines.filter((line) => !line.isService);
   const balanceRefs = physicalLines.map((line) =>
     db.collection("stock_balances").doc(
-      stockBalanceId(input.branchId, line.productId),
+      stockBalanceId(input.branchId, line.productId, location),
     ),
   );
 
@@ -61,21 +64,21 @@ export async function loadSaleDependencies(
       || balance.tenantId !== input.tenantId
       || balance.branchId !== input.branchId
       || balance.productId !== line.productId
-      || balance.location !== "HOUSE"
+      || balance.location !== location
     ) {
       throw new HttpsError(
         "failed-precondition",
-        `A valid HOUSE balance is missing for ${line.productName}.`,
+        `A valid ${location} balance is missing for ${line.productName}.`,
       );
     }
     if (
       typeof balance.qty !== "number"
       || !Number.isSafeInteger(balance.qty)
-      || balance.qty < line.qty
+      || balance.qty - Number(balance.reservedQty || 0) < line.qty
     ) {
       throw new HttpsError(
         "failed-precondition",
-        `Insufficient house stock for ${line.productName}.`,
+        `Insufficient ${location.toLowerCase()} stock for ${line.productName}.`,
       );
     }
 
@@ -84,7 +87,7 @@ export async function loadSaleDependencies(
       tenantId: input.tenantId,
       branchId: input.branchId,
       productId: line.productId,
-      location: "HOUSE" as const,
+      location,
       qty: balance.qty - line.qty,
       updatedAt: timestamp,
     };

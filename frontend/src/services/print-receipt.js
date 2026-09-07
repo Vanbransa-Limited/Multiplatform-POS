@@ -34,7 +34,46 @@ export function isPrintableReceipt(payload) {
   );
 }
 
+/**
+ * The kitchen ticket for a customer menu order.
+ *
+ * This paper is the cook order: what is printed here is what gets made. It
+ * carries no prices or fiscal block, because nothing about it settles money -
+ * a reprint says so on its face so the kitchen does not cook the order twice.
+ */
+export function renderKitchenTicketHtml(payload) {
+  if (!payload || !Array.isArray(payload.lines) || !payload.lines.length || !payload.ref) return '';
+  const serving = payload.orderType === 'takeaway'
+    ? 'TAKEAWAY'
+    : `TABLE ${escapeHtml(payload.tableNumber) || '-'}`;
+
+  return `
+    <div class="receipt-header">
+      <h2>KITCHEN ORDER</h2>
+      <p><b>${escapeHtml(payload.ref)}</b></p>
+      <p style="font-size:13px;font-weight:bold;">${serving}</p>
+    </div>
+    <div class="receipt-divider"></div>
+    <div style="font-size:13px; margin-bottom:8px;">
+      <div><b>Customer:</b> ${escapeHtml(payload.customerName)}</div>
+      <div><b>Placed:</b> ${escapeHtml(payload.placedAt)}</div>
+      <div><b>Payment:</b> ${payload.paid ? `PAID ${escapeHtml(payload.paymentMethod || '')}` : 'UNPAID - COLLECT AT COUNTER'}</div>
+      ${payload.copy > 1 ? `<div style="font-weight:bold;">*** REPRINT - COPY ${escapeHtml(payload.copy)} ***</div>` : ''}
+    </div>
+    <div class="receipt-divider"></div>
+    <div class="receipt-items">${payload.lines.map((item) => `
+      <div class="receipt-item-row" style="font-size:13px;font-weight:bold;">
+        <span>${escapeHtml(item?.qty ?? 0)} x ${escapeHtml(item?.name || 'Unknown Item')}</span>
+      </div>`).join('')}</div>
+    ${payload.note ? `<div class="receipt-divider"></div><div style="font-size:15px;"><b>Instructions:</b> ${escapeHtml(payload.note)}</div>` : ''}
+    <div class="receipt-divider"></div>
+    <div class="receipt-header" style="font-size:12px;">
+      <p>Not a tax receipt.</p>
+    </div>`;
+}
+
 export function renderReceiptHtml(payload) {
+  if (payload?.kind === 'kitchen') return renderKitchenTicketHtml(payload);
   if (!isPrintableReceipt(payload)) return '';
 
   const line = (item) => `
@@ -43,7 +82,7 @@ export function renderReceiptHtml(payload) {
         <span>${escapeHtml(item?.name || 'Unknown Item')}</span>
         <span>${MONEY(item?.lineTotal)}</span>
       </div>
-      <div style="font-size:9px; color:#555;">
+      <div style="font-size:12px; color:#555;">
         ${escapeHtml(item?.qty ?? 0)} x ${MONEY(item?.unitPrice)}${item?.taxCode ? ` (Tax: ${escapeHtml(item.taxCode)})` : ''}
       </div>
     </div>`;
@@ -66,7 +105,7 @@ export function renderReceiptHtml(payload) {
       ${payload.phone ? `<p>Tel: ${escapeHtml(payload.phone)}</p>` : ''}
     </div>
     <div class="receipt-divider"></div>
-    <div style="font-size:10px; margin-bottom: 8px;">
+    <div style="font-size:13px; margin-bottom: 8px;">
       <div><b>Invoice:</b> ${escapeHtml(payload.invoiceNo)}</div>
       <div><b>Date:</b> ${escapeHtml(payload.soldAt)}</div>
       <div><b>Cashier:</b> ${escapeHtml(payload.cashierName)}</div>
@@ -78,21 +117,21 @@ export function renderReceiptHtml(payload) {
     <div class="receipt-divider"></div>
     <div class="receipt-totals-row"><span>Subtotal</span><span>${MONEY(payload.subtotal)}</span></div>
     <div class="receipt-totals-row"><span>VAT Tax</span><span>${MONEY(payload.taxTotal)}</span></div>
-    <div class="receipt-totals-row" style="font-size:13px;">
+    <div class="receipt-totals-row" style="font-size:15px;">
       <span>TOTAL DUE</span><span>KES ${MONEY(payload.grandTotal)}</span>
     </div>
     <div class="receipt-divider"></div>
-    <div style="font-size:10px; margin-bottom: 8px;">
+    <div style="font-size:13px; margin-bottom: 8px;">
       <div><b>Settlement:</b> ${escapeHtml(payload.paymentMethod)}</div>
       ${payload.paymentReference ? `<div><b>Ref:</b> ${escapeHtml(payload.paymentReference)}</div>` : ''}
     </div>
     <div class="receipt-divider"></div>
-    <div class="receipt-header" style="font-size:9px;">
+    <div class="receipt-header" style="font-size:12px;">
       <p><b>*** KRA eTIMS FISCAL RECORD ***</b></p>
       ${fiscal}
     </div>
     <div class="receipt-divider"></div>
-    <div class="receipt-header" style="font-size:9px; margin-top:8px;">
+    <div class="receipt-header" style="font-size:12px; margin-top:8px;">
       <p>Thank you for shopping with us!</p>
     </div>`;
 }

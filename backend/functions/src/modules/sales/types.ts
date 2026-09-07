@@ -71,7 +71,7 @@ export type UpdatedStockBalance = {
   tenantId: string;
   branchId: string;
   productId: string;
-  location: "HOUSE";
+  location: "HOUSE" | "STORE";
   qty: number;
   updatedAt: FirebaseFirestore.Timestamp;
 };

@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(firebase functions:secrets:set MPESA_BASE_URL --data-file -)",
+      "Bash(firebase functions:secrets:set MPESA_SHORTCODE --data-file -)",
+      "Bash(firebase functions:secrets:set MPESA_CONSUMER_KEY --data-file -)",
+      "Bash(firebase functions:secrets:set MPESA_CONSUMER_SECRET --data-file -)",
+      "Bash(firebase functions:secrets:set MPESA_PASSKEY --data-file -)",
+      "Bash(firebase functions:secrets:set MPESA_CALLBACK_URL --data-file -)",
+      "Bash(curl -s -o - -w \"\\\\nHTTP %{http_code}\\\\n\" -X POST -H \"Content-Type: application/json\" -d '{}' https://europe-west1-vanbransa-pos.cloudfunctions.net/mpesaCallback)",
+      "Bash(curl -s -o - -w \"\\\\nHTTP %{http_code}\\\\n\" -X POST -H \"Content-Type: application/json\" -d '{}' https://mpesacallback-pus3y2so6q-ew.a.run.app)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\\\\n\" -X POST -H \"Content-Type: application/json\" -d '{\"Body\":{\"stkCallback\":{\"MerchantRequestID\":\"test-1\",\"CheckoutRequestID\":\"ws_CO_SMOKETEST_0001\",\"ResultCode\":0,\"ResultDesc\":\"ok\",\"CallbackMetadata\":{\"Item\":[{\"Name\":\"Amount\",\"Value\":1},{\"Name\":\"MpesaReceiptNumber\",\"Value\":\"TEST123XYZ\"},{\"Name\":\"PhoneNumber\",\"Value\":254700000000}]}}}}' https://europe-west1-vanbransa-pos.cloudfunctions.net/mpesaCallback)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\\\\n\" https://europe-west1-vanbransa-pos.cloudfunctions.net/mpesaCallback)",
+      "Bash(firebase functions:log --only mpesaCallback)",
+      "Bash(firebase firestore:delete \"mpesa_unmatched/ws_CO_SMOKETEST_0001\" --force)",
+      "Bash(npm --prefix frontend test)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\\\\n\" -X POST -H \"Content-Type: application/json\" -d '{}' https://europe-west1-vanbransa-pos.cloudfunctions.net/mpesaCallback)",
+      "Bash(node -e \"const p=require\\('./frontend/package.json'\\); console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\)\")",
+      "Bash(grep -rn \"simulateCallback\\\\|mpesaReceipt\\\\|QK\\\\${\" frontend/src frontend/app frontend/components)",
+      "Bash(curl -s https://vanbransa-pos.web.app/_next/static/chunks/3ya_gl5olj8xt.js)",
+      "Bash(npm --prefix frontend run typecheck)",
+      "Bash(grep -n \"product-card\\\\|category-chip\\\\|categories-row\\\\|INFO\\\\|STOCK</\\\\|product-grid\\\\|renderProducts\\\\|renderCategories\" frontend/src/ui/till.js)",
+      "Bash(python -c ' *)",
+      "Bash(firebase functions:secrets:access POS_BOOTSTRAP_SECRET)",
+      "Bash(firebase functions:delete authenticateStaffPin startTillSession --region europe-west1 --force)",
+      "Bash(xargs -I{} echo \"secret length: {} chars\")",
+      "Bash(curl -sI https://vanbransa-pos.web.app/till/)"
+    ]
+  }
+}

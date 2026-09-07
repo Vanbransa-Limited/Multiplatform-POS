@@ -6,7 +6,7 @@ import { showNotification } from "@/context";
 
 import { useScreenGuard } from "./screen-frame";
 
-type ViewClass = new (container: HTMLElement) => { load: () => Promise<void> | void };
+type ViewClass = new (container: HTMLElement) => { load: () => Promise<void> | void; dispose?: () => void };
 
 /**
  * Mounts one of the original view classes into this route.
@@ -29,7 +29,9 @@ export function ViewMount({ tab, view: View }: { tab: string; view: ViewClass })
     loadedFor.current = container;
 
     try {
-      void new View(container).load();
+      const instance = new View(container);
+      Promise.resolve(instance.load()).catch(() => showNotification('This module could not be opened.', 'error'));
+      return () => { instance.dispose?.(); loadedFor.current = null; };
     } catch (error) {
       console.error(`Failed to load the ${tab} view:`, error);
       showNotification("This module could not be opened. Check the console for details.", "error");

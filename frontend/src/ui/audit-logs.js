@@ -1,6 +1,16 @@
 import { db } from '../db/schema';
 import { state, showNotification } from '../context';
 import { verifyAuditTrail } from '../db/index';
+import { pullStockAudits } from '../services/stock';
+import { escapeHtml } from '../services/print-receipt';
+
+const STOCK_ACTIONS = {
+  'stock.receive': 'Delivery received',
+  'stock.request': 'Requested into House',
+  'stock.adjust': 'Count corrected',
+  'stock.locations_changed': 'Stock locations changed',
+  'stock.tracking_changed': 'Counted flag changed',
+};
 
 export class AuditLogsView {
   constructor(container) {
@@ -11,6 +21,37 @@ export class AuditLogsView {
     this.render();
     await this.populateLogs();
     this.bindEvents();
+    await this.populateStockAudits();
+  }
+
+  /** Reads the server trail. Staff names come from the local roster cache. */
+  async populateStockAudits() {
+    const body = this.container.querySelector('#stock-audit-body');
+    if (!body) return;
+    try {
+      const [rows, users] = await Promise.all([pullStockAudits(), db.users.toArray()]);
+      const names = new Map(users.map((user) => [user.id, user.name]));
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="7" class="stk-empty">No stock activity recorded yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map((row) => {
+        const meta = row.metadata || {};
+        const when = row.createdAt?.toDate?.() || null;
+        const corrected = row.action === 'stock.adjust';
+        return `<tr>
+          <td>${escapeHtml(when ? when.toLocaleString() : '—')}</td>
+          <td>${escapeHtml(STOCK_ACTIONS[row.action] || row.action)}</td>
+          <td>${escapeHtml(meta.productName || row.entityId || '—')}${meta.location ? ` <span class="stk-zero">(${escapeHtml(meta.location)})</span>` : ''}</td>
+          <td class="num">${meta.before === undefined ? '—' : escapeHtml(meta.before)}</td>
+          <td class="num ${corrected ? 'stk-low' : ''}">${meta.after === undefined ? '—' : escapeHtml(meta.after)}</td>
+          <td>${escapeHtml(meta.reason || '—')}</td>
+          <td>${escapeHtml(names.get(row.actorStaffId) || row.actorStaffId || '—')}</td>
+        </tr>`;
+      }).join('');
+    } catch (error) {
+      body.innerHTML = `<tr><td colspan="7" class="stk-empty">${escapeHtml(error.message || 'Could not read the stock audit trail.')}</td></tr>`;
+    }
   }
 
   render() {
@@ -27,6 +68,25 @@ export class AuditLogsView {
             🔒 Verify Chain Integrity
           </button>
         </div>
+
+        <!-- Stock audits. Written only by the server; audit_logs refuses every
+             client write, so a correction cannot be edited by whoever made it. -->
+        <section style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; margin-bottom: 24px; overflow: hidden;">
+          <div style="padding: 18px 24px 12px;">
+            <h3 style="margin: 0; font-family: var(--font-display); font-size: 16px; font-weight: 800;">Stock audits</h3>
+            <p style="margin: 4px 0 0; font-size: 12px; color: var(--text-secondary);">Every delivery, request and counted correction, with the reason given and who gave it. Server-written and immutable.</p>
+          </div>
+          <div class="stk-table-wrap" style="border:none;border-radius:0;">
+            <table class="stk-table">
+              <thead>
+                <tr><th>When</th><th>Action</th><th>Item</th><th class="num">Before</th><th class="num">After</th><th>Reason</th><th>By</th></tr>
+              </thead>
+              <tbody id="stock-audit-body">
+                <tr><td colspan="7" class="stk-empty">Loading stock audits…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
         <!-- Filter bar -->
         <div style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 18px 24px; margin-bottom: 20px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; box-shadow: var(--glass-shadow);">

@@ -11,13 +11,21 @@
  * promises a cashier that paper is coming.
  */
 
-import { DEVICE_ID, currentClaims, getFirebase } from './firebase';
+import { DEVICE_ID, currentClaims, getFirebase } from './firebase.js';
 
 const JOBS = 'print_jobs';
 const STATIONS = 'print_stations';
 
-/** A station republishes presence well inside this, so a gap means it is gone. */
-export const STATION_STALE_MS = 60_000;
+/**
+ * A station republishes presence well inside this, so a gap means it is gone.
+ *
+ * The margin is wide on purpose. The heartbeat is a timer on the same thread as
+ * `window.print()`, which blocks until the operator closes the dialog, and a
+ * browser throttles timers hard in a background tab. At a 3x margin an open
+ * print dialog or a station left in a background tab read as dead within a
+ * minute, and the till started telling cashiers there was no printer.
+ */
+export const STATION_STALE_MS = 180_000;
 export const STATION_HEARTBEAT_MS = 20_000;
 
 /** Nothing queues without a tenant and a branch; a job with neither is unroutable. */

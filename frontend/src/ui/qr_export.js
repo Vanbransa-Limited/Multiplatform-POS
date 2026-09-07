@@ -8,8 +8,12 @@ import { state, showNotification } from '../context.js';
  */
 function defaultMenuUrl() {
   const saved = localStorage.getItem('pos_menu_url');
-  if (saved) return saved;
-  return new URL('menu.html', window.location.origin).href;
+    const url = new URL(saved || 'menu.html', window.location.origin);
+    if (url.origin === window.location.origin && url.pathname === '/menu.html') {
+      if (state.currentTenant?.id) url.searchParams.set('tenant', state.currentTenant.id);
+      if (state.currentBranch?.id) url.searchParams.set('branch', state.currentBranch.id);
+    }
+    return url.href;
 }
 
 export class QrToolsView {

@@ -1,5 +1,6 @@
 import { db } from '../db/schema.js';
 import { showNotification } from '../context.js';
+import { pullSales } from '../services/catalogue.js';
 
 export class FinanceView {
   constructor(container) {
@@ -72,6 +73,8 @@ export class FinanceView {
       '      <div class="m-card green"><h5>Net Revenue</h5><p class="m-val" id="fin-net">KES 0</p></div>',
       '      <div class="m-card blue"><h5>Cash Sales</h5><p class="m-val" id="fin-cash">KES 0</p></div>',
       '      <div class="m-card green"><h5>M-Pesa Sales</h5><p class="m-val" id="fin-mpesa">KES 0</p></div>',
+      '      <div class="m-card"><h5>Card &amp; Other</h5><p class="m-val" id="fin-other">KES 0</p></div>',
+      '      <div class="m-card"><h5>Collected (incl. VAT)</h5><p class="m-val" id="fin-collected">KES 0</p></div>',
       '      <div class="m-card orange"><h5>Total Orders</h5><p class="m-val" id="fin-count">0</p></div>',
       '    </div>',
       '  </div>',
@@ -144,6 +147,14 @@ export class FinanceView {
     const endTs = new Date(endStr + 'T23:59:59').getTime();
 
     try {
+      // Sales are pushed to the server but were never pulled back, so this
+      // screen only ever reported what this one device had rung up.
+      try {
+        await pullSales(new Date(startTs).toISOString());
+      } catch {
+        showNotification('Showing this device only - the server sales could not be read.', 'warning');
+      }
+
       const allSales = await db.sales.toArray();
       const orders = allSales.filter(s => {
         const ts = Date.parse(s.sold_at || '') || 0;
@@ -161,7 +172,7 @@ export class FinanceView {
         paymentsBySale.get(p.sale_id).push(p);
       }
 
-      let gross = 0, discounts = 0, cash = 0, mpesa = 0;
+      let gross = 0, discounts = 0, cash = 0, mpesa = 0, other = 0;
 
       for (const o of orders) {
         gross += (o.subtotal || 0);
@@ -171,8 +182,12 @@ export class FinanceView {
           const amount = p.amount || 0;
           if (method === 'CASH') cash += amount;
           else if (method.includes('MPESA')) mpesa += amount;
+          // Card, credit, bank and anything added later. Dropping these made
+          // the tender split quietly disagree with what was actually taken.
+          else other += amount;
         }
       }
+      const collected = cash + mpesa + other;
 
       const net = gross - discounts;
       const fmt = v => 'KES ' + v.toLocaleString();
@@ -187,9 +202,11 @@ export class FinanceView {
       set('fin-net', fmt(net));
       set('fin-cash', fmt(cash));
       set('fin-mpesa', fmt(mpesa));
+      set('fin-other', fmt(other));
+      set('fin-collected', fmt(collected));
       set('fin-count', orders.length);
 
-      this.currentMetrics = { net, gross, discounts, cash, mpesa, count: orders.length, startStr, endStr };
+      this.currentMetrics = { net, gross, discounts, cash, mpesa, other, collected, count: orders.length, startStr, endStr };
       this.addAIMsg('Data loaded for ' + startStr + ' to ' + endStr + '. Found ' + orders.length + ' completed orders totalling KES ' + net.toLocaleString() + '. Ask me anything!');
 
     } catch (err) {

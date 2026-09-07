@@ -2,9 +2,12 @@ export const MAX_DISTINCT_LINES = 50;
 export const MAX_PAYMENTS = 5;
 export const MAX_QTY_PER_LINE = 10_000;
 
+// A supervisor runs the floor and covers the till when it is busy, so they
+// sell alongside cashiers. Discounting stays with the owner and manager below.
 export const SELLING_ROLES = new Set([
   "owner",
   "store_manager",
+  "supervisor",
   "cashier",
   "bar_staff",
 ]);

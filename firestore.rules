@@ -127,6 +127,12 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /customer_orders/{documentId} {
+      allow read: if canReadTenantDocument()
+        && request.auth.token.staff_role in ['owner', 'store_manager', 'supervisor', 'bar_staff', 'cashier'];
+      allow write: if false;
+    }
+
     match /sale_lines/{documentId} {
       allow read: if canReadTenantDocument();
       allow write: if false;

@@ -2,6 +2,8 @@ import { db } from '../db/schema';
 import { UsersView } from './users';
 import { verifyAuditTrail } from '../db/index';
 import { state, showNotification } from '../context';
+import { pullPaymentSettings, saveCashEnabled } from '../services/payment-settings';
+import { configureStock, storeIsEnabled, pullStock } from '../services/stock';
 
 export class SettingsView {
   constructor(container) {
@@ -9,6 +11,8 @@ export class SettingsView {
   }
 
   async load() {
+    try { await pullStock(); } catch {}
+    try { await pullPaymentSettings(); } catch { showNotification('Could not refresh business payment settings.', 'warning'); }
     this.activeTab = this.activeTab || 'general';
     this.render();
     this.bindEvents();
@@ -34,6 +38,11 @@ export class SettingsView {
 
         <!-- Right content -->
         <div style="flex:1;overflow-y:auto;padding:20px;">
+          ${this.activeTab === 'general' ? `<section class="discount-section"><h3>Stock locations</h3>
+            <p>Every business has a <b>House</b> — it is what service draws from and what a sale decrements, so it cannot be switched off.</p>
+            <p>A <b>Store</b> is an optional back room in front of it. With a Store enabled, every delivery is booked into the Store and the House tops itself up by requesting; the stock moves immediately, with no approval step. Switching the Store off folds everything it holds into the House rather than stranding it.</p>
+            <select id="stock-mode" ${state.currentUser?.role === 'Owner' ? '' : 'disabled'}>${[['true','House and Store'],['false','House only']].map(([value,label]) => `<option value="${value}" ${String(storeIsEnabled()) === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
+            <button id="save-stock-mode" class="primary-btn" ${state.currentUser?.role === 'Owner' ? '' : 'disabled'}>Save stock locations</button><p id="stock-mode-result" role="status"></p></section>` : ''}
 
           <!-- GENERAL TAB -->
           <div id="stab-general" style="display:${this.activeTab === 'general' ? 'block' : 'none'}">
@@ -271,6 +280,13 @@ export class SettingsView {
   }
 
   bindEvents() {
+    const stockButton = this.container.querySelector('#save-stock-mode');
+    if (stockButton) stockButton.onclick = async () => {
+      stockButton.disabled = true;
+      try { const result = await configureStock(this.container.querySelector('#stock-mode').value === 'true'); this.container.querySelector('#stock-mode-result').textContent = result.storeEnabled ? 'Saved. Deliveries now go into the Store, and the House requests from it.' : `Saved. House only; ${result.moved} Store balance(s) folded into the House.`; }
+      catch (error) { this.container.querySelector('#stock-mode-result').textContent = error.message; }
+      finally { stockButton.disabled = false; }
+    };
     this.mountStaffPane();
 
     // Sub-tab switching
@@ -330,9 +346,12 @@ export class SettingsView {
     // Cash toggle (System tab)
     const toggle = document.getElementById('cash-toggle');
     if (toggle) {
-      toggle.addEventListener('change', () => {
+      toggle.addEventListener('change', async () => {
         const enabled = toggle.checked;
-        localStorage.setItem('pos_cash_enabled', String(enabled));
+        toggle.disabled = true;
+        try { await saveCashEnabled(enabled); }
+        catch (error) { toggle.checked = !enabled; showNotification(error.message, 'error'); return; }
+        finally { toggle.disabled = false; }
         const badge  = document.getElementById('cash-status-badge');
         const slider = document.getElementById('cash-toggle-slider');
         if (badge) { badge.textContent = enabled ? 'ENABLED' : 'DISABLED'; badge.style.background = enabled ? 'rgba(16,185,129,.15)' : 'rgba(244,63,94,.15)'; badge.style.color = enabled ? 'var(--accent-green)' : 'var(--accent-rose)'; }
@@ -344,9 +363,12 @@ export class SettingsView {
     // Cash toggle (Payments sub-tab)
     const payToggle = document.getElementById('payments-cash-toggle');
     if (payToggle) {
-      payToggle.addEventListener('change', () => {
+      payToggle.addEventListener('change', async () => {
         const enabled = payToggle.checked;
-        localStorage.setItem('pos_cash_enabled', String(enabled));
+        payToggle.disabled = true;
+        try { await saveCashEnabled(enabled); }
+        catch (error) { payToggle.checked = !enabled; showNotification(error.message, 'error'); return; }
+        finally { payToggle.disabled = false; }
         const badge  = document.getElementById('payments-cash-badge');
         const slider = document.getElementById('payments-cash-slider');
         if (badge) {

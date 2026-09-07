@@ -47,7 +47,7 @@ export function writeSaleRecords({
       tenantId: input.tenantId,
       branchId: input.branchId,
       productId: balance.productId,
-      location: "HOUSE",
+      location: balance.location,
       type: "SALE",
       qty: -dependencies.physicalLines[index].qty,
       balanceAfterQty: balance.qty,

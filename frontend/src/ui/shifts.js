@@ -2,6 +2,7 @@ import { db } from '../db/schema';
 import { logAuditEvent } from '../db/index';
 import { state, showNotification } from '../context';
 import { firebaseConfigured, openShift as openCloudShift } from '../services/firebase';
+import { cashIsEnabled, pullPaymentSettings } from '../services/payment-settings';
 
 export class ShiftsView {
   constructor(container) {
@@ -9,7 +10,8 @@ export class ShiftsView {
   }
 
   async load() {
-    this.activeShift = await db.shifts.where('status').equals('OPEN').first();
+    try { await pullPaymentSettings(); } catch { showNotification('Payment settings could not refresh.', 'warning'); }
+    this.activeShift = await db.shifts.where('user_id').equals(state.currentUser.id).filter((shift) => shift.status === 'OPEN' && shift.branch_id === state.currentBranch.id).first();
     this.render();
     this.bindEvents();
   }
@@ -31,11 +33,11 @@ export class ShiftsView {
       <div style="background:var(--bg-surface);border:1px solid var(--border-color);border-radius:14px;padding:32px;text-align:center;max-width:500px;margin: 40px auto;box-shadow:var(--glass-shadow);">
         <span style="font-size:48px;">🏪</span>
         <h3 style="margin-top:16px;font-family:var(--font-display);font-weight:700;">No Open Shift Found</h3>
-        <p style="color:var(--text-secondary);font-size:13px;margin-top:8px;margin-bottom:24px;">You must declare an opening cash float to begin selling at the till.</p>
+        <p style="color:var(--text-secondary);font-size:13px;margin-top:8px;margin-bottom:24px;">${cashIsEnabled() ? 'Declare your opening cash float to begin selling.' : 'Cash payments are disabled. Open your shift to begin selling.'}</p>
         
-        <div style="text-align:left;margin-bottom:20px;">
+        <div style="text-align:left;margin-bottom:20px;${cashIsEnabled() ? '' : 'display:none;'}">
           <label style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:6px;">Opening Cash Float (KES)</label>
-          <input type="number" id="opening-float-input" value="2000" style="width:100%;background:rgba(3,7,18,0.4);border:1px solid var(--border-color);color:#fff;padding:10px;border-radius:8px;outline:none;">
+          <input type="number" id="opening-float-input" min="0" step="0.01" value="0" style="width:100%;background:rgba(3,7,18,0.4);border:1px solid var(--border-color);color:#fff;padding:10px;border-radius:8px;outline:none;">
         </div>
 
         <button class="checkout-btn" id="open-shift-btn" style="width:100%;">Open Cashier Shift</button>
@@ -138,7 +140,8 @@ export class ShiftsView {
   }
 
   async openShift() {
-    const float = parseFloat(document.getElementById('opening-float-input').value) || 0;
+    const float = cashIsEnabled() ? Number(document.getElementById('opening-float-input').value) : 0;
+    if (!Number.isFinite(float) || float < 0) { showNotification('Enter a valid opening float.', 'warning'); return; }
     
     // Check if user already has an active shift
     const existing = await db.shifts.where('user_id').equals(state.currentUser.id).filter(s => s.status === 'OPEN').first();
@@ -148,7 +151,8 @@ export class ShiftsView {
     }
 
     let shiftId = state.cloudShiftId || crypto.randomUUID();
-    if (firebaseConfigured && !state.cloudShiftId) {
+    let actualFloat = float;
+    if (firebaseConfigured) {
       try {
         const cloudShift = await openCloudShift(
           state.currentBranch.id,
@@ -156,6 +160,7 @@ export class ShiftsView {
           Math.round(float * 100)
         );
         state.cloudShiftId = cloudShift?.shiftId || null;
+        actualFloat = (cloudShift.openingFloatMinor ?? Math.round(float * 100)) / 100;
         shiftId = state.cloudShiftId || shiftId;
       } catch {
         // Offline shifts retain a local id. They remain queued until a cloud
@@ -166,7 +171,7 @@ export class ShiftsView {
       id: shiftId,
       branch_id: state.currentBranch.id,
       user_id: state.currentUser.id,
-      opening_float: float,
+      opening_float: actualFloat,
       status: 'OPEN',
       opened_at: new Date().toISOString()
     };

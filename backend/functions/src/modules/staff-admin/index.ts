@@ -76,8 +76,86 @@ function role(value: unknown): string {
 }
 
 /**
- * Creates a staff member: a Firebase Auth account, the claims that scope it to
- * one tenant and role, and the staff profile the app reads.
+ * Creates one staff member: a Firebase Auth account, the claims that scope it
+ * to one tenant and role, and the staff profile the app reads.
+ *
+ * Shared by the single-user form and the bulk import so both mint an identity
+ * exactly the same way - a second copy of this would be a second place for the
+ * claims to drift out of step with the profile.
+ */
+async function createStaff(
+  actor: Actor,
+  input: Record<string, unknown>,
+): Promise<{ staffId: string; email: string; role: string }> {
+  const staffRole = role(input.role);
+  if (!canAssignRole(actor.role, staffRole)) {
+    throw new HttpsError("permission-denied", "Only an owner can create another owner.");
+  }
+
+  const address = email(input.email);
+  const secret = password(input.password);
+  const name = optionalText(input.name, "name", 120);
+  if (!name) throw new HttpsError("invalid-argument", "Enter the staff member's name.");
+  const phone = optionalText(input.phone, "phone", 20);
+
+  // Deterministic so a retried create collides on the document rather than
+  // silently minting a second profile for the same person.
+  const staffId = deterministicId("staff", `${actor.tenantId}:${address}`);
+  const staffRef = db.collection("staff").doc(staffId);
+  if ((await staffRef.get()).exists) {
+    throw new HttpsError("already-exists", "That email already belongs to a staff member.");
+  }
+
+  const auth = getAuth();
+  let authUid: string;
+  try {
+    const created = await auth.createUser({
+      email: address,
+      password: secret,
+      displayName: name,
+    });
+    authUid = created.uid;
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code === "auth/email-already-exists") {
+      throw new HttpsError("already-exists", "That email is already registered.");
+    }
+    throw error;
+  }
+
+  // Claims are the authorisation, so they are set before the profile exists:
+  // a profile without claims is inert, claims without a profile are not.
+  try {
+  await auth.setCustomUserClaims(authUid, {
+    tenant_id: actor.tenantId,
+    staff_id: staffId,
+    staff_role: staffRole,
+  });
+
+  const now = Timestamp.now();
+  await staffRef.create({
+    id: staffId,
+    tenantId: actor.tenantId,
+    authUid,
+    name,
+    email: address,
+    phone: phone ?? null,
+    role: staffRole,
+    status: "active",
+    createdAt: now,
+    createdByStaffId: actor.staffId,
+  });
+  } catch (error) {
+    // A failed profile/claims write must not leave an unusable registered email.
+    await auth.deleteUser(authUid);
+    throw error;
+  }
+
+  return { staffId, email: address, role: staffRole };
+}
+
+/**
+ * Creates a staff member.
  *
  * Cashiers rarely have a work inbox, so the address only has to be unique and
  * well-formed - an owner typically issues `name@business.pos` and hands over
@@ -88,65 +166,7 @@ export const createStaffUser = onCall(
   { region: FUNCTION_REGION },
   async (request) => {
     const actor = requireAdmin(request.auth);
-    const input = asRecord(request.data, "Request data");
-
-    const staffRole = role(input.role);
-    if (!canAssignRole(actor.role, staffRole)) {
-      throw new HttpsError("permission-denied", "Only an owner can create another owner.");
-    }
-
-    const address = email(input.email);
-    const secret = password(input.password);
-    const name = optionalText(input.name, "name", 120);
-    if (!name) throw new HttpsError("invalid-argument", "Enter the staff member's name.");
-    const phone = optionalText(input.phone, "phone", 20);
-
-    // Deterministic so a retried create collides on the document rather than
-    // silently minting a second profile for the same person.
-    const staffId = deterministicId("staff", `${actor.tenantId}:${address}`);
-    const staffRef = db.collection("staff").doc(staffId);
-    if ((await staffRef.get()).exists) {
-      throw new HttpsError("already-exists", "That email already belongs to a staff member.");
-    }
-
-    const auth = getAuth();
-    let authUid: string;
-    try {
-      const created = await auth.createUser({
-        email: address,
-        password: secret,
-        displayName: name,
-      });
-      authUid = created.uid;
-    } catch (error) {
-      const code = (error as { code?: string }).code;
-      if (code === "auth/email-already-exists") {
-        throw new HttpsError("already-exists", "That email is already registered.");
-      }
-      throw error;
-    }
-
-    // Claims are the authorisation, so they are set before the profile exists:
-    // a profile without claims is inert, claims without a profile are not.
-    await auth.setCustomUserClaims(authUid, {
-      tenant_id: actor.tenantId,
-      staff_id: staffId,
-      staff_role: staffRole,
-    });
-
-    const now = Timestamp.now();
-    await staffRef.set({
-      id: staffId,
-      tenantId: actor.tenantId,
-      authUid,
-      name,
-      email: address,
-      phone: phone ?? null,
-      role: staffRole,
-      status: "active",
-      createdAt: now,
-      createdByStaffId: actor.staffId,
-    });
+    const created = await createStaff(actor, asRecord(request.data, "Request data"));
 
     await db.collection("audit_logs").add({
       tenantId: actor.tenantId,
@@ -154,12 +174,92 @@ export const createStaffUser = onCall(
       actorStaffId: actor.staffId,
       action: "staff.created",
       entityType: "staff",
-      entityId: staffId,
-      metadata: { role: staffRole, email: address },
-      createdAt: now,
+      entityId: created.staffId,
+      metadata: { role: created.role, email: created.email },
+      createdAt: Timestamp.now(),
     });
 
-    return { staffId, email: address, role: staffRole };
+    return created;
+  },
+);
+
+/**
+ * Firebase Auth account creation is one network round trip per person and is
+ * rate limited, so a roster arrives in chunks rather than as one call. The till
+ * splits a larger sheet and reports progress across the chunks.
+ */
+export const MAX_IMPORT_ROWS = 100;
+
+/**
+ * Bulk staff import - a whole roster of cashiers from one spreadsheet.
+ *
+ * A bad row is reported, never thrown: the point of importing thirty cashiers
+ * is that one typo in row 12 does not cost you the other twenty-nine. Rows are
+ * created one at a time because each is an Auth account, not a document write,
+ * so there is no batch to commit.
+ */
+export const importStaff = onCall(
+  { region: FUNCTION_REGION, timeoutSeconds: 300 },
+  async (request) => {
+    const actor = requireAdmin(request.auth);
+    const input = asRecord(request.data, "Request data");
+
+    const rows = Array.isArray(input.rows) ? input.rows : null;
+    if (!rows || rows.length === 0) {
+      throw new HttpsError("invalid-argument", "The file contained no rows.");
+    }
+    if (rows.length > MAX_IMPORT_ROWS) {
+      throw new HttpsError(
+        "invalid-argument",
+        `Send at most ${MAX_IMPORT_ROWS} rows per call; this one carried ${rows.length}.`,
+      );
+    }
+
+    const created: { staffId: string; email: string; role: string }[] = [];
+    const rejected: { row: number; email: string; message: string }[] = [];
+    const seen = new Set<string>();
+
+    for (let index = 0; index < rows.length; index += 1) {
+      // Row 1 is the header in the file the person is looking at.
+      const line = index + 2;
+      const row = (rows[index] ?? {}) as Record<string, unknown>;
+      const address = typeof row.email === "string" ? row.email.trim().toLowerCase() : "";
+
+      // Two rows on one address would create the account, then fail the second
+      // on "already registered" - a confusing way to say the file repeats.
+      if (address && seen.has(address)) {
+        rejected.push({ row: line, email: address, message: "Duplicate email in this file." });
+        continue;
+      }
+
+      try {
+        if (input.cashierOnly !== false && row.role !== 'cashier' && row.role != null && row.role !== '') {
+          throw new HttpsError('invalid-argument', 'Cashier-only import accepts only Cashier access.');
+        }
+        if (row.role == null || row.role === '') row.role = 'cashier';
+        const staff = await createStaff(actor, row);
+        seen.add(staff.email);
+        created.push(staff);
+      } catch (error) {
+        const message = error instanceof HttpsError
+          ? error.message
+          : (error as Error).message || "Could not create this user.";
+        rejected.push({ row: line, email: address, message });
+      }
+    }
+
+    await db.collection("audit_logs").add({
+      tenantId: actor.tenantId,
+      branchId: null,
+      actorStaffId: actor.staffId,
+      action: "staff.imported",
+      entityType: "staff",
+      entityId: null,
+      metadata: { imported: created.length, rejected: rejected.length },
+      createdAt: Timestamp.now(),
+    });
+
+    return { imported: created.length, created, rejected };
   },
 );
 

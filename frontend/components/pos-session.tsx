@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -17,13 +18,26 @@ import {
   reportStockAlerts,
   resumeStaffSession,
 } from "@/boot";
-import { state } from "@/context";
+import { ACTIVITY_EVENT, state } from "@/context";
 
 /**
  * Idle sign-out. With the PIN pad gone there is no cheap re-lock, so an
  * unattended till would otherwise stay open on a full session all shift.
  */
 const IDLE_LIMIT_MS = 15 * 60 * 1_000;
+
+/**
+ * What counts as the session still being in use.
+ *
+ * `touchstart` and `scroll` matter on a tablet: reading down a long order list
+ * with a finger fires neither `pointerdown` nor `wheel`, so someone actively
+ * using the screen could still be signed out mid-shift.
+ *
+ * ACTIVITY_EVENT is not a human touching the screen at all - it is a module
+ * saying it is deliberately doing work, which is the only reason an untouched
+ * print station stays signed in.
+ */
+const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll', ACTIVITY_EVENT] as const;
 
 type PosUser = {
   id: string;
@@ -34,6 +48,16 @@ type PosUser = {
 
 type PosSessionValue = {
   ready: boolean;
+  /**
+   * True while the app is still working out who is signed in.
+   *
+   * Restoring a session dynamically imports the Firebase SDK and then waits on
+   * auth state, which is seconds on a slow link. Treating "not signed in yet"
+   * as "signed out" put the sign-in screen in front of the operator every time
+   * that happened, so callers must wait for this to clear before concluding
+   * anything from a null user.
+   */
+  resuming: boolean;
   bootError: string | null;
   user: PosUser | null;
   queueCount: number;
@@ -57,6 +81,10 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<PosUser | null>(null);
   const [queueCount, setQueueCount] = useState(0);
   const [online, setOnlineState] = useState(true);
+  const [resuming, setResuming] = useState(true);
+  // An explicit sign-out must not be undone by the resume below racing the
+  // Firebase sign-out it just started.
+  const signedOut = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,6 +103,7 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signIn = useCallback(async (nextUser: PosUser) => {
+    signedOut.current = false;
     state.currentUser = nextUser;
     setUser(nextUser);
     // Opening the shift and the stock sweep are both advisory; neither may
@@ -84,6 +113,8 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(() => {
+    signedOut.current = true;
+    setResuming(false);
     state.currentUser = null;
     setUser(null);
     void endCloudSession();
@@ -92,11 +123,21 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
   // Firebase keeps the session across reloads, so a refresh must not drop the
   // cashier back to a sign-in screen mid-shift.
   useEffect(() => {
-    if (!ready || user) return;
+    if (!ready) return;
+    if (user || signedOut.current) {
+      setResuming(false);
+      return;
+    }
     let cancelled = false;
-    resumeStaffSession().then((existing: PosUser | null) => {
-      if (!cancelled && existing) void signIn(existing);
-    });
+    resumeStaffSession()
+      .then((existing: PosUser | null) => {
+        if (!cancelled && existing && !signedOut.current) void signIn(existing);
+      })
+      // Settled either way: we now know whether anyone is signed in, so the
+      // sign-in screen is finally a truthful thing to show.
+      .finally(() => {
+        if (!cancelled) setResuming(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -111,11 +152,10 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
       timer = window.setTimeout(signOut, IDLE_LIMIT_MS);
     };
 
-    const events = ["pointerdown", "keydown", "wheel"] as const;
-    for (const event of events) window.addEventListener(event, reset, { passive: true });
+    for (const event of ACTIVITY_EVENTS) window.addEventListener(event, reset, { passive: true });
     return () => {
       window.clearTimeout(timer);
-      for (const event of events) window.removeEventListener(event, reset);
+      for (const event of ACTIVITY_EVENTS) window.removeEventListener(event, reset);
     };
   }, [user, signOut]);
 
@@ -128,8 +168,8 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<PosSessionValue>(
-    () => ({ ready, bootError, user, queueCount, online, signIn, signOut, setOnline }),
-    [ready, bootError, user, queueCount, online, signIn, signOut, setOnline],
+    () => ({ ready, resuming, bootError, user, queueCount, online, signIn, signOut, setOnline }),
+    [ready, resuming, bootError, user, queueCount, online, signIn, signOut, setOnline],
   );
 
   return <PosSessionContext.Provider value={value}>{children}</PosSessionContext.Provider>;

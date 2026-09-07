@@ -23,42 +23,62 @@ export const NAV_GROUPS = [
     id: 'service',
     label: 'Service',
     items: [
-      { tab: 'till', icon: '🏪', label: 'Dashboard' },
-      { tab: 'orders', icon: '🧾', label: 'Orders Viewer' },
-      { tab: 'shifts', icon: '💵', label: 'Shift Management' },
-      { tab: 'print-station', icon: '🖨️', label: 'Print Station' }
+      { tab: 'till', icon: '🏪', label: 'Dashboard', short: 'Till' },
+      { tab: 'orders', icon: '🧾', label: 'Orders Viewer', short: 'Orders' },
+      { tab: 'shifts', icon: '💵', label: 'Shift Management', short: 'Shifts' },
+      { tab: 'print-station', icon: '🖨️', label: 'Print Station', short: 'Print' }
     ]
   },
   {
     id: 'stock',
     label: 'Stock',
     items: [
-      { tab: 'inventory', icon: '🍽️', label: 'Menu Admin' },
-      { tab: 'store-stock', icon: '📦', label: 'Store Stock' },
-      { tab: 'house-stock', icon: '📊', label: 'House Stock' }
+      { tab: 'inventory', icon: '🍽️', label: 'Menu Admin', short: 'Menu' },
+      { tab: 'store-stock', icon: '📦', label: 'Store Stock', short: 'Store' },
+      { tab: 'house-stock', icon: '📊', label: 'House Stock', short: 'House' }
     ]
   },
   {
     id: 'money',
     label: 'Money',
     items: [
-      { tab: 'mpesa', icon: '📱', label: 'Mpesa' },
-      { tab: 'finance', icon: '📈', label: 'Financials & AI' }
+      { tab: 'mpesa', icon: '📱', label: 'Mpesa', short: 'M-Pesa' },
+      { tab: 'finance', icon: '📈', label: 'Financials & AI', short: 'Money' }
     ]
   },
   {
     id: 'admin',
     label: 'Administration',
     items: [
-      { tab: 'audit-logs', icon: '📜', label: 'Audit Logs' },
-      { tab: 'qrtools', icon: '🔧', label: 'QR & Tools' },
-      { tab: 'settings', icon: '⚙️', label: 'Settings' }
+      { tab: 'audit-logs', icon: '📜', label: 'Audit Logs', short: 'Audit' },
+      { tab: 'qrtools', icon: '🔧', label: 'QR & Tools', short: 'Tools' },
+      { tab: 'settings', icon: '⚙️', label: 'Settings', short: 'Settings' }
     ]
   }
 ];
 
 /** Flat list, still the single source of truth for what a route is called. */
 export const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
+
+/**
+ * What earns a slot on a phone's bottom bar, most-reached first.
+ *
+ * A bar with everything on it is a list, not navigation. Only the first few a
+ * role can actually open get a slot; the rest live behind More, so the bar is
+ * the same shape and in the same place whoever is signed in.
+ */
+export const MOBILE_PRIORITY = [
+  'till', 'orders', 'house-stock', 'shifts', 'inventory',
+  'store-stock', 'mpesa', 'print-station', 'finance', 'qrtools', 'audit-logs', 'settings',
+];
+
+const byPriority = (a, b) => MOBILE_PRIORITY.indexOf(a.tab) - MOBILE_PRIORITY.indexOf(b.tab);
+
+/** The tabs that get their own button, and everything left for the More sheet. */
+export function mobileNav(role, slots = 4) {
+  const visible = NAV_ITEMS.filter((item) => canViewTab(role, item.tab) && MOBILE_PRIORITY.includes(item.tab)).sort(byPriority);
+  return { primary: visible.slice(0, slots), overflow: visible.slice(slots) };
+}
 
 /** The group holding a tab, so the sidebar can open it on a deep link. */
 export function groupForTab(tab) {
@@ -72,16 +92,21 @@ export const RESTRICTED_TABS = {
   'settings': ['Owner', 'Store Manager'],
   'inventory': ['Owner', 'Store Manager', 'Supervisor', 'Store Keeper'],
   'store-stock': ['Owner', 'Store Manager', 'Supervisor', 'Store Keeper'],
-  'house-stock': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff'],
-  'orders': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff'],
-  // The station runs on the one machine holding the printer, not on a tablet.
-  'print-station': ['Owner', 'Store Manager', 'Supervisor'],
+  'house-stock': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Store Keeper'],
+  'orders': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Cashier'],
+  // The station runs on the one machine holding the printer, but a cashier
+  // needs to see the queue to know whether paper is actually coming - and to
+  // force a receipt through by hand when it is not.
+  'print-station': ['Owner', 'Store Manager', 'Supervisor', 'Cashier'],
   'finance': ['Owner', 'Store Manager'],
   'qrtools': ['Owner', 'Store Manager', 'Supervisor'],
   'audit-logs': ['Owner', 'Store Manager']
 };
 
 export function canViewTab(role, tab) {
+  // The House always exists, so only the Store screen can be switched off.
+  const storeEnabled = typeof localStorage === 'undefined' || localStorage.getItem('pos_store_enabled') !== 'false';
+  if (tab === 'store-stock' && !storeEnabled) return false;
   const allowed = RESTRICTED_TABS[tab];
   return !allowed || allowed.includes(role);
 }

@@ -444,7 +444,7 @@ function authoritativeLineGrosses(
   });
 }
 
-type Reservation = {
+export type Reservation = {
   created: boolean;
   attemptId: string;
   attemptRef: DocumentReference;
@@ -669,6 +669,13 @@ export const initiateMpesaStk = onCall(
     const caller = callerClaims(request.auth);
     const input = parseInitiateInput(request.data);
     const reservation = await reserveAttempt(caller, input);
+    return startReservedMpesa(reservation);
+  },
+);
+
+export async function startReservedMpesa(reservation: Reservation) {
+  const input = { phone: String(reservation.record.phone) };
+  const caller = { tenantId: String(reservation.record.tenantId) };
     if (!reservation.created) {
       return attemptResponse(reservation.attemptId, reservation.record);
     }
@@ -774,8 +781,7 @@ export const initiateMpesaStk = onCall(
       merchantRequestId: result.merchantRequestId,
       customerMessage: result.customerMessage,
     });
-  },
-);
+}
 
 function attemptMatch(record: DocumentData): StkAttemptMatch | null {
   if (
@@ -985,7 +991,7 @@ function intentMatches(
     && intent.providerTransactionId === receipt;
 }
 
-async function verifyAttempt(
+export async function verifyAttempt(
   attemptId: string,
   attemptRef: DocumentReference,
 ): Promise<DocumentData> {
@@ -1096,6 +1102,21 @@ async function verifyAttempt(
       };
     }
 
+    // Customer menu payments settle only the reserved order, never a till intent.
+    if (typeof current.customerOrderId === 'string') {
+      const orderRef = db.collection('customer_orders').doc(current.customerOrderId);
+      const orderDoc = await transaction.get(orderRef);
+      const order = orderDoc.data();
+      if (!order || order.tenantId !== current.tenantId || order.totalMinor !== current.amountMinor || order.paymentAttemptId !== attemptId || order.paymentStatus === 'paid') {
+        throw new HttpsError('failed-precondition', 'The reserved customer order no longer matches this payment.');
+      }
+      const paidAt = Timestamp.now();
+      transaction.set(receiptRef, { provider: 'mpesa', receipt, attemptId, tenantId: current.tenantId, amountMinor: current.amountMinor, createdAt: paidAt });
+      transaction.update(orderRef, { paymentStatus: 'paid', paymentMethod: 'mpesa', paymentReference: receipt, paidAt, status: 'awaiting_print' });
+      transaction.set(db.collection('payments').doc(`web_${current.customerOrderId}`), { tenantId: current.tenantId, branchId: current.branchId, customerOrderId: current.customerOrderId, method: 'mpesa', amountMinor: current.amountMinor, reference: receipt, status: 'completed', paidAt, source: 'customer_menu' });
+      transaction.update(attemptRef, { status: 'paid', receipt, verifiedBy: 'callback_and_stk_query', verifiedAt: paidAt, completedAt: paidAt, updatedAt: paidAt });
+      return { ...current, status: 'paid', receipt };
+    }
     const now = Timestamp.now();
     if (!receiptDocument.exists) {
       transaction.set(receiptRef, {

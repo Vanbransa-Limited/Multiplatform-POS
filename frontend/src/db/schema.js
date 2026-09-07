@@ -46,3 +46,4 @@ db.version(3).stores({
   requisitions: 'id, tenant_id, branch_id, status, created_at',
   req_lines: 'id, req_id, product_id'
 });
+db.version(4).stores({ stock_balances: 'id, tenantId, branchId, productId, [branchId+productId]' });

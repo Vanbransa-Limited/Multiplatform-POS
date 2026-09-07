@@ -78,3 +78,46 @@ test('a malformed job renders nothing rather than half a receipt', () => {
   assert.equal(renderReceiptHtml({ invoiceNo: '', lines: [] }), '');
   assert.equal(renderReceiptHtml(undefined), '');
 });
+
+const ticket = {
+  kind: 'kitchen',
+  ref: 'WEB-0001',
+  orderType: 'dine_in',
+  tableNumber: '7',
+  customerName: 'Guest',
+  placedAt: '2026-09-06 12:00',
+  paid: true,
+  paymentMethod: 'mpesa',
+  lines: [{ name: 'Pilau Rice', qty: 2 }],
+  copy: 1
+};
+
+test('the kitchen ticket carries the serving instruction and no prices', () => {
+  const dineIn = renderReceiptHtml(ticket);
+  assert.ok(dineIn.includes('KITCHEN ORDER'));
+  assert.ok(dineIn.includes('TABLE 7'));
+  assert.ok(dineIn.includes('2 x Pilau Rice'));
+  assert.ok(dineIn.includes('PAID mpesa'));
+  // Nothing on the pass settles money: no totals, no fiscal block.
+  assert.ok(!dineIn.includes('TOTAL DUE'));
+  assert.ok(!dineIn.includes('FISCAL'));
+
+  const takeaway = renderReceiptHtml({ ...ticket, orderType: 'takeaway', tableNumber: '', paid: false });
+  assert.ok(takeaway.includes('TAKEAWAY'));
+  assert.ok(!takeaway.includes('TABLE'));
+  assert.ok(takeaway.includes('UNPAID'));
+});
+
+test('a reprint says so, and an empty ticket prints nothing', () => {
+  assert.ok(!renderReceiptHtml(ticket).includes('REPRINT'));
+  assert.ok(renderReceiptHtml({ ...ticket, copy: 2 }).includes('REPRINT - COPY 2'));
+  assert.equal(renderReceiptHtml({ ...ticket, lines: [] }), '');
+  assert.equal(renderReceiptHtml({ ...ticket, ref: '' }), '');
+});
+
+test('customer text on a ticket is printed as text, never as an element', () => {
+  const html = renderReceiptHtml({ ...ticket, note: '<script>alert(1)</script>', customerName: '<img src=x>' });
+  assert.ok(!html.includes('<script>'));
+  assert.ok(!html.includes('<img'));
+  assert.ok(html.includes('&lt;script&gt;'));
+});

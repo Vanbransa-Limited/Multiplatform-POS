@@ -123,6 +123,19 @@ export async function establishCloudSession() {
   if (!firebaseConfigured) return;
 
   try {
+    const { pullPaymentSettings } = await import('./services/payment-settings');
+    await pullPaymentSettings();
+    const { pullStock } = await import('./services/stock');
+    await pullStock();
+    // Receipts print the tenant's own name, and a device seeded under an older
+    // one kept printing it. The server settles who this business is.
+    try {
+      const { pullIdentity } = await import('./services/catalogue.js');
+      await pullIdentity();
+    } catch { /* Identity is advisory; a stale name must not block the till. */ }
+  } catch { showNotification('Payment settings could not refresh. Check your connection.', 'warning'); }
+
+  try {
     const branchId = state.currentBranch ? state.currentBranch.id : null;
     if (branchId) {
       const cloudShift = await openShift(branchId);

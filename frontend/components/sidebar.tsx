@@ -19,6 +19,8 @@ function initials(name: string) {
  * role filtering comes from the shared navigation table.
  */
 export function Sidebar() {
+  const [, refreshStockPolicy] = useState(0);
+  useEffect(() => { const refresh = () => refreshStockPolicy((n) => n + 1); window.addEventListener('stock-policy-changed', refresh); return () => window.removeEventListener('stock-policy-changed', refresh); }, []);
   const pathname = usePathname();
   const { user, queueCount, online, setOnline, signOut } = usePosSession();
   const activeTab = pathname.split("/").filter(Boolean)[0] ?? "";

@@ -40,7 +40,7 @@ export class ShiftsView {
           <input type="number" id="opening-float-input" min="0" step="0.01" value="0" style="width:100%;background:rgba(3,7,18,0.4);border:1px solid var(--border-color);color:#fff;padding:10px;border-radius:8px;outline:none;">
         </div>
 
-        <button class="checkout-btn" id="open-shift-btn" style="width:100%;">Open Cashier Shift</button>
+        <button class="checkout-btn" id="open-shift-btn" style="width:100%;">Open Waiter/Waitress Shift</button>
       </div>
     `;
   }
@@ -180,7 +180,7 @@ export class ShiftsView {
     
     await logAuditEvent(state.currentTenant.id, state.currentUser.id, 'SHIFT_OPEN', 'SHIFT', shiftId);
 
-    showNotification('Cashier register shift opened.', 'success');
+    showNotification('Waiter/Waitress register shift opened.', 'success');
     this.activeShift = newShift;
     this.renderActiveShiftDetails();
     this.bindEvents();
@@ -193,11 +193,8 @@ export class ShiftsView {
       .equals(this.activeShift.id)
       .toArray();
 
-    // 2. Fetch cash movements
-    const movements = await db.stock_movements // Simulating drawer cash entries via system logs or sum of payments
+    // 2. Fetch cash payments
     const paymentsList = await db.payments.toArray();
-    
-    // Filter payments belonging to sales of this shift
     const saleIds = new Set(sales.map(s => s.id));
     const shiftPayments = paymentsList.filter(p => saleIds.has(p.sale_id));
     
@@ -212,7 +209,30 @@ export class ShiftsView {
       }
     });
 
-    const expectedCash = this.activeShift.opening_float + cashSalesTotal;
+    // 3. Fetch Petty Cash Expenses (PAYOUTS)
+    const expensesList = await db.expenses
+      .where('shift_id')
+      .equals(this.activeShift.id)
+      .toArray();
+    const totalPayouts = expensesList.reduce((acc, exp) => acc + exp.amount, 0);
+
+    // 4. Fetch Cash Pay-ins from audit logs
+    const auditLogs = await db.audit_log
+      .where('entity_id')
+      .equals(this.activeShift.id)
+      .toArray();
+    
+    let totalPayins = 0;
+    auditLogs.forEach(log => {
+      if (log.action === 'CASH_PAYIN') {
+        try {
+          const data = JSON.parse(log.details);
+          totalPayins += data.amount || 0;
+        } catch (e) {}
+      }
+    });
+
+    const expectedCash = this.activeShift.opening_float + cashSalesTotal + totalPayins - totalPayouts;
     
     document.getElementById('shift-expected-cash').innerText = `KES ${expectedCash.toFixed(2)}`;
     
@@ -227,8 +247,29 @@ export class ShiftsView {
     if (isNaN(amt) || amt <= 0) return;
     const reason = prompt('Enter justification / reason code:');
 
+    if (type === 'PAYOUT') {
+      await db.expenses.add({
+        id: `exp-${crypto.randomUUID().slice(0, 8)}`,
+        tenant_id: state.currentTenant.id,
+        branch_id: state.currentBranch.id,
+        shift_id: this.activeShift.id,
+        category: reason || 'Miscellaneous Expense',
+        amount: amt,
+        created_at: new Date().toISOString()
+      });
+    }
+
     // Logs movement details
-    await logAuditEvent(state.currentTenant.id, state.currentUser.id, `CASH_${type}`, 'SHIFT', this.activeShift.id, null, JSON.stringify({ amount: amt, reason }));
+    await logAuditEvent(
+      state.currentTenant.id,
+      state.currentUser.id,
+      `CASH_${type}`,
+      'SHIFT',
+      this.activeShift.id,
+      null,
+      JSON.stringify({ amount: amt, reason })
+    );
+
     showNotification(`Cash drawer ${type} logged.`, 'success');
     this.calculateExpectedDrawer();
   }
@@ -238,7 +279,7 @@ export class ShiftsView {
     alert(`
       ========= X-REPORT (MID-SHIFT) =========
       Branch: ${state.currentBranch.name}
-      Cashier: ${state.currentUser.name}
+      Waiter/Waitress: ${state.currentUser.name}
       Opened: ${new Date(this.activeShift.opened_at).toLocaleString()}
       
       Sales Count: ${sales.length}
@@ -254,7 +295,7 @@ export class ShiftsView {
     const countedMpesa = parseFloat(document.getElementById('counted-mpesa-input').value);
 
     if (isNaN(countedCash) || isNaN(countedMpesa)) {
-      showNotification('Please enter counted cashier totals to close shift.', 'warning');
+      showNotification('Please enter counted waiter/waitress totals to close shift.', 'warning');
       return;
     }
 
@@ -280,7 +321,7 @@ export class ShiftsView {
       ========= SEQUENTIAL Z-REPORT =========
       Z-Report ID: Z-${new Date().getTime().toString().slice(-4)}
       Branch: ${state.currentBranch.name}
-      Cashier: ${state.currentUser.name}
+      Waiter/Waitress: ${state.currentUser.name}
       Closed: ${new Date().toLocaleString()}
       
       [CASH RECONCILIATION]

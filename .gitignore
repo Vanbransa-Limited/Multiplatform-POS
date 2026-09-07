@@ -17,6 +17,7 @@ out/
 firebase-debug.log*
 firestore-debug.log*
 ui-debug.log*
+__pycache__/
 
 # Cloud Functions build and test output
 backend/functions/lib/

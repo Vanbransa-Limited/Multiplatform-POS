@@ -11,6 +11,23 @@ import {
 import { toMinor } from '../services/tender';
 import { enqueuePrintJob, isStationOnline } from '../services/print-queue';
 import { pullStock } from '../services/stock';
+import { isStaffPhoneNumber } from '../data/staff-directory';
+import { saleLineRate, recordedSaleTotals } from '../services/service-charges';
+
+export function getCanonicalCategoryName(rawName) {
+  if (!rawName) return 'Other';
+  const lo = String(rawName).trim().toLowerCase();
+  
+  if (lo.includes('beer') || lo.includes('cider')) return 'Beers & Ciders';
+  if (lo.includes('spirit') || lo.includes('wine') || lo === 'shots' || lo === 'cocktails') return 'Spirits & Wines';
+  if (lo.includes('drink') || lo.includes('beverage') || lo.includes('soft') || lo.includes('juice') || lo === 'soda' || lo === 'chiller' || lo === 'freezer' || lo === 'drnks' || lo === 'drunks') return 'Drinks & Beverages';
+  if (lo.includes('food') || lo.includes('meal') || lo.includes('snack') || lo.includes('meat') || lo.includes('beef') || lo.includes('poultry') || lo.includes('cereal') || lo.includes('breakfast') || lo.includes('vegetable')) return 'Food & Meals';
+  if (lo.includes('consum') || lo.includes('utensil') || lo.includes('disposable') || lo.includes('packaging') || lo.includes('detergent') || lo.includes('toiletrie')) return 'Consumables & Supplies';
+  if (lo.includes('service') || lo.includes('charge') || lo.includes('vip')) return 'Services & Charges';
+  if (lo.includes('stock') || lo.includes('restock') || /\d{1,2}\/\d{1,2}\/\d{2,4}/.test(lo)) return 'Restocks';
+  
+  return rawName.trim();
+}
 
 export class TillView {
   constructor(container) {
@@ -31,8 +48,9 @@ export class TillView {
 
   async load() {
     // A supervisor runs the floor and covers the till when it is busy, so they
-    // sell alongside cashiers. The server agrees: `supervisor` is in
+    // sell alongside waiters. The server agrees: `supervisor` is in
     // SELLING_ROLES. Discounting is still owner and manager only.
+
     this.selectedCustomer = await db.customers.where('id').equals('cust-walkin').first();
     if (!this.selectedCustomer) {
       // Safety fallback to prevent app crashing if DB record is missing
@@ -59,11 +77,6 @@ export class TillView {
           
           <div class="cat-filters" id="cat-filters">
             <div class="filter-chip active" data-cat="all">All Items</div>
-            <div class="filter-chip" data-cat="cat-beers">🍺 Beers & Ciders</div>
-            <div class="filter-chip" data-cat="cat-spirits">🥃 Spirits & Wines</div>
-            <div class="filter-chip" data-cat="cat-softdrinks">🥤 Soft Drinks</div>
-            <div class="filter-chip" data-cat="cat-food">🍽️ Food & Meals</div>
-            <div class="filter-chip" data-cat="cat-services">🧾 Services</div>
           </div>
 
           <div class="product-grid" id="till-prod-grid">
@@ -106,6 +119,14 @@ export class TillView {
             <div class="summary-row">
               <span>Subtotal</span>
               <span id="summary-subtotal">KES 0.00</span>
+            </div>
+            <div class="summary-row" id="summary-vip-row" style="display:none;color:var(--accent-amber);">
+              <span>VIP Surcharge (30%)</span>
+              <span id="summary-vip-charge">KES 0.00</span>
+            </div>
+            <div class="summary-row" id="summary-staff-disc-row" style="display:none;color:var(--accent-green);">
+              <span>Staff Discount (-20%)</span>
+              <span id="summary-staff-disc-amount">-KES 0.00</span>
             </div>
             <div class="summary-row">
               <span>Discount</span>
@@ -174,6 +195,18 @@ export class TillView {
               <div class="checkout-inputs" style="margin-bottom: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; display: block !important;">
                 <label style="font-size:13px;color:var(--text-secondary)">Table Number (Optional)</label>
                 <input type="text" id="checkout-table-number" placeholder="e.g. 12 or Patio 3" style="width: 100%;">
+              </div>
+
+              <!-- Loyalty Points & Rewards -->
+              <div class="checkout-inputs" id="loyalty-redeem-section" style="margin-bottom: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; display: block !important;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <div>
+                    <label style="font-size:11px;color:var(--text-secondary);display:block;">Available Loyalty Points</label>
+                    <span id="checkout-loyalty-pts" style="font-size:13px;font-weight:700;color:var(--accent-amber);">0 pts</span>
+                  </div>
+                  <button type="button" id="btn-redeem-loyalty" class="sec-btn" style="padding: 4px 8px; font-size: 11px;">Redeem Points</button>
+                </div>
+                <div id="loyalty-redeem-status" style="font-size:11px;color:var(--accent-green);margin-top:4px;display:none;"></div>
               </div>
 
               <!-- Cash Input fields -->
@@ -260,13 +293,15 @@ export class TillView {
       this.filterCatalogue();
     });
 
-    // Category filter chips
-    document.querySelectorAll('.filter-chip').forEach(chip => {
-      chip.addEventListener('click', (e) => {
-        document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
-        e.target.classList.add('active');
-        this.filterCatalogue();
-      });
+    // Category chips are populated after this binding, so delegate from their stable container.
+    const categoryFilters = document.getElementById('cat-filters');
+    categoryFilters.addEventListener('click', (e) => {
+      const chip = e.target.closest('.filter-chip');
+      if (!chip || !categoryFilters.contains(chip)) return;
+
+      categoryFilters.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      this.filterCatalogue();
     });
 
     // Customer attach dropdown selection
@@ -363,32 +398,71 @@ export class TillView {
   }
 
   async loadProducts() {
-    const products = await db.products.where('is_active').equals(1).toArray();
+    const [products, stockMovements, barcodes, categories] = await Promise.all([
+      db.products.where('is_active').equals(1).toArray(),
+      db.stock_movements.toArray(),
+      db.barcodes.toArray(),
+      db.categories.toArray()
+    ]);
     const grid = document.getElementById('till-prod-grid');
     grid.innerHTML = '';
+    this.renderCategoryFilters(products, categories);
+
+    const branchId = state.currentBranch?.id;
+    const houseStockByProduct = new Map();
+    for (const movement of stockMovements) {
+      if (movement.location !== 'HOUSE') continue;
+      if (branchId && movement.branch_id && String(movement.branch_id) !== String(branchId)) continue;
+
+      const productId = String(movement.product_id);
+      const quantity = Number(movement.qty) || 0;
+      houseStockByProduct.set(productId, (houseStockByProduct.get(productId) || 0) + quantity);
+    }
+
+    const barcodeByProduct = new Map();
+    for (const barcode of barcodes) {
+      const productId = String(barcode.product_id);
+      if (!barcodeByProduct.has(productId)) {
+        barcodeByProduct.set(productId, String(barcode.barcode ?? ''));
+      }
+    }
+
+    const categoryMap = new Map(categories.map(c => [String(c.id), c.name]));
+    const fragment = document.createDocumentFragment();
     
     for (const prod of products) {
-      const stock = await getHouseStock(prod.id, state.currentBranch.id);
+      const productId = String(prod.id);
+      const name = String(prod.name ?? 'Unnamed product');
+      const sku = String(prod.sku ?? '');
+      const numericPrice = Number(prod.sell_price);
+      const sellPrice = Number.isFinite(numericPrice) ? numericPrice : 0;
+      const imageData = typeof prod.image_data === 'string' ? prod.image_data : '';
+      const stock = houseStockByProduct.get(productId) || 0;
+      const normalizedProduct = { ...prod, name, sku, sell_price: sellPrice };
       
+      const rawCatName = categoryMap.get(String(prod.category_id)) || String(prod.source_category || prod.category_id || '');
+      const canonicalCatName = getCanonicalCategoryName(rawCatName);
+
       const card = document.createElement('div');
       card.className = `product-card ${prod.is_batch_tracked ? 'batch-tracked' : ''}`;
       card.setAttribute('data-id', prod.id);
-      card.setAttribute('data-cat', prod.category_id);
-      card.setAttribute('data-name', prod.name.toLowerCase());
-      card.setAttribute('data-sku', prod.sku.toLowerCase());
+      card.setAttribute('data-cat', String(prod.category_id ?? ''));
+      card.setAttribute('data-canonical-cat', canonicalCatName);
+      card.setAttribute('data-name', name.toLowerCase());
+      card.setAttribute('data-sku', sku.toLowerCase());
 
-      // Fetch barcode
-      const barRec = await db.barcodes.where('product_id').equals(prod.id).first();
-      const barcodeVal = barRec ? barRec.barcode : '';
+      const barcodeVal = barcodeByProduct.get(productId) || '';
       card.setAttribute('data-barcode', barcodeVal);
 
+      const isVipItem = prod.id === 'prod-table-service';
+      const isStaffDiscountItem = prod.id === 'prod-staff-discount';
       card.innerHTML = `
-        <div class="card-media" style="height: 120px; border-radius: 8px; margin-bottom: 8px; background: url('${prod.image_data ? (prod.image_data.includes('?') ? prod.image_data : prod.image_data + '?v=2') : '/ai_images/juice_glass.jpg'}') center/cover no-repeat; border: 1px solid rgba(255, 255, 255, 0.05); display: flex; align-items: center; justify-content: center;">
-          ${!prod.image_data ? '<span style="font-size:24px; opacity:0.3;">📷</span>' : ''}
+        <div class="card-media" style="height: 120px; flex-shrink: 0; border-radius: 8px; margin-bottom: 8px; background: url('${imageData ? (imageData.includes('?') ? imageData : imageData + '?v=2') : '/ai_images/juice_glass.jpg'}') center/cover no-repeat; border: 1px solid rgba(255, 255, 255, 0.05); display: flex; align-items: center; justify-content: center;">
+          ${!imageData ? '<span style="font-size:24px; opacity:0.3;">📷</span>' : ''}
         </div>
         <div>
-          <h4>${prod.name}</h4>
-          <p class="sku">${prod.sku}</p>
+          <h4>${name}</h4>
+          <p class="sku">${sku}</p>
         </div>
         
         <div class="card-summary-tabs">
@@ -402,7 +476,7 @@ export class TillView {
         </div>
 
         <div class="card-footer">
-          <span class="price">KES ${prod.sell_price.toFixed(2)}</span>
+          <span class="price">${isStaffDiscountItem ? 'Staff -20%' : (isVipItem ? 'VIP +30%' : 'KES ' + sellPrice.toFixed(2))}</span>
           <span class="stock ${stock <= 10 && !prod.is_service ? 'low' : ''}">
             ${prod.is_service ? 'Service' : stock + ' left'}
           </span>
@@ -410,10 +484,70 @@ export class TillView {
       `;
 
       card.addEventListener('click', () => {
-        this.addToCart(prod);
+        this.addToCart(normalizedProduct);
       });
-      grid.appendChild(card);
+      fragment.appendChild(card);
     }
+
+    grid.appendChild(fragment);
+  }
+
+  renderCategoryFilters(products, categories) {
+    const categoryFilters = document.getElementById('cat-filters');
+    if (!categoryFilters) return;
+
+    const usedCategoryIds = new Set(
+      products
+        .map(product => product.category_id)
+        .filter(categoryId => categoryId !== null && categoryId !== undefined && categoryId !== '')
+        .map(String)
+    );
+
+    const usedCategories = categories.filter(category => usedCategoryIds.has(String(category.id)));
+
+    // Group category IDs by canonical category display name
+    const groupedByName = new Map();
+    for (const cat of usedCategories) {
+      const canonicalName = getCanonicalCategoryName(cat.name ?? cat.id);
+      if (!groupedByName.has(canonicalName)) {
+        groupedByName.set(canonicalName, new Set());
+      }
+      groupedByName.get(canonicalName).add(String(cat.id));
+    }
+
+    // Also collect category IDs from products whose category_id wasn't in categories table
+    const categoryMap = new Map(categories.map(c => [String(c.id), c.name]));
+    for (const prod of products) {
+      if (prod.category_id) {
+        const rawName = categoryMap.get(String(prod.category_id)) || String(prod.category_id);
+        const canonicalName = getCanonicalCategoryName(rawName);
+        if (!groupedByName.has(canonicalName)) {
+          groupedByName.set(canonicalName, new Set());
+        }
+        groupedByName.get(canonicalName).add(String(prod.category_id));
+      }
+    }
+
+    const canonicalCategories = Array.from(groupedByName.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]));
+
+    const fragment = document.createDocumentFragment();
+    const allItemsChip = document.createElement('div');
+    allItemsChip.className = 'filter-chip active';
+    allItemsChip.dataset.cat = 'all';
+    allItemsChip.textContent = 'All Items';
+    fragment.appendChild(allItemsChip);
+
+    for (const [name, idsSet] of canonicalCategories) {
+      const chip = document.createElement('div');
+      chip.className = 'filter-chip';
+      chip.dataset.catIds = Array.from(idsSet).join(',');
+      chip.dataset.catName = name;
+      chip.textContent = name;
+      fragment.appendChild(chip);
+    }
+
+    categoryFilters.replaceChildren(fragment);
   }
 
   async loadCustomerDropdown() {
@@ -432,7 +566,10 @@ export class TillView {
 
   filterCatalogue() {
     const query = document.getElementById('till-search').value.toLowerCase();
-    const activeCat = document.querySelector('.filter-chip.active').getAttribute('data-cat');
+    const activeChip = document.querySelector('#cat-filters .filter-chip.active');
+    const activeCat = activeChip?.getAttribute('data-cat') || activeChip?.dataset.catName || 'all';
+    const activeCatName = activeChip?.dataset.catName || null;
+    const activeCatIds = activeChip?.getAttribute('data-cat-ids') ? activeChip.getAttribute('data-cat-ids').split(',') : null;
     const cards = document.querySelectorAll('.product-card');
 
     cards.forEach(card => {
@@ -440,9 +577,12 @@ export class TillView {
       const sku = card.getAttribute('data-sku');
       const bar = card.getAttribute('data-barcode');
       const cat = card.getAttribute('data-cat');
+      const canonicalCat = card.getAttribute('data-canonical-cat');
 
       const matchesQuery = !query || name.includes(query) || sku.includes(query) || bar.includes(query);
-      const matchesCat = activeCat === 'all' || cat === activeCat;
+      const matchesCat = activeCat === 'all' 
+        || (activeCatName && canonicalCat === activeCatName)
+        || (activeCatIds ? activeCatIds.includes(cat) : cat === activeCat);
 
       if (matchesQuery && matchesCat) {
         card.classList.remove('hidden');
@@ -477,7 +617,50 @@ export class TillView {
       (!selectedBatch || item.batch?.id === selectedBatch.id)
     );
 
+    // Any change to the cart invalidates a confirmed M-Pesa amount, including
+    // the toggles below - the surcharge changes what is owed.
     this.invalidateMpesaAttempt();
+
+    // VIP Service Charge: toggle on/off, always qty 1
+    if (product.id === 'prod-table-service') {
+      if (existingIndex > -1) {
+        this.cart.splice(existingIndex, 1);
+        showNotification('VIP Surcharge removed', 'warning');
+        this.updateCartUI();
+        return;
+      }
+      this.cart.unshift({
+        product,
+        qty: 1,
+        discount_amount: 0,
+        discount_percent: 0,
+        batch: null
+      });
+      showNotification('VIP +30% Surcharge applied', 'success');
+      this.updateCartUI();
+      return;
+    }
+
+    // Staff 20% Discount: toggle on/off, always qty 1
+    if (product.id === 'prod-staff-discount') {
+      if (existingIndex > -1) {
+        this.cart.splice(existingIndex, 1);
+        showNotification('Staff 20% Discount removed', 'warning');
+        this.updateCartUI();
+        return;
+      }
+      this.cart.unshift({
+        product,
+        qty: 1,
+        discount_amount: 0,
+        discount_percent: 20,
+        batch: null
+      });
+      showNotification('Staff 20% Discount added', 'success');
+      this.updateCartUI();
+      return;
+    }
+
     if (existingIndex > -1) {
       this.cart[existingIndex].qty += 1;
     } else {
@@ -517,6 +700,8 @@ export class TillView {
       const div = document.createElement('div');
       div.className = 'cart-item';
       
+      const isVipCartItem = item.product.id === 'prod-table-service';
+      const isStaffDiscountCartItem = item.product.id === 'prod-staff-discount';
       const rate = this.selectedCustomer.price_tier === 'WHOLESALE' ? item.product.cost_price * 1.15 : item.product.sell_price;
       const lineDiscount = Math.max(0, Number(item.discount_amount) || 0);
       const total = Math.max(0, rate * item.qty - lineDiscount);
@@ -534,12 +719,14 @@ export class TillView {
           </div>
         ` : ''}
         <div class="cart-item-details">
+          ${isVipCartItem ? '<span style="font-size:11px;color:var(--accent-amber);font-weight:700;">+30% Surcharge</span>' :
+            (isStaffDiscountCartItem ? '<span style="font-size:11px;color:var(--accent-green);font-weight:700;">-20% Staff Disc</span>' : `
           <div class="cart-item-qty-control">
             <button class="qty-btn dec" data-idx="${index}">-</button>
             <span class="qty-val">${item.qty}</span>
             <button class="qty-btn inc" data-idx="${index}">+</button>
-          </div>
-          <span class="cart-item-price">KES ${total.toFixed(2)}</span>
+          </div>`)}
+          <span class="cart-item-price">${isVipCartItem ? 'VIP' : (isStaffDiscountCartItem ? '-20%' : 'KES ' + total.toFixed(2))}</span>
         </div>
       `;
 
@@ -551,24 +738,29 @@ export class TillView {
         this.updateCartUI();
       });
 
-      // Quantity increment/decrement listener
-      div.querySelector('.qty-btn.dec').addEventListener('click', (e) => {
-        this.invalidateMpesaAttempt();
-        const idx = parseInt(e.target.getAttribute('data-idx'));
-        if (this.cart[idx].qty > 1) {
-          this.cart[idx].qty--;
-        } else {
-          this.cart.splice(idx, 1);
-        }
-        this.updateCartUI();
-      });
-
-      div.querySelector('.qty-btn.inc').addEventListener('click', (e) => {
-        this.invalidateMpesaAttempt();
-        const idx = parseInt(e.target.getAttribute('data-idx'));
-        this.cart[idx].qty++;
-        this.updateCartUI();
-      });
+      // Quantity increment/decrement listener (VIP and Staff Discount items have no qty controls)
+      const decBtn = div.querySelector('.qty-btn.dec');
+      const incBtn = div.querySelector('.qty-btn.inc');
+      if (decBtn) {
+        decBtn.addEventListener('click', (e) => {
+          this.invalidateMpesaAttempt();
+          const idx = parseInt(e.target.getAttribute('data-idx'));
+          if (this.cart[idx].qty > 1) {
+            this.cart[idx].qty--;
+          } else {
+            this.cart.splice(idx, 1);
+          }
+          this.updateCartUI();
+        });
+      }
+      if (incBtn) {
+        incBtn.addEventListener('click', (e) => {
+          this.invalidateMpesaAttempt();
+          const idx = parseInt(e.target.getAttribute('data-idx'));
+          this.cart[idx].qty++;
+          this.updateCartUI();
+        });
+      }
 
       list.appendChild(div);
     });
@@ -580,16 +772,23 @@ export class TillView {
     let subtotal = 0;
     let discount = 0;
     let tax = 0;
+    let vipSurcharge = 0;
+    let staffDiscount = 0;
 
+    // Check special items in cart
+    const hasVip = this.cart.some(item => item.product.id === 'prod-table-service');
+    const hasStaffDiscount = this.cart.some(item => item.product.id === 'prod-staff-discount');
+
+    // First pass: compute subtotal of NON-special items
     this.cart.forEach(item => {
+      if (item.product.id === 'prod-table-service' || item.product.id === 'prod-staff-discount') return;
       const price = this.selectedCustomer.price_tier === 'WHOLESALE' ? item.product.cost_price * 1.15 : item.product.sell_price;
       const itemSub = price * item.qty;
       const itemDiscount = Math.min(itemSub, Math.max(0, Number(item.discount_amount) || 0));
       subtotal += itemSub;
       discount += itemDiscount;
       
-      // Calculate tax components based on tax band settings
-      let rate = 0.16; // Standard Standard (A)
+      let rate = 0.16;
       if (item.product.tax_code === 'B') rate = 0.08;
       else if (item.product.tax_code === 'C' || item.product.tax_code === 'E') rate = 0.00;
 
@@ -598,15 +797,36 @@ export class TillView {
       tax += itemTax;
     });
 
-    const total = subtotal - discount;
+    // Apply VIP 30% surcharge & Staff 20% discount on subtotal
+    if (hasVip) {
+      vipSurcharge = subtotal * 0.30;
+    }
+    if (hasStaffDiscount) {
+      staffDiscount = subtotal * 0.20;
+    }
+
+    const total = Math.max(0, subtotal + vipSurcharge - staffDiscount - discount);
 
     document.getElementById('summary-subtotal').innerText = `KES ${subtotal.toFixed(2)}`;
+    
+    const vipRow = document.getElementById('summary-vip-row');
+    if (vipRow) {
+      vipRow.style.display = hasVip ? '' : 'none';
+      if (hasVip) document.getElementById('summary-vip-charge').innerText = `KES ${vipSurcharge.toFixed(2)}`;
+    }
+
+    const staffRow = document.getElementById('summary-staff-disc-row');
+    if (staffRow) {
+      staffRow.style.display = hasStaffDiscount ? '' : 'none';
+      if (hasStaffDiscount) document.getElementById('summary-staff-disc-amount').innerText = `-KES ${staffDiscount.toFixed(2)}`;
+    }
+
     document.getElementById('summary-discount').innerText = `KES ${discount.toFixed(2)}`;
     document.getElementById('summary-tax').innerText = `KES ${tax.toFixed(2)}`;
     document.getElementById('summary-total').innerText = `KES ${total.toFixed(2)}`;
 
     // Store calculations on class reference
-    this.totals = { subtotal, discount, tax, total };
+    this.totals = { subtotal, discount, tax, total, vipSurcharge, staffDiscount };
   }
 
   compactCartLines() {
@@ -884,8 +1104,48 @@ export class TillView {
 
   openCheckoutModal() {
     const cashEnabled = localStorage.getItem('pos_cash_enabled') !== 'false';
+    this.originalDue = this.totals.total;
+    this.redeemedPoints = 0;
+
     document.getElementById('checkout-due-amount').innerText = `KES ${this.totals.total.toFixed(2)}`;
     document.getElementById('payment-modal').classList.add('active');
+
+    // Populate Loyalty details
+    const ptsSpan = document.getElementById('checkout-loyalty-pts');
+    const redeemBtn = document.getElementById('btn-redeem-loyalty');
+    const redeemStatus = document.getElementById('loyalty-redeem-status');
+    redeemStatus.style.display = 'none';
+
+    if (this.selectedCustomer && this.selectedCustomer.id !== 'cust-walkin') {
+      const pts = this.selectedCustomer.loyalty_points || 0;
+      ptsSpan.textContent = `${pts} pts`;
+      redeemBtn.disabled = pts <= 0;
+    } else {
+      ptsSpan.textContent = '0 pts';
+      redeemBtn.disabled = true;
+    }
+
+    // Set redeem handler once
+    if (!this.loyaltyBound) {
+      redeemBtn.addEventListener('click', () => {
+        const pts = this.selectedCustomer.loyalty_points || 0;
+        if (pts <= 0) return;
+        
+        // Max points to redeem is limited by due amount
+        const redeemAmt = Math.min(pts, Math.floor(this.originalDue));
+        this.redeemedPoints = redeemAmt;
+        this.totals.total = this.originalDue - redeemAmt;
+
+        document.getElementById('checkout-due-amount').innerText = `KES ${this.totals.total.toFixed(2)}`;
+        redeemStatus.textContent = `★ Redeemed ${redeemAmt} points for KES ${redeemAmt}.00 discount!`;
+        redeemStatus.style.display = 'block';
+        redeemBtn.disabled = true;
+
+        // Re-update select payment method input fields
+        this.selectPaymentMethod(this.selectedPaymentMethod);
+      });
+      this.loyaltyBound = true;
+    }
 
     // Hide/show cash payment option based on owner setting
     const cashCard = document.querySelector('[data-method="CASH"]');
@@ -980,6 +1240,27 @@ export class TillView {
     document.getElementById('pay-cash-change').innerText = `KES ${change.toFixed(2)}`;
   }
 
+  validateStaffDiscountPhone(phone) {
+    const hasStaffDiscount = this.cart.some(item => item.product.id === 'prod-staff-discount');
+    if (!hasStaffDiscount) return true;
+
+    const staffMember = isStaffPhoneNumber(phone);
+    if (staffMember) {
+      showNotification(`✅ Staff Verified: ${staffMember.name} (${staffMember.phone})`, 'success');
+      return true;
+    } else {
+      showNotification(`❌ Phone number "${phone || 'N/A'}" is NOT an authorized staff number. Staff 20% discount rejected and removed. Charging normal price.`, 'error');
+      const idx = this.cart.findIndex(item => item.product.id === 'prod-staff-discount');
+      if (idx > -1) {
+        this.cart.splice(idx, 1);
+        this.updateCartUI();
+        this.originalDue = this.totals.total;
+        document.getElementById('checkout-due-amount').innerText = `KES ${this.totals.total.toFixed(2)}`;
+      }
+      return false;
+    }
+  }
+
   /**
    * STK needs Safaricom reachable on both legs. There is no queue that makes an
    * offline push work later, so the tender is refused rather than assumed paid.
@@ -996,6 +1277,9 @@ export class TillView {
 
   async runMpesaAttempt(kind) {
     const phone = document.getElementById('pay-mpesa-phone').value;
+    // A staff discount is only good on an authorised staff number, and this is
+    // the leg where that number is entered.
+    if (!this.validateStaffDiscountPhone(phone)) return;
     const trigger = document.getElementById('pay-trigger-stk');
     const mpesaMinor = toMinor(this.totals.total);
     if (mpesaMinor <= 0) {
@@ -1116,6 +1400,61 @@ export class TillView {
     }
   }
 
+  async triggerPaystack(channel) {
+    if (channel === 'mobile_money') {
+      const airtelPhone = document.getElementById('pay-airtel-phone').value;
+      if (!this.validateStaffDiscountPhone(airtelPhone)) {
+        return;
+      }
+    }
+
+    const emailInputId = channel === 'card' ? 'pay-card-email' : channel === 'mobile_money' ? 'pay-airtel-email' : 'pay-bank-email';
+    const statusWrapId = channel === 'card' ? 'card-paystack-status' : channel === 'mobile_money' ? 'airtel-paystack-status' : 'bank-paystack-status';
+    const badgeId = channel === 'card' ? 'card-paystack-badge' : channel === 'mobile_money' ? 'airtel-paystack-badge' : 'bank-paystack-badge';
+    
+    const email = document.getElementById(emailInputId).value || 'customer@titanium.com';
+    const statusWrap = document.getElementById(statusWrapId);
+    const badge = document.getElementById(badgeId);
+
+    statusWrap.classList.remove('hidden');
+    badge.className = 'badge warning';
+    badge.innerText = 'Initializing Paystack...';
+
+    showNotification('Opening Paystack Secure Checkout...', 'info');
+
+    try {
+      if (typeof PaystackPop !== 'undefined') {
+        const handler = PaystackPop.setup({
+          key: 'pk_test_placeholder',
+          email: email,
+          amount: Math.round(this.totals.total * 100),
+          currency: 'KES',
+          channels: [channel],
+          ref: 'PAYSTACK-' + Math.floor((Math.random() * 1000000000) + 1),
+          onClose: () => {
+            badge.className = 'badge danger';
+            badge.innerText = 'Payment Cancelled';
+            showNotification('Paystack transaction window closed', 'warning');
+          },
+          callback: (response) => {
+            badge.className = 'badge success';
+            badge.innerText = 'Paid: ' + response.reference;
+            this.paystackRef = response.reference;
+            this.paystackVerified = true;
+            showNotification('Paystack payment successful! Reference: ' + response.reference, 'success');
+          }
+        });
+        handler.openIframe();
+      } else {
+        showNotification('Paystack library not loaded.', 'error');
+      }
+    } catch (e) {
+      badge.className = 'badge danger';
+      badge.innerText = 'Paystack Error';
+      showNotification('Paystack error: ' + (e.message || e), 'error');
+    }
+  }
+
   /**
    * One row per tender actually taken.
    *
@@ -1153,7 +1492,7 @@ export class TillView {
 
     // Cash is settled at the drawer and credit is a receivable on the books;
     // neither has a provider to confirm it, so both count as settled here.
-    return [row(this.selectedPaymentMethod, this.totals.total, '', true)];
+    return [row(this.selectedPaymentMethod, this.totals.total, this.paystackRef || '', true)];
   }
 
   mpesaProofMatchesCurrentCart() {
@@ -1168,19 +1507,38 @@ export class TillView {
   }
 
   async finalizeInvoice() {
+    // Validate Staff Discount Phone Number if present
+    if (this.cart.some(item => item.product.id === 'prod-staff-discount')) {
+      let targetPhone = '';
+      if (this.selectedPaymentMethod === 'MPESA') {
+        targetPhone = document.getElementById('pay-mpesa-phone').value;
+      } else if (this.selectedPaymentMethod === 'AIRTEL_PAYSTACK') {
+        targetPhone = document.getElementById('pay-airtel-phone').value;
+      } else if (this.selectedPaymentMethod === 'SPLIT') {
+        targetPhone = document.getElementById('pay-split-phone').value;
+      }
+
+      if (['MPESA', 'AIRTEL_PAYSTACK', 'SPLIT'].includes(this.selectedPaymentMethod) || targetPhone) {
+        if (!this.validateStaffDiscountPhone(targetPhone)) {
+          return; // Discount removed and normal price charged, stop so cashier re-confirms with updated total
+        }
+      }
+    }
+
     const saleId = crypto.randomUUID();
     const invoiceNo = `INV-BH001-${new Date().getTime().toString().slice(-6)}`;
     const saleUuid = crypto.randomUUID();
     const buyerPin = document.getElementById('cart-buyer-pin').value || '';
     const tableNo = document.getElementById('checkout-table-number').value || '';
 
-    // Verify cashier shift is open
+    // Verify waiter/waitress shift is open
     const openShift = await db.shifts.where('status').equals('OPEN').first();
     if (!openShift) {
-      showNotification('No open cashier shift found. Open shift before completing sales.', 'error');
+      showNotification('No open waiter/waitress shift found. Open shift before completing sales.', 'error');
       return;
     }
 
+    const hasKdsItems = this.cart.some(item => !item.product.is_service);
     // A sale is never booked against an M-Pesa payment the backend has not
     // confirmed. Cash and credit are settled at the counter; M-Pesa is not.
     if (
@@ -1192,6 +1550,7 @@ export class TillView {
       return;
     }
 
+    const recorded = recordedSaleTotals(this.totals);
     const saleRecord = {
       id: saleId,
       tenant_id: state.currentTenant.id,
@@ -1205,11 +1564,13 @@ export class TillView {
       customer_id: this.selectedCustomer.id || null,
       table_no: tableNo,
       buyer_pin: buyerPin,
-      subtotal: this.totals.subtotal,
-      discount: this.totals.discount,
+      // Recorded so that subtotal - discount is exactly what was charged.
+      subtotal: recorded.subtotal,
+      discount: recorded.discount,
       tax_total: this.totals.tax,
-      grand_total: this.totals.total,
+      grand_total: recorded.grandTotal,
       status: 'COMPLETED',
+      kds_status: hasKdsItems ? 'PENDING' : 'SERVED',
       sold_at: new Date().toISOString(),
       synced_at: null,
       fiscal_status: 'QUEUED',
@@ -1221,13 +1582,13 @@ export class TillView {
     const paymentRecord = paymentRecords[paymentRecords.length - 1];
 
     // Perform database operations within atomic transactions
-    await db.transaction('rw', [db.sales, db.sale_lines, db.payments, db.stock_movements, db.audit_log], async () => {
+    await db.transaction('rw', [db.sales, db.sale_lines, db.payments, db.stock_movements, db.audit_log, db.customers], async () => {
       // 1. Write Sale
       await db.sales.add(saleRecord);
 
       // 2. Write Sale Lines & Stock Movements
       for (const item of this.cart) {
-        const rate = this.selectedCustomer.price_tier === 'WHOLESALE' ? item.product.cost_price * 1.15 : item.product.sell_price;
+        const rate = saleLineRate(item.product, this.totals, this.selectedCustomer.price_tier);
         const gross = rate * item.qty;
         const discount = Math.min(gross, Math.max(0, Number(item.discount_amount) || 0));
         const total = gross - discount;
@@ -1274,7 +1635,28 @@ export class TillView {
         await db.payments.add(record);
       }
 
-      // 4. Log audit session
+      // 4. Update Customer Loyalty & Credit Balance
+      if (this.selectedCustomer && this.selectedCustomer.id !== 'cust-walkin') {
+        const customer = await db.customers.get(this.selectedCustomer.id);
+        if (customer) {
+          const updates = {};
+          
+          if (this.selectedPaymentMethod === 'CREDIT') {
+            updates.credit_balance = (customer.credit_balance || 0) + this.totals.total;
+          }
+
+          const pointsEarned = Math.floor(this.totals.total / 100);
+          updates.loyalty_points = Math.max(0, (customer.loyalty_points || 0) + pointsEarned - (this.redeemedPoints || 0));
+
+          await db.customers.update(customer.id, updates);
+
+          // Sync local customer reference
+          this.selectedCustomer.credit_balance = updates.credit_balance !== undefined ? updates.credit_balance : customer.credit_balance;
+          this.selectedCustomer.loyalty_points = updates.loyalty_points;
+        }
+      }
+
+      // 5. Log audit session
       await logAuditEvent(state.currentTenant.id, state.currentUser.id, 'SALE_CHECKOUT', 'SALE', saleId);
     });
 
@@ -1356,7 +1738,7 @@ export class TillView {
       <div style="font-size:13px; margin-bottom: 8px;">
         <div><b>Invoice:</b> ${sale.invoice_no}</div>
         <div><b>Date:</b> ${new Date(sale.sold_at).toLocaleString()}</div>
-        <div><b>Cashier:</b> ${state.currentUser.name}</div>
+        <div><b>Waiter/Waitress:</b> ${state.currentUser.name}</div>
         <div><b>Customer:</b> ${selectCustomerName}</div>
         ${sale.buyer_pin ? `<div><b>Buyer PIN:</b> ${sale.buyer_pin}</div>` : ''}
       </div>

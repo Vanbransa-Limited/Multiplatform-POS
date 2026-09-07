@@ -46,4 +46,17 @@ db.version(3).stores({
   requisitions: 'id, tenant_id, branch_id, status, created_at',
   req_lines: 'id, req_id, product_id'
 });
-db.version(4).stores({ stock_balances: 'id, tenantId, branchId, productId, [branchId+productId]' });
+
+db.version(4).stores({
+  expenses: 'id, tenant_id, branch_id, shift_id, category, amount, created_at'
+});
+
+/**
+ * Two different version 4 schemas shipped: one adding `expenses`, one adding
+ * `stock_balances`. A device that installed either one is at 4 and will not
+ * re-run that upgrade, so this declares both tables at 5 to reconcile them.
+ */
+db.version(5).stores({
+  expenses: 'id, tenant_id, branch_id, shift_id, category, amount, created_at',
+  stock_balances: 'id, tenantId, branchId, productId, [branchId+productId]'
+});

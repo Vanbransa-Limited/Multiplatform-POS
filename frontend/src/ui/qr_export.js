@@ -157,13 +157,11 @@ export class QrToolsView {
     }
   }
 
-  // ── QR CODE ──
-  generateQR() {
+  async generateQR() {
     const urlEl = document.getElementById('qr-url-input');
     const sizeEl = document.getElementById('qr-size-sel');
-    const url = (urlEl && urlEl.value.trim()) || defaultMenuUrl();
-    if (urlEl) localStorage.setItem('pos_menu_url', url);
-    const size = parseInt(sizeEl ? sizeEl.value : '220');
+    const encodedUrl = (urlEl && urlEl.value.trim()) || defaultMenuUrl();
+    if (urlEl) localStorage.setItem('pos_menu_url', encodedUrl);
 
     const renderQR = () => {
       const wrap = document.getElementById('qr-actual');
@@ -171,9 +169,9 @@ export class QrToolsView {
       wrap.innerHTML = '';
       try {
         new QRCode(wrap, {
-          text: url, width: size, height: size,
+          text: encodedUrl, width: size, height: size,
           colorDark: '#1a0c04', colorLight: '#ffffff',
-          correctLevel: QRCode.CorrectLevel.H
+          correctLevel: QRCode.CorrectLevel.L // Low error correction to allow larger payloads in the same size
         });
       } catch (e) {
         wrap.innerHTML = '<div style="width:' + size + 'px;height:' + size + 'px;display:flex;align-items:center;justify-content:center;background:#f5f0e8;border-radius:8px;font-size:13px;color:#666;text-align:center;padding:20px;">QR library loading...</div>';

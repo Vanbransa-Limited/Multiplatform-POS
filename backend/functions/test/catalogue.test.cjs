@@ -503,6 +503,12 @@ test('the specific rule wins over the general one', () => {
   assert.equal(imageForName('WILLIAM LAWSON 1L'), '/ai_images/william_lawson.jpg');
   assert.equal(imageForName('CHAPATI & BEANS'), '/ai_images/chapati_beans.jpg');
   assert.equal(imageForName('TUSKER LAGER CAN 500ML'), '/ai_images/tusker_lager.jpg');
+  assert.equal(imageForName('JW BLUE LABEL 750ML'), '/ai_images/blue_label.jpg');
+  assert.equal(imageForName('ALLEE BLEUE ROSE WINE'), '/ai_images/rose_wine.jpg');
+  assert.equal(imageForName('SYRAH 750ML'), '/ai_images/red_wine_bottle.jpg');
+  assert.equal(imageForName('PRIMITIVO RED WINE'), '/ai_images/red_wine_bottle.jpg');
+  assert.equal(imageForName('HOUSE WHITE WINE'), '/ai_images/red_wine_glass.jpg');
+  assert.equal(imageForName('ROSEMARY CHICKEN'), '/ai_images/grilled_chicken.jpg');
 });
 
 test('an exclusion keeps a rule off something it only looks like', () => {

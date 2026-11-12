@@ -39,7 +39,7 @@ export function SignIn() {
           || code === "auth/wrong-password"
           || code === "auth/user-not-found"
           || code === "auth/invalid-email"
-          ? "Email or password is incorrect."
+          ? "Email or passcode/password is incorrect."
           : code === "auth/user-disabled"
             ? "This account has been disabled. Ask your manager."
             : code === "auth/too-many-requests"
@@ -80,7 +80,7 @@ export function SignIn() {
               </label>
 
               <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <span style={{ fontSize: 11, color: "var(--text-secondary)", letterSpacing: 1, textTransform: "uppercase" }}>Password</span>
+                <span style={{ fontSize: 11, color: "var(--text-secondary)", letterSpacing: 1, textTransform: "uppercase" }}>Passcode or password</span>
                 <input
                   id="signin-password"
                   type="password"

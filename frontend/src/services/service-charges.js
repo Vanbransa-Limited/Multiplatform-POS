@@ -12,6 +12,32 @@ export const VIP_CHARGE_ID = 'prod-table-service';
 export const STAFF_DISCOUNT_ID = 'prod-staff-discount';
 
 /**
+ * Recorded sale lines, as the cart the M-Pesa server will price.
+ *
+ * `initiateMpesaStk` refuses an empty cart and caps the charge at what the
+ * catalogue says those items cost, so settling a proforma by STK has to name
+ * the items behind it - one entry per product, quantities summed across every
+ * round on the tab, because the server refuses a repeated product too.
+ *
+ * The two pseudo-products are stripped for the reason the till strips them from
+ * a live cart: only this device has a row for either, so pricing them
+ * server-side fails with "not active for this tenant" and no prompt is raised.
+ */
+export function catalogueCartLines(saleLines) {
+  const quantities = new Map();
+  for (const line of saleLines || []) {
+    const productId = String(line?.product_id ?? '');
+    if (!productId || productId === VIP_CHARGE_ID || productId === STAFF_DISCOUNT_ID) continue;
+    const qty = Number(line?.qty) || 0;
+    if (qty <= 0) continue;
+    quantities.set(productId, (quantities.get(productId) || 0) + qty);
+  }
+  return [...quantities.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([productId, qty]) => ({ productId, qty: Math.max(1, Math.round(qty)) }));
+}
+
+/**
  * What one cart line is booked at.
  *
  * The VIP line carries the computed surcharge; the staff discount is not a sale

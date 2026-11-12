@@ -14,6 +14,7 @@ export type InputPayment = {
   method: string;
   amountMinor: number;
   reference: string | null;
+  unverified?: boolean;
 };
 
 export type ParsedSaleInput = {
@@ -25,6 +26,8 @@ export type ParsedSaleInput = {
   customerId: string;
   idempotencyKey: string;
   tableNumber: string | null;
+  tabId?: string;
+  orderReference?: string;
   buyerKraPin: string | null;
   lines: InputLine[];
   payments: InputPayment[];

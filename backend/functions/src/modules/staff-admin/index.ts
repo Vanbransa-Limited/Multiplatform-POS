@@ -11,20 +11,21 @@
  */
 
 import { getAuth } from "firebase-admin/auth";
+import { staffCredential } from "./credential";
 import { Timestamp } from "firebase-admin/firestore";
 import { defineSecret } from "firebase-functions/params";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 
 import { FUNCTION_REGION } from "../../config/runtime";
 import { db } from "../../lib/firebase";
+import { SELLING_ROLES } from "../sales/constants";
 import { deterministicId } from "../../shared/identifiers";
 import { ADMIN_ROLES, canAssignRole, STAFF_ROLES } from "../../shared/roles";
 import { asRecord, documentId, optionalText } from "../../shared/validation";
 
 const BOOTSTRAP_SECRET = defineSecret("POS_BOOTSTRAP_SECRET");
 
-// Firebase Auth's own floor is 6. Eight is the shortest that is not trivially
-// guessable for an account that can void sales and read every takings figure.
+// Allow short numeric passcodes as well as existing full-length passwords.
 const MIN_PASSWORD_LENGTH = 8;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -59,10 +60,13 @@ function email(value: unknown): string {
 }
 
 function password(value: unknown): string {
+  if (typeof value === "string" && /^[0-9]{1,4}$/.test(value)) {
+    return staffCredential(value);
+  }
   if (typeof value !== "string" || value.length < MIN_PASSWORD_LENGTH || value.length > 128) {
     throw new HttpsError(
       "invalid-argument",
-      `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+      `Use a 1–4 digit passcode or a password of ${MIN_PASSWORD_LENGTH}–128 characters.`,
     );
   }
   return value;
@@ -102,12 +106,24 @@ async function createStaff(
   // silently minting a second profile for the same person.
   const staffId = deterministicId("staff", `${actor.tenantId}:${address}`);
   const staffRef = db.collection("staff").doc(staffId);
-  if ((await staffRef.get()).exists) {
+  const existing = await staffRef.get();
+  const wasDisabled = existing.exists && existing.data()?.status !== "active";
+
+  // Somebody who was removed is the same person coming back, so their record is
+  // taken up again rather than refused. Removing a staff member disables the
+  // profile - the sales and audit rows they left behind still point at this
+  // id - and without this, re-adding them was impossible from inside the app:
+  // the id is derived from the email, so it collided every time.
+  if (existing.exists && !wasDisabled) {
+    throw new HttpsError("already-exists", "That email already belongs to a staff member.");
+  }
+  if (existing.exists && existing.data()?.tenantId !== actor.tenantId) {
     throw new HttpsError("already-exists", "That email already belongs to a staff member.");
   }
 
   const auth = getAuth();
   let authUid: string;
+  let reusedIdentity = false;
   try {
     const created = await auth.createUser({
       email: address,
@@ -117,10 +133,24 @@ async function createStaff(
     authUid = created.uid;
   } catch (error) {
     const code = (error as { code?: string }).code;
-    if (code === "auth/email-already-exists") {
-      throw new HttpsError("already-exists", "That email is already registered.");
+    if (code !== "auth/email-already-exists") throw error;
+
+    // The sign-in identity outlived its profile - a removed staff member, or a
+    // create that failed half way. Reusing it is what keeps an owner out of the
+    // Firebase console just to hire somebody back.
+    const found = await auth.getUserByEmail(address);
+    // An email collision is not proof this tenant owns the identity. Check
+    // server-issued claims before changing a password, enabling an account,
+    // or replacing its claims. Unclaimed accounts require operator recovery.
+    if (found.customClaims?.tenant_id !== actor.tenantId
+      || found.customClaims?.staff_id !== staffId
+      || found.customClaims?.platform_admin === true
+      || (existing.exists && existing.data()?.authUid !== found.uid)) {
+      throw new HttpsError("already-exists", "That email already belongs to another sign-in account.");
     }
-    throw error;
+    await auth.updateUser(found.uid, { password: secret, displayName: name, disabled: false });
+    authUid = found.uid;
+    reusedIdentity = true;
   }
 
   // Claims are the authorisation, so they are set before the profile exists:
@@ -133,7 +163,7 @@ async function createStaff(
   });
 
   const now = Timestamp.now();
-  await staffRef.create({
+  await staffRef.set({
     id: staffId,
     tenantId: actor.tenantId,
     authUid,
@@ -142,12 +172,16 @@ async function createStaff(
     phone: phone ?? null,
     role: staffRole,
     status: "active",
-    createdAt: now,
-    createdByStaffId: actor.staffId,
-  });
+    createdAt: existing.data()?.createdAt ?? now,
+    createdByStaffId: existing.data()?.createdByStaffId ?? actor.staffId,
+    ...(existing.exists
+      ? { rehiredAt: now, rehiredByStaffId: actor.staffId, retiredAt: null }
+      : {}),
+  }, { merge: true });
   } catch (error) {
-    // A failed profile/claims write must not leave an unusable registered email.
-    await auth.deleteUser(authUid);
+    // A failed profile/claims write must not leave an unusable registered email
+    // - but an identity that was already here is not this call's to delete.
+    if (!reusedIdentity) await auth.deleteUser(authUid);
     throw error;
   }
 
@@ -422,9 +456,18 @@ export const bootstrapOwner = onCall(
 
       const existing = owners.docs[0];
       const current = existing.data();
+      if (current.tenantId !== tenantId || current.role !== "owner") {
+        throw new HttpsError("failed-precondition", "The existing owner profile does not match this business.");
+      }
       let uid = typeof current.authUid === "string" ? current.authUid : null;
 
       if (uid) {
+        const identity = await auth.getUser(uid);
+        if (identity.customClaims?.tenant_id !== tenantId
+          || identity.customClaims?.staff_id !== existing.id
+          || identity.customClaims?.platform_admin === true) {
+          throw new HttpsError("failed-precondition", "The owner identity is not linked to this business. Operator recovery is required.");
+        }
         await auth.updateUser(uid, {
           email: address,
           password: secret,
@@ -462,9 +505,15 @@ export const bootstrapOwner = onCall(
     let authUid: string;
     try {
       const existing = await auth.getUserByEmail(address);
+      if (existing.customClaims?.tenant_id !== tenantId
+        || existing.customClaims?.staff_id !== staffId
+        || existing.customClaims?.platform_admin === true) {
+        throw new HttpsError("already-exists", "That email belongs to another sign-in account. Existing accounts cannot be adopted.");
+      }
       authUid = existing.uid;
       await auth.updateUser(authUid, { password: secret, displayName: name, disabled: false });
-    } catch {
+    } catch (error) {
+      if ((error as { code?: string }).code !== "auth/user-not-found") throw error;
       const created = await auth.createUser({ email: address, password: secret, displayName: name });
       authUid = created.uid;
     }
@@ -492,3 +541,21 @@ export const bootstrapOwner = onCall(
     return { staffId, email: address };
   },
 );
+
+/**
+ * Names only, for anyone who sells.
+ *
+ * /staff is readable by owners and managers alone because it holds emails,
+ * phones and auth ids. A supervisor's till still has to say who billed an
+ * order, so this returns id -> name and nothing else.
+ */
+export const listStaffNames = onCall({ region: FUNCTION_REGION }, async (request) => {
+  const token = request.auth?.token;
+  if (!token?.tenant_id || !token.staff_id || !SELLING_ROLES.has(String(token.staff_role))) {
+    throw new HttpsError("permission-denied", "Sign in to see staff names.");
+  }
+  const snapshot = await db.collection("staff").where("tenantId", "==", String(token.tenant_id)).get();
+  return {
+    staff: snapshot.docs.map((doc) => ({ id: doc.id, name: String(doc.data().name || doc.id) })),
+  };
+});

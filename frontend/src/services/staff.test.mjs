@@ -11,6 +11,13 @@ test('cashiers cannot open staff administration or management screens', () => {
     assert.equal(canViewTab('Cashier', tab), false);
   }
   assert.equal(canViewTab('Cashier', 'till'), true);
+  // The customer directory sets credit limits, so it stays with the owner and
+  // the supervisor running the floor.
+  assert.equal(canViewTab('Owner', 'customers'), true);
+  assert.equal(canViewTab('Supervisor', 'customers'), true);
+  for (const role of ['Cashier', 'Bar Staff', 'Store Keeper', 'Store Manager']) {
+    assert.equal(canViewTab(role, 'customers'), false, `${role} cannot open the directory`);
+  }
 });
 
 test('staff import preserves password whitespace and blank row positions', async () => {

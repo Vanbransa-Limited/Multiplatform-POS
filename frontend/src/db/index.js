@@ -1,3 +1,5 @@
+import Dexie from 'dexie';
+import { selectedCacheTenant, LEGACY_TENANT_ID, tenantStorage } from '../services/tenant-cache.js';
 import { db } from './schema';
 import * as SEED from './seed-data';
 import { firebaseConfigured } from '../services/firebase';
@@ -48,7 +50,9 @@ export async function logAuditEvent(tenantId, actorId, action, entityType, entit
     });
     
     // 3. Compute hash of the new record including prev_hash
-    const hash = await computeHash(payload);
+    // Web Crypto is not an IndexedDB request. Keep this transaction (and an
+    // enclosing sale/payment transaction) alive until the digest is ready.
+    const hash = await Dexie.waitFor(computeHash(payload));
     
     const newEntry = {
       id: crypto.randomUUID(),
@@ -115,7 +119,7 @@ export async function getStockOnHand(productId, branchId, location = null) {
     return rows.filter((row) => (!targetBid || row.branchId === targetBid) && (!location || row.location === location)).reduce((sum, row) => sum + Number(row.qty || 0) - Number(row.reservedQty || 0), 0);
   }
 
-  const movements = await db.stock_movements.toArray();
+  const movements = await db.stock_movements.where('product_id').equals(targetPid).toArray();
   const filtered = movements.filter(m => {
     let match = String(m.product_id) === targetPid;
     if (targetBid && m.branch_id) {
@@ -161,6 +165,12 @@ async function hasUnsyncedSales() {
 }
 
 async function wipeAllTables(reason) {
+  // A server acknowledgement is not permission to erase the local ledger or
+  // tab identities. Seed migrations must never clear a till with real history.
+  if (await db.sales.count() || await db.payments.count() || await db.tabs.count()) {
+    console.error(`Refusing to wipe local data (${reason}): order history is present.`);
+    return false;
+  }
   if (await hasUnsyncedSales()) {
     console.error(`Refusing to wipe local data (${reason}): unsynced sales are still queued.`);
     return false;
@@ -171,7 +181,9 @@ async function wipeAllTables(reason) {
 
 // Seed the DB with mock data if empty
 export async function seedDatabase() {
-  const dbVer = localStorage.getItem('db_seed_ver');
+  // New businesses start empty. Never migrate or copy the legacy database.
+  if (selectedCacheTenant() !== LEGACY_TENANT_ID) return;
+  const dbVer = tenantStorage.getItem('db_seed_ver');
   // v5 clears the demo bar off tills that were seeded with it before the
   // catalogue moved to the server. wipeAllTables refuses while sales are still
   // queued and the marker only advances on a wipe that happened, so a till with
@@ -181,7 +193,7 @@ export async function seedDatabase() {
     // Only advance the marker if the wipe actually happened, otherwise the
     // next boot would skip the migration entirely.
     if (await wipeAllTables('seed version change')) {
-      localStorage.setItem('db_seed_ver', 'v5_server_catalogue');
+      tenantStorage.setItem('db_seed_ver', 'v5_server_catalogue');
     }
   }
 

@@ -105,6 +105,7 @@ function parsePayments(value: unknown): InputPayment[] {
         false,
       ),
       reference,
+      ...(payment.unverified === true ? { unverified: true } : {}),
     };
   });
 }
@@ -138,6 +139,8 @@ export function parseSaleInput(value: unknown): ParsedSaleInput {
     customerId: documentId(input.customerId, "customerId"),
     idempotencyKey: input.idempotencyKey,
     tableNumber: optionalText(input.tableNumber, "tableNumber", 40),
+    ...(input.tabId ? { tabId: documentId(input.tabId, 'tabId') } : {}),
+    ...(input.orderReference ? { orderReference: optionalText(input.orderReference, 'orderReference', 60) ?? undefined } : {}),
     buyerKraPin,
     lines: parseLines(input.lines),
     payments: parsePayments(input.payments),

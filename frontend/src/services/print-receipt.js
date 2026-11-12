@@ -91,13 +91,20 @@ export function renderReceiptHtml(payload) {
     ? `
       <p>CU Serial: ${escapeHtml(payload.fiscal.cuSerial)}</p>
       <p style="word-break: break-all;">Signature: ${escapeHtml(payload.fiscal.signature)}</p>
-      <p>Invoice No: ${escapeHtml(payload.fiscal.invoiceNo)}</p>`
+      <p>Invoice No: ${escapeHtml(payload.fiscal.invoiceNo)}</p>
+      <div class="receipt-qr-container">
+        <div class="receipt-qr-mock">
+          [ SCAN TO VERIFY KRA ]
+        </div>
+        <p>Verification QR Code</p>
+      </div>`
     : `
-      <p style="font-weight:bold;">AWAITING FISCAL SIGNATURE</p>
+      <p style="color:#e11d48;font-weight:bold;">AWAITING FISCAL SIGNATURE</p>
       <p>Invoice queued offline and will transmit on link reconnection.</p>`;
 
   return `
     <div class="receipt-header">
+      ${payload.unpaid ? '<p style="font-weight:bold;">*** PROFORMA INVOICE ***</p><p style="font-weight:bold;">NOT A PAYMENT RECEIPT</p>' : ''}
       <h2>${escapeHtml(payload.tenantName)}</h2>
       ${payload.branchName ? `<p>${escapeHtml(payload.branchName)}</p>` : ''}
       ${payload.kraPin ? `<p>PIN: ${escapeHtml(payload.kraPin)}</p>` : ''}
@@ -107,9 +114,11 @@ export function renderReceiptHtml(payload) {
     <div class="receipt-divider"></div>
     <div style="font-size:13px; margin-bottom: 8px;">
       <div><b>Invoice:</b> ${escapeHtml(payload.invoiceNo)}</div>
+      ${payload.fiscalInvoiceNo ? `<div style="font-size:11px;color:#555;">Fiscal ref: ${escapeHtml(payload.fiscalInvoiceNo)}</div>` : ''}
       <div><b>Date:</b> ${escapeHtml(payload.soldAt)}</div>
-      <div><b>Cashier:</b> ${escapeHtml(payload.cashierName)}</div>
+      <div><b>Waiter/Waitress:</b> ${escapeHtml(payload.cashierName)}</div>
       <div><b>Customer:</b> ${escapeHtml(payload.customerName)}</div>
+      ${payload.tableNo ? `<div><b>Table:</b> ${escapeHtml(payload.tableNo)}</div>` : ''}
       ${payload.buyerPin ? `<div><b>Buyer PIN:</b> ${escapeHtml(payload.buyerPin)}</div>` : ''}
     </div>
     <div class="receipt-divider"></div>
@@ -117,21 +126,23 @@ export function renderReceiptHtml(payload) {
     <div class="receipt-divider"></div>
     <div class="receipt-totals-row"><span>Subtotal</span><span>${MONEY(payload.subtotal)}</span></div>
     <div class="receipt-totals-row"><span>VAT Tax</span><span>${MONEY(payload.taxTotal)}</span></div>
-    <div class="receipt-totals-row" style="font-size:15px;">
+    <div class="receipt-totals-row">
       <span>TOTAL DUE</span><span>KES ${MONEY(payload.grandTotal)}</span>
     </div>
     <div class="receipt-divider"></div>
     <div style="font-size:13px; margin-bottom: 8px;">
-      <div><b>Settlement:</b> ${escapeHtml(payload.paymentMethod)}</div>
+      <div><b>Settlement:</b> ${payload.unpaid ? 'UNPAID - ' : ''}${escapeHtml(payload.paymentMethod)}</div>
       ${payload.paymentReference ? `<div><b>Ref:</b> ${escapeHtml(payload.paymentReference)}</div>` : ''}
+      ${payload.unpaid ? `<div style="font-weight:bold;">BALANCE DUE: KES ${MONEY(payload.grandTotal)}</div>` : ''}
     </div>
     <div class="receipt-divider"></div>
-    <div class="receipt-header" style="font-size:12px;">
+    <div class="receipt-header">
       <p><b>*** KRA eTIMS FISCAL RECORD ***</b></p>
       ${fiscal}
     </div>
     <div class="receipt-divider"></div>
-    <div class="receipt-header" style="font-size:12px; margin-top:8px;">
+    <div class="receipt-header" style="margin-top:8px;">
       <p>Thank you for shopping with us!</p>
+      <p>Powered by KPOS Pro Systems</p>
     </div>`;
 }

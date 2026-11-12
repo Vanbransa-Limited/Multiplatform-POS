@@ -1,4 +1,5 @@
 import Dexie from 'dexie';
+import { cacheName, selectedCacheTenant } from '../services/tenant-cache.js';
 
 /**
  * Tables are declared through Dexie's schema strings below rather than as
@@ -7,7 +8,7 @@ import Dexie from 'dexie';
  *
  * @type {Dexie & Record<string, import('dexie').Table<any, any>>}
  */
-export const db = new Dexie('POS_DB');
+export const db = new Dexie(cacheName(selectedCacheTenant()));
 
 db.version(1).stores({
   tenants: 'id, legal_name, trading_name, kra_pin, etims_mode, status',
@@ -60,3 +61,36 @@ db.version(5).stores({
   expenses: 'id, tenant_id, branch_id, shift_id, category, amount, created_at',
   stock_balances: 'id, tenantId, branchId, productId, [branchId+productId]'
 });
+
+/**
+ * A tab is a real record, not a grouping.
+ *
+ * Inferring one from "unpaid orders at the same table" gave a tab no identity
+ * and no end: last night's unsettled Table 11 was still open this morning, and
+ * the next customer to sit there had their rounds added to it. A tab that can
+ * be closed without being paid - a walk-out, a write-off - cannot be derived
+ * from the payment rows at all, so it owns its own status here.
+ *
+ * `sales.tab_id` links each round to the tab it belongs to.
+ */
+db.version(6).stores({
+  tabs: 'id, tenant_id, branch_id, table_no, status, opened_at, closed_at, [branch_id+status]',
+  sales: 'id, tenant_id, branch_id, device_id, shift_id, invoice_no, sale_uuid, customer_id, status, sold_at, synced_at, fiscal_status, table_no, tab_id'
+});
+
+// IndexedDB does not index null/undefined synced_at values. Materialize queue
+// membership so the ten-second scheduler never reads completed sales history.
+db.version(7).stores({
+  sales: 'id, tenant_id, branch_id, device_id, shift_id, invoice_no, sale_uuid, customer_id, status, sold_at, synced_at, fiscal_status, table_no, tab_id, sync_pending'
+}).upgrade(tx => tx.table('sales').filter(sale => sale.synced_at == null)
+  .modify({ sync_pending: 1 }));
+
+// Cover every writer, including bulkPut/imports, settlement and outbox updates.
+// Hooks run within the originating transaction, so membership cannot lag a sale.
+db.sales.hook('creating', (_key, sale) => {
+  sale.sync_pending = sale.synced_at == null ? 1 : 0;
+});
+db.sales.hook('updating', (changes, _key, sale) => ({
+  sync_pending: (Object.prototype.hasOwnProperty.call(changes, 'synced_at')
+    ? changes.synced_at : sale.synced_at) == null ? 1 : 0
+}));

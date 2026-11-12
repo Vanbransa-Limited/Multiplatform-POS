@@ -58,6 +58,7 @@ const base = () => new Map([
 ]);
 const keeper = { token: { tenant_id: 't1', staff_id: 's1', staff_role: 'store_keeper' } };
 const owner = { token: { tenant_id: 't1', staff_id: 's9', staff_role: 'owner' } };
+const manager = { token: { tenant_id: 't1', staff_id: 's7', staff_role: 'store_manager' } };
 const call = (auth, data) => changeStock.run({ auth, data: { branchId: 'b1', productId: 'p1', ...data } });
 
 test('with a Store enabled a delivery can only land in the Store', async () => {
@@ -100,12 +101,12 @@ test('without a Store, deliveries land in the House and there is nothing to requ
   } finally { restore(); }
 });
 
-test('correcting a count is the owner\'s alone and never happens without a reason', async () => {
+test('correcting a count stays above the keeper and never happens without a reason', async () => {
   const docs = base();
   docs.set('stock_balances/b1_p1_HOUSE', { qty: 10 });
   const restore = harness(docs);
   try {
-    await assert.rejects(call(keeper, { action: 'adjust', qty: 8, location: 'HOUSE', expectedQty: 10, reason: 'Breakage', requestId: 'r6' }), /Only the owner/);
+    await assert.rejects(call(keeper, { action: 'adjust', qty: 8, location: 'HOUSE', expectedQty: 10, reason: 'Breakage', requestId: 'r6' }), /owner or a store manager/);
     await assert.rejects(call(owner, { action: 'adjust', qty: 8, location: 'HOUSE', expectedQty: 10, requestId: 'r7' }), /reason/);
     // A stale count is refused rather than silently overwriting someone else.
     await assert.rejects(call(owner, { action: 'adjust', qty: 8, location: 'HOUSE', expectedQty: 9, reason: 'Breakage', requestId: 'r8' }), /Refresh/);
@@ -127,6 +128,9 @@ test('switching the Store off folds what it holds into the House', async () => {
   const restore = harness(docs);
   try {
     await assert.rejects(configureStock.run({ auth: keeper, data: { storeEnabled: false } }), /Only the owner/);
+    // Running both rooms is not the same as deciding the business has two of
+    // them: the store manager corrects counts but cannot fold the Store away.
+    await assert.rejects(configureStock.run({ auth: manager, data: { storeEnabled: false } }), /Only the owner/);
     const result = await configureStock.run({ auth: owner, data: { storeEnabled: false } });
     assert.equal(result.moved, 1);
     // Nothing is stranded where service cannot reach it.
@@ -142,8 +146,11 @@ test('a supervisor sells at the till but still cannot hand out discounts', () =>
   assert.equal(SELLING_ROLES.has('supervisor'), true);
   // Selling is floor work; discounting is a money decision and stays above it.
   assert.equal(DISCOUNT_ROLES.has('supervisor'), false);
-  // A store keeper handles stock, not the till.
-  assert.equal(SELLING_ROLES.has('store_keeper'), false);
+  for (const role of require('../lib/shared/roles').STAFF_ROLES) {
+    assert.equal(SELLING_ROLES.has(role), true, `${role} can sell`);
+  }
+  assert.equal(DISCOUNT_ROLES.has('store_keeper'), false);
+  assert.equal(SELLING_ROLES.has('unknown'), false);
 });
 
 const { publicProduct } = require('../lib/modules/customer-orders/domain');
@@ -157,6 +164,54 @@ test('store-only items are sellable at the till but never advertised', () => {
 });
 
 const { importStock } = require('../lib/modules/stock');
+
+test('stock imports only existing Menu Admin items, preserve details and safely replay', async () => {
+  for (const enabled of [true, false]) {
+    const docs = base();
+    docs.set('tenant_settings/t1', { storeEnabled: enabled });
+    const menuItem = { tenantId: 't1', sku: 'TUSKER', name: 'Tusker', sellPriceMinor: 25000, showOnMenu: true, isActive: true };
+    docs.set('products/p1', menuItem);
+    const restore = harness(docs);
+    try {
+      const data = { mode: 'receive', branchId: 'b1', batchId: 'new-stock', createMissing: true, rows: [
+        { sku: 'tusker', qty: 10, sellPriceMinor: 1, showOnMenu: false },
+        { name: ' TUSKER ', qty: 2 },
+        { sku: 'NAP-01', name: 'Napkins', qty: 100 },
+      ] };
+      const result = await importStock.run({ auth: enabled ? keeper : owner, data });
+      const room = enabled ? 'STORE' : 'HOUSE';
+      assert.equal(result.location, room);
+      assert.equal(result.imported, 1);
+      assert.equal(result.created, 0);
+      assert.match(result.rejected[0].message, /Menu Admin first/);
+      assert.equal(docs.get(`stock_balances/b1_p1_${room}`).qty, 12);
+      assert.deepEqual(docs.get('products/p1'), menuItem);
+      assert.equal([...docs.values()].some(v => v.sku === 'NAP-01'), false);
+      assert.deepEqual(await importStock.run({ auth: keeper, data }), result);
+      assert.equal(docs.get(`stock_balances/b1_p1_${room}`).qty, 12);
+      await assert.rejects(importStock.run({ auth: keeper, data: { ...data, rows: [{ sku: 'TUSKER', qty: 99 }] } }), /reference has already/);
+    } finally { restore(); }
+  }
+});
+
+test('stock imports reject unauthorized roles, services, ambiguous names and reserved count reductions', async () => {
+  const docs = base();
+  docs.set('products/p2', { tenantId: 't1', name: 'Tusker', sku: 'T2' });
+  docs.set('products/service', { tenantId: 't1', name: 'Service', sku: 'SVC', isService: true });
+  docs.set('stock_balances/b1_p2_HOUSE', { qty: 10, reservedQty: 4 });
+  const restore = harness(docs);
+  try {
+    for (const role of ['cashier', 'supervisor', 'bar_staff']) {
+      await assert.rejects(importStock.run({ auth: { token: { tenant_id: 't1', staff_id: 's1', staff_role: role } }, data: { mode: 'receive' } }), /stock management/);
+    }
+    const result = await importStock.run({ auth: owner, data: { mode: 'count', location: 'HOUSE', branchId: 'b1', batchId: 'bad-counts', reason: 'Stock take', rows: [
+      { name: 'Tusker', qty: 5 }, { sku: 'SVC', qty: 1 }, { sku: 'T2', qty: 2 },
+    ] } });
+    assert.equal(result.imported, 0);
+    assert.equal(result.rejected.length, 3);
+    assert.equal(docs.get('stock_balances/b1_p2_HOUSE').qty, 10);
+  } finally { restore(); }
+});
 
 test('a delivery sheet books in, and a bad row is named rather than skipped silently', async () => {
   const docs = base();
@@ -187,16 +242,18 @@ test('a delivery sheet books in, and a bad row is named rather than skipped sile
     assert.equal(docs.get(`stock_balances/b1_${goodId}_STORE`).qty, 30);
     const reasons = result.rejected.map((r) => r.message).join(' ');
     assert.match(reasons, /not a whole quantity/);
-    assert.match(reasons, /No such item/);
+    assert.match(reasons, /Menu Admin first/);
   } finally { restore(); db.getAll = originalGetAll; db.batch = originalBatch; }
 });
 
-test('a counted sheet is the owner\'s alone and needs a reason', async () => {
+test('a counted sheet belongs to the owner and the store manager, and needs a reason', async () => {
   const docs = base();
   const restore = harness(docs);
   try {
-    await assert.rejects(importStock.run({ auth: keeper, data: { mode: 'count', branchId: 'b1', batchId: 'b2', reason: 'x', rows: [{ sku: 'S', qty: 1 }] } }), /Only the owner/);
+    await assert.rejects(importStock.run({ auth: keeper, data: { mode: 'count', branchId: 'b1', batchId: 'b2', reason: 'x', rows: [{ sku: 'S', qty: 1 }] } }), /owner or a store manager/);
     await assert.rejects(importStock.run({ auth: owner, data: { mode: 'count', branchId: 'b1', batchId: 'b3', rows: [{ sku: 'S', qty: 1 }] } }), /reason/);
+    // The store manager runs both rooms, so a stock take is theirs to book.
+    await assert.rejects(importStock.run({ auth: manager, data: { mode: 'count', branchId: 'b1', batchId: 'b4', rows: [{ sku: 'S', qty: 1 }] } }), /reason/);
   } finally { restore(); }
 });
 
@@ -209,7 +266,11 @@ test('bar staff may pull stock into the House but never book a delivery', async 
     const moved = await call(bar, { action: 'request', qty: 4, requestId: 'bar1' });
     assert.equal(moved.qty, 4);
     await assert.rejects(call(bar, { action: 'receive', qty: 4, requestId: 'bar2' }), /stock management staff/);
-    await assert.rejects(call(bar, { action: 'adjust', qty: 1, location: 'HOUSE', expectedQty: 4, reason: 'x', requestId: 'bar3' }), /Only the owner/);
+    await assert.rejects(call(bar, { action: 'adjust', qty: 1, location: 'HOUSE', expectedQty: 4, reason: 'x', requestId: 'bar3' }), /owner or a store manager/);
+    // The store manager corrects either room; the keeper still cannot.
+    await assert.rejects(call(keeper, { action: 'adjust', qty: 1, location: 'HOUSE', expectedQty: 4, reason: 'x', requestId: 'keep3' }), /owner or a store manager/);
+    const corrected = await call(manager, { action: 'adjust', qty: 9, location: 'HOUSE', expectedQty: 4, reason: 'Stock take', requestId: 'mgr3' });
+    assert.equal(corrected.qty, 9);
   } finally { restore(); }
 });
 

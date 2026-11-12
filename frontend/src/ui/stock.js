@@ -1,9 +1,11 @@
 import { db } from '../db/schema';
 import { state } from '../context';
 import { pullStock, changeStock, storeIsEnabled, pullStockMovements, importStock } from '../services/stock';
-import { parseStockFile } from '../services/csv';
+import { STOCK_TEMPLATE_CSV, downloadCsvTemplate, parseStockFile } from '../services/csv';
 import { escapeHtml as esc } from '../services/print-receipt';
-import { compareNames } from '../services/catalogue';
+import { compareNames, pullCatalogue } from '../services/catalogue';
+import { readWithDeadline } from '../services/read-deadline';
+import { createMobileFilters } from './mobile-filters';
 
 /** How a movement row reads to the person looking at it. */
 const MOVEMENT_LABELS = {
@@ -29,16 +31,25 @@ export class StockView {
     this.container = container;
     this.location = location;
     this.search = '';
+    this.openPanel = null;
   }
 
-  get isOwner() { return state.currentUser?.role === 'Owner'; }
+  /**
+   * Who may rewrite a count.
+   *
+   * Both rooms are the store manager's to run, so corrections and stock takes
+   * are theirs as well as the owner's. Mirrors STOCK_ROLES.adjust on the
+   * server, which is what actually enforces it.
+   */
+  get canCount() { return ['Owner', 'Store Manager'].includes(state.currentUser?.role); }
   /** Booking a delivery is a goods-received decision; pulling stock is service. */
   get canWrite() {
     const role = state.currentUser?.role;
     if (this.action === 'request') return ['Owner', 'Store Manager', 'Store Keeper', 'Bar Staff'].includes(role);
     return ['Owner', 'Store Manager', 'Store Keeper'].includes(role);
   }
-  get canImport() { return ['Owner', 'Store Manager', 'Store Keeper'].includes(state.currentUser?.role); }
+  get canReceiveImport() { return this.action === 'receive' && ['Owner', 'Store Manager', 'Store Keeper'].includes(state.currentUser?.role); }
+  get canImport() { return this.canReceiveImport || this.canCount; }
 
   /** What this room can do depends on whether a Store exists at all. */
   get action() {
@@ -47,13 +58,51 @@ export class StockView {
   }
 
   async load() {
-    this.container.innerHTML = '<div class="stk-wrap"><p>Loading stock…</p></div>';
+    this.refreshStatus = 'Showing cached stock. Refreshing from server…';
     try {
-      await pullStock();
-      await this.loadMovements();
       await this.render();
+      if (!this.disposed) void this.refresh();
     } catch {
-      this.container.innerHTML = '<div class="stk-wrap"><p>Stock is unavailable. Check your connection and reopen this screen.</p></div>';
+      if (!this.disposed) this.container.innerHTML = '<div class="stk-wrap"><p>Stock is unavailable. Check your connection and reopen this screen.</p></div>';
+    }
+  }
+
+  dispose() { this.disposed = true; this.actionSheet?.dispose(); }
+
+  updateRefreshStatus() {
+    if (this.disposed) return;
+    const status = this.container.querySelector('#stk-refresh-status');
+    if (status) status.textContent = this.refreshStatus;
+    const button = this.container.querySelector('#stk-refresh');
+    if (button) button.disabled = Boolean(this.refreshing);
+  }
+
+  async refresh() {
+    if (this.refreshing || this.disposed) return;
+    this.refreshing = true;
+    this.refreshStatus = 'Showing cached stock. Refreshing from server…';
+    this.updateRefreshStatus();
+    try {
+      // The optional trail must not block quantities, and each network read
+      // has a deadline so offline SDK retries cannot trap this screen.
+      const [stock, catalogue, movements] = await Promise.allSettled([
+        readWithDeadline(() => pullStock()),
+        readWithDeadline(() => pullCatalogue()),
+        readWithDeadline(() => this.loadMovements()),
+      ]);
+      if (this.disposed) return;
+      if (movements.status === 'rejected') this.movements = null;
+      this.refreshStatus = stock.status === 'fulfilled'
+        ? ''
+        : 'Showing cached stock. Server refresh failed or timed out. Retry when connected.';
+      if (catalogue.status === 'rejected') this.refreshStatus += ' Product details could not refresh.';
+      if (movements.status === 'rejected' || this.movements === null) this.refreshStatus += ' Movement history is unavailable.';
+      await this.render({ preserveForm: Boolean(this.openPanel) });
+    } catch {
+      if (!this.disposed) this.refreshStatus = 'Showing cached stock. Refresh could not finish. Please retry.';
+    } finally {
+      this.refreshing = false;
+      this.updateRefreshStatus();
     }
   }
 
@@ -81,10 +130,10 @@ export class StockView {
   }
 
   async rows() {
-    const products = await db.products
-      .filter((p) => !p.is_service && p.is_active !== 0 && p.tenant_id === state.currentTenant?.id)
+    const products = await db.products.where('tenant_id').equals(state.currentTenant?.id || '')
+      .filter((p) => !p.is_service && !p.retired_at)
       .toArray();
-    const balances = await db.stock_balances.where('branchId').equals(state.currentBranch.id).toArray();
+    const balances = await db.stock_balances.where('branchId').equals(state.currentBranch?.id || '').toArray();
     const here = new Map(balances.filter((b) => b.location === this.location).map((b) => [b.productId, b]));
     const store = new Map(balances.filter((b) => b.location === 'STORE').map((b) => [b.productId, b]));
     return products.map((product) => ({
@@ -122,25 +171,44 @@ export class StockView {
       };
   }
 
-  async render() {
+  async render({ preserveForm = false } = {}) {
     const rows = await this.rows();
+    if (this.disposed) return;
+    this.currentRows = rows;
+    if (preserveForm && this.container.querySelector('#stk-body')) {
+      this.container.querySelector('#stk-body').innerHTML = this.rowsHtml(rows);
+      const trail = this.container.querySelector('#stk-movements');
+      if (trail) trail.innerHTML = this.movementsHtml();
+      this.updateRefreshStatus();
+      return;
+    }
     const copy = this.copy();
     const requesting = this.action === 'request';
+    this.actionSheet?.dispose();
 
     this.container.innerHTML = `
       <div class="stk-wrap">
         <div class="stk-head">
           <h2>${copy.title}</h2>
-          <p>${copy.blurb}</p>
+        </div>
+        <p id="stk-refresh-status" class="stk-hint" role="status">${esc(this.refreshStatus || '')}</p>
+        <div class="stock-search-toolbar phone-sticky-toolbar">
+          <input id="stk-search" class="stk-search" type="search" placeholder="Search items" aria-label="Search items" value="${esc(this.search)}">
+          <button type="button" id="stk-refresh" class="stk-action" ${this.refreshing ? 'disabled' : ''}>Refresh</button>
         </div>
 
+        <div class="stk-actions" aria-label="Stock actions">
+          ${this.canWrite ? `<button type="button" class="stk-action" data-stock-panel="entry" aria-controls="stk-entry-panel" aria-expanded="${this.openPanel === 'entry'}">${copy.formTitle}</button>` : ''}
+          ${this.canImport ? `<button type="button" class="stk-action" data-stock-panel="import" aria-controls="stk-import-panel" aria-expanded="${this.openPanel === 'import'}">${this.canReceiveImport ? `Import stock into ${this.location === 'STORE' ? 'Store' : 'House'}` : 'Import a House stock count'}</button>` : ''}
+        </div>
         ${this.canWrite ? `
-        <section class="stk-card">
+        <section id="stk-entry-panel" class="stk-card" ${this.openPanel === 'entry' ? '' : 'hidden'}>
           <h3>${copy.formTitle}</h3>
           <p class="stk-hint">${copy.formHint}</p>
           <form id="stk-form" class="stk-form">
             <div class="stk-field grow">
               <label for="stk-product">Item</label>
+              <input id="stk-product-search" type="search" placeholder="Search products by name or SKU" aria-label="Search products to add" autocomplete="off" style="margin-bottom:8px">
               <select id="stk-product" name="productId" required>
                 ${rows.map((row) => `<option value="${esc(row.product.id)}">${esc(row.product.name)}${requesting ? ` — Store has ${row.storeQty}` : ''}</option>`).join('')}
               </select>
@@ -162,32 +230,17 @@ export class StockView {
           <p id="stk-msg" class="stk-msg" role="status"></p>
         </section>` : ''}
 
-        <input id="stk-search" class="stk-search stk-field" type="search" placeholder="Search items" aria-label="Search items" value="${esc(this.search)}">
-
-        <div class="stk-table-wrap">
-          <table class="stk-table">
-            <thead>
-              <tr>
-                <th>Item</th>
-                ${requesting ? '<th class="num">In Store</th>' : ''}
-                <th class="num">${this.location === 'STORE' ? 'In Store' : 'In House'}</th>
-                ${this.isOwner ? '<th></th>' : ''}
-              </tr>
-            </thead>
-            <tbody id="stk-body">${this.rowsHtml(rows)}</tbody>
-          </table>
-        </div>
-
         ${this.canImport ? `
-        <section class="stk-card" style="margin-top:18px">
-          <h3>Import from a spreadsheet</h3>
-          <p class="stk-hint">A delivery note or a stock take, as CSV or Excel. It needs an item column (SKU or name) and a quantity column; anything else is ignored.</p>
+        <section id="stk-import-panel" class="stk-card" ${this.openPanel === 'import' ? '' : 'hidden'}>
+          <h3>${this.canReceiveImport ? `Import stock into ${this.location === 'STORE' ? 'Store' : 'House'}` : 'Import a House stock count'}</h3>
+          <p class="stk-hint">Upload CSV or Excel with SKU or item name and quantity. ${this.canReceiveImport ? 'Deliveries add to the stock in this room.' : 'A count replaces the House quantity and requires a reason. Receive deliveries in Store, then transfer them to House.'} Prices and menu settings are not changed.</p>
+          ${this.canReceiveImport ? '<p class="stk-hint">Add new items in Menu Admin first. Stock imports only update existing catalogue items.</p>' : ''}
           <div class="stk-form">
             <div class="stk-field">
               <label for="stk-import-mode">This sheet is</label>
               <select id="stk-import-mode">
-                <option value="receive">A delivery — add to what is here</option>
-                ${this.isOwner ? '<option value="count">A count — set the figure exactly</option>' : ''}
+                ${this.canReceiveImport ? '<option value="receive">A delivery — add to what is here</option>' : ''}
+                ${this.canCount ? '<option value="count">A count — set the figure exactly</option>' : ''}
               </select>
             </div>
             <div class="stk-field grow">
@@ -196,24 +249,53 @@ export class StockView {
             </div>
             <div class="stk-field">
               <button type="button" class="primary-btn" id="stk-import-btn">Choose file…</button>
+              <button type="button" class="stk-action" id="stk-template-btn">📄 Download template</button>
               <input id="stk-import-file" type="file" accept=".csv,.xlsx,text/csv" hidden>
             </div>
           </div>
           <div id="stk-import-report"></div>
         </section>` : ''}
 
-        <section class="stk-card" style="margin-top:18px">
-          <h3>Movements</h3>
+        <div class="stk-table-wrap stock-balances">
+          <table class="stk-table">
+            <thead>
+              <tr>
+                <th>Item</th>
+                ${requesting ? '<th class="num">In Store</th>' : ''}
+                <th class="num">${this.location === 'STORE' ? 'In Store' : 'In House'}</th>
+                ${this.canCount ? '<th></th>' : ''}
+              </tr>
+            </thead>
+            <tbody id="stk-body">${this.rowsHtml(rows)}</tbody>
+          </table>
+        </div>
+
+
+
+        <details class="stk-card stock-movements" style="margin-top:18px" ${window.matchMedia('(max-width: 767px)').matches ? '' : 'open'}>
+          <summary>Movement history</summary>
           <p class="stk-hint">Every delivery, request and correction on this branch, newest first — both rooms, so the two screens reconcile against each other.</p>
-          ${this.movementsHtml()}
-        </section>
+          <div id="stk-movements">${this.movementsHtml()}</div>
+        </details>
       </div>`;
 
     this.bind(rows);
+    this.actionSheet = this.container.querySelector('.stk-actions [data-stock-panel]') ? createMobileFilters({
+      container: this.container, toolbar: this.container.querySelector('.stock-search-toolbar'),
+      controls: [this.container.querySelector('.stk-actions')], title: 'Stock actions', buttonLabel: 'Actions',
+    }) : null;
+    this.container.querySelector('.stk-actions').addEventListener('click', event => {
+      const button = event.target.closest('[data-stock-panel]');
+      if (!button || !window.matchMedia('(max-width: 767px)').matches) return;
+      this.actionSheet?.close();
+      const panel = this.container.querySelector(`#${button.getAttribute('aria-controls')}`);
+      if (!panel.hidden) panel.scrollIntoView({ block: 'start' });
+    });
   }
 
   /** The trail, or an honest line about why it is not there. */
   movementsHtml() {
+    if (this.movements === undefined) return '<p class="stk-empty">Movement history has not refreshed yet.</p>';
     if (this.movements === null) return '<p class="stk-empty">The movement trail could not be read. Check your connection and reopen this screen.</p>';
     if (!this.movements?.length) return '<p class="stk-empty">Nothing has moved on this branch yet.</p>';
     return `<div class="stk-table-wrap">
@@ -241,10 +323,10 @@ export class StockView {
     }
     return shown.map((row) => `
       <tr>
-        <td>${esc(row.product.name)}</td>
-        ${requesting ? `<td class="num ${row.storeQty ? '' : 'stk-zero'}">${row.storeQty}</td>` : ''}
-        <td class="num ${row.qty ? '' : 'stk-zero'}">${row.qty}${row.reservedQty ? ` <span class="stk-low">(${row.reservedQty} held)</span>` : ''}</td>
-        ${this.isOwner ? `<td style="text-align:right"><button type="button" class="stk-edit" data-correct="${esc(row.product.id)}" data-qty="${row.qty}" data-name="${esc(row.product.name)}">Correct</button></td>` : ''}
+        <td class="stock-item-name">${esc(row.product.name)}</td>
+        ${requesting ? `<td data-label="In Store" class="num ${row.storeQty ? '' : 'stk-zero'}">${row.storeQty}</td>` : ''}
+        <td data-label="${this.location === 'STORE' ? 'In Store' : 'In House'}" class="num ${row.qty ? '' : 'stk-zero'}">${row.qty}${row.reservedQty ? ` <span class="stk-low">(${row.reservedQty} held)</span>` : ''}</td>
+        ${this.canCount ? `<td class="stock-item-action" style="text-align:right"><button type="button" class="stk-edit" aria-label="Correct stock for ${esc(row.product.name)}" data-correct="${esc(row.product.id)}" data-qty="${row.qty}" data-name="${esc(row.product.name)}">Correct</button></td>` : ''}
       </tr>`).join('');
   }
 
@@ -265,6 +347,8 @@ export class StockView {
     };
 
     trigger.addEventListener('click', () => picker.click());
+    this.container.querySelector('#stk-template-btn')
+      ?.addEventListener('click', () => downloadCsvTemplate(STOCK_TEMPLATE_CSV, 'stock-import-template.csv'));
     picker.addEventListener('change', async () => {
       const file = picker.files && picker.files[0];
       if (!file) return;
@@ -280,22 +364,23 @@ export class StockView {
 
       trigger.disabled = true;
       const batchId = crypto.randomUUID();
-      const totals = { imported: 0, rejected: [] };
+      const totals = { imported: 0, created: 0, rejected: [] };
       try {
         // Firestore takes 500 writes to a batch, so a real delivery arrives in
         // chunks; each chunk carries its own id and commits on its own.
-        for (let start = 0; start < parsed.rows.length; start += 250) {
-          const chunk = parsed.rows.slice(start, start + 250);
-          note(`Booking ${Math.min(start + 250, parsed.rows.length)} of ${parsed.rows.length}…`, '');
+        for (let start = 0; start < parsed.rows.length; start += 150) {
+          const chunk = parsed.rows.slice(start, start + 150);
+          note(`Booking ${Math.min(start + 150, parsed.rows.length)} of ${parsed.rows.length}…`, '');
           const result = await importStock({
-            mode, branchId: state.currentBranch.id, location: this.location, reason,
+            mode, branchId: state.currentBranch.id, location: this.location, reason, createMissing: false,
             batchId: `${batchId.replace(/-/g, '').slice(0, 20)}${start}`,
-            rows: chunk.map((row) => ({ sku: row.sku || row.name, qty: Number(row.qty) })),
+            rows: chunk.map((row) => ({ sku: row.sku || '', name: row.name || '', qty: Number(row.qty) })),
           });
           totals.imported += result.imported;
+          totals.created += result.created || 0;
           totals.rejected.push(...result.rejected);
         }
-        await this.loadMovements();
+        await Promise.all([pullCatalogue(), this.loadMovements()]);
         const search = this.search;
         await this.render();
         this.search = search;
@@ -303,7 +388,7 @@ export class StockView {
           ? `<br><b>${totals.rejected.length} row(s) skipped:</b><br>${totals.rejected.slice(0, 8).map((r) => `${esc(r.sku)}: ${esc(r.message)}`).join('<br>')}${totals.rejected.length > 8 ? `<br>and ${totals.rejected.length - 8} more` : ''}`
           : '';
         this.container.querySelector('#stk-import-report').innerHTML =
-          `<p class="stk-msg ${totals.imported ? 'ok' : 'bad'}" style="margin-top:12px"><b>${totals.imported} item(s) ${mode === 'count' ? 'counted' : 'received'}.</b>${rejected}</p>`;
+          `<p class="stk-msg ${totals.imported ? 'ok' : 'bad'}" style="margin-top:12px"><b>${totals.imported} item(s) ${mode === 'count' ? 'counted' : 'received'} in ${this.location === 'STORE' ? 'Store' : 'House'}.</b>${totals.created ? `<br>${totals.created} new stock-only item(s) created.` : ''}${rejected}</p>`;
       } catch (error) {
         note(esc(error.message || 'That sheet could not be booked in.'), 'bad');
       } finally {
@@ -314,22 +399,56 @@ export class StockView {
   }
 
   bind(rows) {
+    this.container.querySelector('#stk-refresh').onclick = () => void this.refresh();
+    this.container.querySelectorAll('[data-stock-panel]').forEach((button) => {
+      button.onclick = () => {
+        this.openPanel = this.openPanel === button.dataset.stockPanel ? null : button.dataset.stockPanel;
+        this.container.querySelectorAll('[data-stock-panel]').forEach((toggle) => {
+          const open = toggle.dataset.stockPanel === this.openPanel;
+          toggle.setAttribute('aria-expanded', String(open));
+          this.container.querySelector(`#${toggle.getAttribute('aria-controls')}`).hidden = !open;
+        });
+      };
+    });
     this.bindImport();
     const search = this.container.querySelector('#stk-search');
     search.oninput = (event) => {
       this.search = event.target.value;
-      this.container.querySelector('#stk-body').innerHTML = this.rowsHtml(rows);
+      this.container.querySelector('#stk-body').innerHTML = this.rowsHtml(this.currentRows || rows);
     };
 
     const form = this.container.querySelector('#stk-form');
+    const productSearch = this.container.querySelector('#stk-product-search');
+    if (productSearch) {
+      const select = this.container.querySelector('#stk-product');
+      const options = Array.from(select.options);
+      productSearch.oninput = () => {
+        const needle = productSearch.value.trim().toLowerCase();
+        const selected = select.value;
+        const matches = options.filter((option, index) => {
+          const product = rows[index].product;
+          return `${product.name} ${product.sku || ''}`.toLowerCase().includes(needle);
+        });
+        select.replaceChildren(...matches);
+        if (matches.some((option) => option.value === selected)) select.value = selected;
+        if (!matches.length) {
+          const empty = new Option('No matching products', '');
+          empty.disabled = true;
+          select.add(empty);
+          select.value = '';
+        }
+        form.querySelector('button[type="submit"]').disabled = matches.length === 0;
+      };
+    }
     if (form) form.onsubmit = (event) => {
       event.preventDefault();
       const data = Object.fromEntries(new FormData(form));
       this.submit({ action: this.action, productId: data.productId, qty: Number(data.qty), reason: data.reason }, form.querySelector('button'));
     };
 
-    // Correcting a count is a rewrite of history, so it is the owner's alone
-    // and never goes through without a reason recorded against it.
+    // Correcting a count is a rewrite of history, so it belongs to the two
+    // roles that answer for both rooms - the owner and the store manager - and
+    // never goes through without a reason recorded against it.
     this.container.querySelector('#stk-body').onclick = (event) => {
       const button = event.target.closest('[data-correct]');
       if (!button) return;

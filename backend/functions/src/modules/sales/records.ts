@@ -55,6 +55,7 @@ export function buildSaleRecords({
     saleUuid: randomUUID(),
     status: "completed",
     tableNumber: input.tableNumber,
+    ...(input.tabId ? { tabId: input.tabId, orderReference: input.orderReference || null } : {}),
     buyerKraPin: input.buyerKraPin,
     ...totals,
     fiscalStatus: context.tenant.etimsMode === "none" ? "not_required" : "pending",
@@ -86,7 +87,7 @@ export function buildSaleRecords({
 
   let digitalPaymentIndex = 0;
   const payments = input.payments.map((payment, index) => {
-    const fromProvider = needsProviderIntent(payment.method);
+    const fromProvider = needsProviderIntent(payment.method, payment.unverified);
     const intent = fromProvider
       ? dependencies.paymentIntentDocuments[digitalPaymentIndex++]
       : undefined;
@@ -94,6 +95,9 @@ export function buildSaleRecords({
       id: paymentIds[index],
       tenantId: input.tenantId,
       saleId,
+      // Whose money this was. A receivable has to be answerable to a debtor
+      // without walking every sale to find out whose it is.
+      customerId: input.customerId,
       method: payment.method,
       amountMinor: payment.amountMinor,
       reference: payment.reference,
@@ -101,6 +105,7 @@ export function buildSaleRecords({
         ? String(intent?.data()?.providerTransactionId ?? "")
         : null,
       status: "completed",
+      ...(payment.unverified ? { verified: false } : {}),
       paidAt: timestamp,
       createdAt: timestamp,
     };

@@ -5,6 +5,7 @@ import { inclusiveTax, safeSum } from "../../shared/money";
 import { minorUnits } from "../../shared/validation";
 import {
   DISCOUNT_ROLES,
+  SELLING_ROLES,
   TAX_BASIS_POINTS,
   type SupportedTaxCode,
 } from "./constants";
@@ -106,15 +107,30 @@ export function calculateSaleTotals(
   return { subtotalMinor, discountMinor, taxMinor, totalMinor };
 }
 
+function standardStaffDiscountMinor(lines: readonly PreparedLine[]): number {
+  const subtotalMinor = lines
+    .filter(line => line.productId !== 'prod-table-service')
+    .reduce((total, line) => total + line.unitPriceMinor * line.qty, 0);
+  return Math.round(subtotalMinor * 0.20);
+}
+
 export function assertDiscountPermission(
   lines: readonly PreparedLine[],
   staffRole: unknown,
   providerAuthorized = false,
 ): void {
+  // The till exposes the fixed staff preset to selling staff. It is saved as
+  // line discounts before a receivable can be paid, including by STK. Validate
+  // that preset against server prices without requiring a payment intent.
+  const discountMinor = lines.reduce((total, line) => total + line.discountMinor, 0);
+  const standardStaffDiscount = SELLING_ROLES.has(String(staffRole))
+    && discountMinor > 0
+    && discountMinor === standardStaffDiscountMinor(lines);
   if (
     lines.some((line) => line.discountMinor > 0)
     && !DISCOUNT_ROLES.has(String(staffRole))
     && !providerAuthorized
+    && !standardStaffDiscount
   ) {
     throw new HttpsError(
       "permission-denied",
@@ -222,6 +238,18 @@ export function mpesaIntentMatchesSale(
     (total, line) => total + line.unitPriceMinor * line.qty,
     0,
   );
+  const membershipOnly = intent.membershipDiscountMinor === totalDiscountMinor
+    && intent.baseAmountMinor === intent.amountMinor + totalDiscountMinor
+    && intent.baseAmountMinor + intent.cashAmountMinor === subtotalMinor
+    && exactIntentDiscounts(intent.lineDiscounts, lines);
+  // A staff preset is already included in the amount sent to STK. Provider
+  // membership discounts are applied afterwards and have separate line data.
+  const staffPresetOnly = totalDiscountMinor > 0
+    && totalDiscountMinor === standardStaffDiscountMinor(lines)
+    && intent.membershipDiscountMinor === 0
+    && intent.baseAmountMinor === intent.amountMinor
+    && intent.baseAmountMinor + intent.cashAmountMinor === subtotalMinor - totalDiscountMinor
+    && exactIntentDiscounts(intent.lineDiscounts, lines.map(line => ({ ...line, discountMinor: 0 })));
 
   return matchedPayment.method === "mpesa"
     && matchedPayment.reference === intent.reference
@@ -237,13 +265,25 @@ export function mpesaIntentMatchesSale(
     && intent.method === "mpesa"
     && intent.status === "verified"
     && !intent.consumedSaleId
-    && intent.membershipDiscountMinor === totalDiscountMinor
     && intent.cartGrossMinor === subtotalMinor
-    && intent.baseAmountMinor === intent.amountMinor + totalDiscountMinor
-    && intent.baseAmountMinor + intent.cashAmountMinor === subtotalMinor
     && exactIntentLines(intent.lines, lines)
-    && exactIntentDiscounts(intent.lineDiscounts, lines);
+    && (membershipOnly || staffPresetOnly);
 }
+
+/**
+ * Credit is not a tender a business accepts; it is the absence of one.
+ *
+ * A proforma books what is owed so the goods can leave and the money be
+ * collected afterwards, and gating it on acceptedPaymentMethods made every
+ * unpaid order permanently unsendable: provisioning seeds ["cash"], and the
+ * settings screen cannot add "credit" because the rules do not allow that key.
+ * So createSale refused every Pay Now order with failed-precondition - which
+ * the till treats as permanent - and they queued on the device forever, unseen
+ * by any other till and absent from every financial report.
+ *
+ * Who may hand out credit is a role question, answered before this point.
+ */
+const RECEIVABLE_METHODS = new Set(["credit"]);
 
 export function assertAcceptedPayments(
   payments: readonly InputPayment[],
@@ -254,6 +294,7 @@ export function assertAcceptedPayments(
     : [];
 
   for (const payment of payments) {
+    if (RECEIVABLE_METHODS.has(payment.method)) continue;
     if (
       !acceptedMethods.includes(payment.method)
       || (payment.method === "cash" && settings.cashEnabled !== true)

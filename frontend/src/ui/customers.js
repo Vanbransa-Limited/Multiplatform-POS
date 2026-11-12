@@ -1,21 +1,33 @@
+import { WALK_IN_CUSTOMER_ID } from '../services/firebase';
 import { db } from '../db/schema';
 import { state, showNotification } from '../context';
 import { logAuditEvent } from '../db/index';
+import { deleteCustomer, pullCustomers, saveCustomer } from '../services/customers';
 
 export class CustomersView {
   constructor(container) {
     this.container = container;
   }
 
+  /** Taking a name off a debt is the owner's alone; the server agrees. */
+  get canDelete() { return state.currentUser?.role === 'Owner'; }
+
   async load() {
     this.render();
+    // The register lives on the server, so this screen shows everyone the
+    // business has - not only whoever was typed into this device.
+    try {
+      await pullCustomers();
+    } catch {
+      showNotification('Showing this device only — the customer directory could not be read.', 'warning');
+    }
     await this.loadCustomers();
     this.bindEvents();
   }
 
   render() {
     this.container.innerHTML = `
-      <div style="padding: 24px; color: var(--text-primary); max-width: 1200px; margin: 0 auto; font-family: var(--font-main);">
+      <div class="module-page" style="padding: 24px; color: var(--text-primary); max-width: 1200px; margin: 0 auto; font-family: var(--font-main);">
         
         <!-- Header -->
         <div style="margin-bottom: 28px;">
@@ -23,7 +35,7 @@ export class CustomersView {
           <p style="color: var(--text-secondary); font-size: 13px;">Manage customer directory, track loyalty points, set Buy-Now-Pay-Later (BNPL) credit limits, and reconcile credit accounts.</p>
         </div>
 
-        <div style="display: grid; grid-template-columns: 1fr 380px; gap: 24px; align-items: flex-start;">
+        <div class="customer-columns" style="display: grid; grid-template-columns: 1fr 380px; gap: 24px; align-items: flex-start;">
           
           <!-- Left Column: Customers Registry -->
           <div style="background: var(--bg-element); border: 1px solid var(--border-color); border-radius: 16px; padding: 24px; box-shadow: var(--glass-shadow);">
@@ -131,12 +143,17 @@ export class CustomersView {
           <td style="padding:10px 8px;color:var(--text-secondary);">
             KES ${limit.toLocaleString(undefined, {minimumFractionDigits: 2})}
           </td>
-          <td style="padding:10px 8px;text-align:right;">
+          <td style="padding:10px 8px;text-align:right;white-space:nowrap;">
             ${balance > 0 ? `
               <button class="btn-repay-tab" data-cust-id="${cust.id}" data-balance="${balance}" style="background:var(--accent-cyan);color:#000;border:none;padding:5px 10px;border-radius:4px;font-size:11px;font-weight:800;cursor:pointer;">
                 💵 Repay Tab
               </button>
             ` : '<span style="font-size:11px;color:var(--accent-green);font-weight:700;">Clear Tab</span>'}
+            ${this.canDelete && cust.id !== WALK_IN_CUSTOMER_ID ? `
+              <button class="btn-remove-customer" data-cust-id="${cust.id}" data-cust-name="${cust.name}" title="Remove from the directory" style="background:transparent;color:var(--accent-rose);border:1px solid var(--accent-rose);padding:5px 10px;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;margin-left:6px;">
+                Remove
+              </button>
+            ` : ''}
           </td>
         `;
         tbody.appendChild(tr);
@@ -148,6 +165,23 @@ export class CustomersView {
           const custId = btn.getAttribute('data-cust-id');
           const maxBalance = parseFloat(btn.getAttribute('data-balance'));
           await this.repayCustomerTab(custId, maxBalance);
+        });
+      });
+
+      tbody.querySelectorAll('.btn-remove-customer').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const name = btn.getAttribute('data-cust-name');
+          // Their sales keep pointing at them; only the directory loses them.
+          if (!window.confirm(`Remove ${name} from the customer directory? Their past sales keep their name.`)) return;
+          btn.disabled = true;
+          try {
+            await deleteCustomer(btn.getAttribute('data-cust-id'));
+            showNotification(`${name} removed from the directory.`, 'success');
+            await this.loadCustomers();
+          } catch (err) {
+            showNotification(err.message || 'That customer could not be removed.', 'error');
+            btn.disabled = false;
+          }
         });
       });
 
@@ -167,26 +201,27 @@ export class CustomersView {
         const kra = document.getElementById('cust-kra').value.trim();
         const limit = parseFloat(document.getElementById('cust-limit').value) || 0;
 
+        const button = regForm.querySelector('button[type="submit"]');
+        button.disabled = true;
         try {
-          const customerId = `cust-${crypto.randomUUID().slice(0,8)}`;
-          await db.customers.add({
-            id: customerId,
-            tenant_id: state.currentTenant.id,
+          // Server first. A customer only this device knows about is one every
+          // sale booked against them is rejected for.
+          const saved = await saveCustomer({
             name,
             phone,
-            kra_pin: kra,
-            credit_limit: limit,
-            credit_balance: 0,
-            loyalty_points: 0
+            kraPin: kra,
+            creditLimitMinor: Math.round(limit * 100)
           });
 
-          await logAuditEvent(state.currentTenant.id, state.currentUser.id, 'CREATE_CUSTOMER', 'CUSTOMER', customerId);
-          showNotification('Customer profile registered successfully.', 'success');
-          
+          await logAuditEvent(state.currentTenant.id, state.currentUser.id, 'CREATE_CUSTOMER', 'CUSTOMER', saved.id);
+          showNotification(`${saved.name} is registered and can now be attached to a sale.`, 'success');
+
           regForm.reset();
           await this.loadCustomers();
         } catch (err) {
           showNotification('Failed to create customer: ' + err.message, 'error');
+        } finally {
+          button.disabled = false;
         }
       });
     }

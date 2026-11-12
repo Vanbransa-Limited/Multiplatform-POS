@@ -56,6 +56,12 @@ const productSeeds = [
     itemClassCode: "73151600", packageUnitCode: "EA", originCountry: "KE",
     sellPriceMinor: 10_000, costPriceMinor: 0, imagePath: null, isService: true,
   },
+  {
+    id: "product-corkage", sku: "SRV-CRK-02", name: "Corkage Fee",
+    categoryId: "category-services", uom: "CHARGE", taxCode: "E",
+    itemClassCode: "73151600", packageUnitCode: "EA", originCountry: "KE",
+    sellPriceMinor: 300_000, costPriceMinor: 0, imagePath: null, isService: true,
+  },
 ];
 
 const stockQuantities = new Map([

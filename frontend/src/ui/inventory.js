@@ -1,11 +1,20 @@
 import { db } from '../db/schema';
-import { getStockOnHand, logAuditEvent } from '../db/index';
+import { getStockOnHand, getHouseStock, logAuditEvent } from '../db/index';
+import { pullStock, importStock, stockLocations } from '../services/stock';
+import { saveStockCount } from '../services/stock-counts';
 import { state, showNotification } from '../context';
 import { bindPager, pagerHtml, paginate } from '../services/paginate';
-import { ensureUniqueSkus, parseProductFile } from '../services/csv';
+import {
+  PRODUCT_NAMES_TEMPLATE_CSV,
+  PRODUCT_TEMPLATE_CSV,
+  downloadCsvTemplate,
+  ensureUniqueSkus,
+  parseProductFile
+} from '../services/csv';
 import { callFunction } from '../services/firebase';
-import { pullCatalogue, compareNames } from '../services/catalogue';
+import { pullCatalogue, pullIdentity, compareNames } from '../services/catalogue';
 import { escapeHtml } from '../services/print-receipt';
+import { createMobileFilters } from './mobile-filters';
 
 export class InventoryView {
   constructor(container) {
@@ -21,13 +30,14 @@ export class InventoryView {
     // The ledger reads this device's cache while the customer menu is served
     // from the server, so without pulling first this screen can show one price
     // and the QR menu another - and this is the screen people trust.
-    try {
-      await pullCatalogue();
-    } catch {
+    const reads = await Promise.allSettled([pullCatalogue(), pullStock(), pullIdentity()]);
+    if (reads.some(result => result.status === 'rejected')) {
       showNotification('Showing this till\'s cached menu - the server catalogue could not be read.', 'warning');
     }
-    await this.loadSubTab();
+    if (!this.disposed) await this.loadSubTab();
   }
+
+  dispose() { this.disposed = true; this.actionSheet?.dispose(); }
 
   render() {
     this.container.innerHTML = `
@@ -77,6 +87,8 @@ export class InventoryView {
   }
 
   async loadSubTab() {
+    if (this.disposed) return;
+    this.actionSheet?.dispose(); this.actionSheet = null;
     const pane = document.getElementById('inventory-pane-content');
     
     if (this.activeSubTab === 'ledger') {
@@ -114,6 +126,13 @@ export class InventoryView {
     if (!trigger || !picker || !report) return;
 
     trigger.addEventListener('click', () => picker.click());
+
+    document.getElementById('ledg-template-btn')
+      ?.addEventListener('click', () => downloadCsvTemplate(PRODUCT_TEMPLATE_CSV, 'menu-import-template.csv'));
+    // Names only: for bringing a list of items onto the till before anyone has
+    // decided what they cost. They land unpriced and off the menu.
+    document.getElementById('ledg-names-template-btn')
+      ?.addEventListener('click', () => downloadCsvTemplate(PRODUCT_NAMES_TEMPLATE_CSV, 'item-names-template.csv'));
 
     picker.addEventListener('change', async () => {
       const file = picker.files && picker.files[0];
@@ -337,8 +356,9 @@ export class InventoryView {
 
   async renderLedger(pane) {
     const all = await db.products.toArray();
+    if (this.disposed || !pane?.isConnected) return;
     // Retired products keep their row for history but leave the ledger.
-    const live = all.filter((product) => product.is_active !== 0);
+    const live = all.filter((product) => !product.retired_at);
     const needle = this.ledgerSearch.trim().toLowerCase();
     const products = (needle
       ? live.filter((product) => `${product.name} ${product.sku}`.toLowerCase().includes(needle))
@@ -348,12 +368,15 @@ export class InventoryView {
     const view = paginate(products, this.ledgerPage);
     this.ledgerPage = view.page;
 
+    this.actionSheet?.dispose(); this.actionSheet = null;
     pane.innerHTML = `
-      <div class="control-bar">
+      <div class="control-bar inventory-search-toolbar phone-sticky-toolbar">
         <input type="text" id="ledg-search" placeholder="Search ledger by SKU or name..." value="${this.ledgerSearch.replace(/"/g, '&quot;')}">
         ${this.canEditCatalogue ? `
         <button class="primary-btn" id="ledg-add-prod-btn">Add Product</button>
-        <button class="sec-btn" id="ledg-import-btn">📥 Import CSV / Excel</button>` : `
+        <button class="sec-btn" id="ledg-import-btn">📥 Import CSV / Excel</button>
+        <button class="sec-btn" id="ledg-template-btn">📄 Full template</button>
+        <button class="sec-btn" id="ledg-names-template-btn">📄 Names-only template</button>` : `
         <span class="muted" style="font-size:12px;">Viewing only — an owner or store manager changes the catalogue.</span>`}
         <input type="file" id="ledg-import-file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none;">
       </div>
@@ -370,7 +393,7 @@ export class InventoryView {
               <th>Batch</th>
               <th>Counted</th>
               <th>On menu</th>
-              <th>On Hand Quantity</th>
+              <th>Available in House</th>
               <th>Sell Price</th>
               <th>Actions</th>
             </tr>
@@ -385,9 +408,11 @@ export class InventoryView {
 
     const tbody = document.getElementById('ledg-table-body');
     const categories = new Map((await db.categories.toArray()).map(c => [c.id, c.name]));
+    if (this.disposed || !pane.isConnected || !tbody?.isConnected) return;
 
     for (const prod of view.rows) {
-      const stock = await getStockOnHand(prod.id, state.currentBranch.id);
+      const stock = state.currentBranch?.id ? await getHouseStock(prod.id, state.currentBranch.id) : 0;
+      if (this.disposed || !pane.isConnected || !tbody.isConnected) return;
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td style="font-family:monospace;font-weight:600;">${prod.sku}</td>
@@ -427,7 +452,8 @@ export class InventoryView {
         <td>
           ${this.canEditCatalogue ? `
           <button class="primary-btn edit-prod-btn" data-id="${prod.id}" style="padding:4px 8px;font-size:10px;">Edit</button>
-          <button class="stk-edit remove-prod-btn" data-id="${prod.id}" data-name="${prod.name.replace(/"/g, '&quot;')}" style="padding:4px 8px;font-size:10px;margin-left:6px;">Remove</button>` : ''}
+          <button class="stk-edit remove-prod-btn" data-id="${prod.id}" data-name="${prod.name.replace(/"/g, '&quot;')}" style="padding:4px 8px;font-size:10px;margin-left:6px;">Remove</button>
+          <button class="stk-edit delete-prod-btn" data-id="${prod.id}" data-name="${escapeHtml(prod.name)}" style="padding:4px 8px;font-size:10px;margin-left:6px;">Delete entirely</button>` : ''}
         </td>
       `;
       tbody.appendChild(tr);
@@ -460,28 +486,70 @@ export class InventoryView {
 
     // Removing keeps the row and marks it retired: sale lines and stock
     // movements point at it, so deleting the record would strand them.
-    pane.addEventListener('click', async (event) => {
-      const button = event.target.closest('.remove-prod-btn');
-      if (!button) return;
-      const name = button.getAttribute('data-name');
-      if (!window.confirm(`Remove "${name}" from the menu and the till?
+    //
+    // Bound once. This runs inside renderLedger, which re-renders after every
+    // removal, so re-binding here stacked a fresh listener on each pass: the
+    // second delete asked twice, the third three times, and every copy fired
+    // its own call.
+    if (!this.ledgerRemovalBound) {
+      this.ledgerRemovalBound = true;
+      pane.addEventListener('click', async (event) => {
+        const button = event.target.closest('.remove-prod-btn, .delete-prod-btn');
+        if (!button) return;
+        const productId = button.getAttribute('data-id');
+        const name = button.getAttribute('data-name');
+        const permanently = button.classList.contains('delete-prod-btn');
+        if (permanently) {
+          if (!window.confirm(`Delete "${name}" entirely from the catalogue? Past sales and audit records will remain. Items with stock or open orders must be reconciled first.`)) return;
+          button.disabled = true;
+          try {
+            await callFunction('deleteProduct', { productId, confirmProductId: productId });
+            await pullCatalogue();
+            showNotification(`"${name}" deleted from the catalogue.`, 'success');
+            await this.renderLedger(pane);
+          } catch (error) {
+            showNotification(error.message || 'Could not delete this item.', 'error');
+            button.disabled = false;
+          }
+          return;
+        }
+        if (!window.confirm(`Remove "${name}" from the menu and the till?
 
 Past sales keep it. You can add it again later.`)) return;
-      button.disabled = true;
-      try {
-        await callFunction('retireProduct', { productId: button.getAttribute('data-id') });
-        await pullCatalogue();
-        showNotification(`"${name}" removed.`, 'success');
+        button.disabled = true;
+        try {
+          await callFunction('retireProduct', { productId });
+          await pullCatalogue();
+          showNotification(`"${name}" removed.`, 'success');
+        } catch (error) {
+          // Seeded and demo rows live only in this browser - the local cache is
+          // only ever added to, never pruned - so the server has no document to
+          // retire and answers not-found. The item is real on screen, so it has
+          // to be removable: retire the local row instead of refusing forever.
+          const missing = error?.code === 'functions/not-found'
+            || /not[- ]found/i.test(error?.code || '')
+            || /product not found/i.test(error?.message || '');
+          if (!missing) {
+            showNotification(error.message || 'Could not remove that product.', 'error');
+            button.disabled = false;
+            return;
+          }
+          await db.products.update(productId, { is_active: 0, show_on_menu: 0, retired_at: new Date().toISOString() });
+          showNotification(`"${name}" removed from this till. It was never on the server.`, 'success');
+        }
         await this.renderLedger(pane);
-      } catch (error) {
-        showNotification(error.message || 'Could not remove that product.', 'error');
-        button.disabled = false;
-      }
-    });
+      });
+    }
 
     if (this.canEditCatalogue) {
       this.bindImportEvents(pane);
-      this.bindProductEditorEvents(pane);
+      await this.bindProductEditorEvents(pane);
+      if (this.disposed || !pane.isConnected) return;
+      this.actionSheet = createMobileFilters({
+        container: this.container, toolbar: pane.querySelector('.control-bar'),
+        controls: ['#ledg-add-prod-btn', '#ledg-import-btn', '#ledg-template-btn', '#ledg-names-template-btn'].map(selector => pane.querySelector(selector)),
+        title: 'Menu actions', buttonLabel: 'Actions', closeOnSelect: true, doneLabel: 'Done',
+      });
     }
 
 
@@ -507,12 +575,17 @@ Past sales keep it. You can add it again later.`)) return;
         prod = await db.products.get(prodId) || prod;
       }
 
+      // One editor at a time. A second copy on top of the first is a form whose
+      // Save writes the record underneath it.
+      document.querySelectorAll('[data-product-editor]').forEach((open) => open.remove());
+
       const modal = document.createElement('div');
       modal.className = 'modal active';
+      modal.dataset.productEditor = prodId || 'new';
       modal.innerHTML = `
         <div class="modal-content" style="max-width: 500px; background: #1e293b;">
           <h2>${prodId ? 'Edit Product' : 'Add New Product'}</h2>
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top:16px;">
+          <div class="product-editor-fields" style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top:16px;">
             <div style="grid-column: span 2;">
               <label>Product Name</label>
               <input type="text" id="pe-name" value="${escapeAttribute(prod.name)}" class="pe-input">
@@ -593,15 +666,15 @@ Past sales keep it. You can add it again later.`)) return;
       `;
       document.body.appendChild(modal);
 
-      document.getElementById('pe-cancel-btn').addEventListener('click', () => modal.remove());
+      modal.querySelector('#pe-cancel-btn').addEventListener('click', () => modal.remove());
       
       // The image is a path this site serves, not a file baked into the record.
       // The old control read a photo into a data URL, showed it, and sent
       // nothing: upsertProduct only accepts an https:// or /-relative path, so
       // a pasted-in photo was dropped on arrival and the upload was theatre.
-      const pathInput = document.getElementById('pe-image-path');
-      const previewImg = document.getElementById('pe-image-preview');
-      const placeholder = document.getElementById('pe-image-placeholder');
+      const pathInput = modal.querySelector('#pe-image-path');
+      const previewImg = modal.querySelector('#pe-image-preview');
+      const placeholder = modal.querySelector('#pe-image-placeholder');
 
       const showPreview = () => {
         const value = pathInput.value.trim();
@@ -618,15 +691,15 @@ Past sales keep it. You can add it again later.`)) return;
 
       // A type nobody can create is a fixed list; the menu groups by these, so
       // a new section of the menu starts here.
-      document.getElementById('pe-new-category').addEventListener('click', async () => {
+      modal.querySelector('#pe-new-category').addEventListener('click', async () => {
         const name = window.prompt('Name the new product type (it becomes a heading on the customer menu):');
         if (!name?.trim()) return;
-        const button = document.getElementById('pe-new-category');
+        const button = modal.querySelector('#pe-new-category');
         button.disabled = true;
         try {
           const created = await callFunction('upsertCategory', { name: name.trim() });
           await pullCatalogue();
-          const select = document.getElementById('pe-category');
+          const select = modal.querySelector('#pe-category');
           if (![...select.options].some((option) => option.value === created.id)) {
             select.add(new Option(created.name, created.id));
           }
@@ -639,13 +712,13 @@ Past sales keep it. You can add it again later.`)) return;
         }
       });
 
-      document.getElementById('pe-save-btn').addEventListener('click', async () => {
-        const name = document.getElementById('pe-name').value;
-        const sku = document.getElementById('pe-sku').value || `SKU-${Date.now().toString().slice(-6)}`;
+      modal.querySelector('#pe-save-btn').addEventListener('click', async () => {
+        const name = modal.querySelector('#pe-name').value;
+        const sku = modal.querySelector('#pe-sku').value || `SKU-${Date.now().toString().slice(-6)}`;
         if (!name) return showNotification('Name is required', 'error');
 
-        const isService = document.getElementById('pe-service').checked;
-        const saveBtn = document.getElementById('pe-save-btn');
+        const isService = modal.querySelector('#pe-service').checked;
+        const saveBtn = modal.querySelector('#pe-save-btn');
         saveBtn.disabled = true;
         try {
           // Products live in the central catalogue. Saving locally only meant an
@@ -654,17 +727,17 @@ Past sales keep it. You can add it again later.`)) return;
             id: prod.id || undefined,
             name,
             sku,
-            categoryId: document.getElementById('pe-category').value,
-            sellPrice: parseFloat(document.getElementById('pe-sell').value) || 0,
-            costPrice: parseFloat(document.getElementById('pe-cost').value) || 0,
-            uom: document.getElementById('pe-uom').value || 'EACH',
-            taxCode: document.getElementById('pe-tax').value,
+            categoryId: modal.querySelector('#pe-category').value,
+            sellPrice: parseFloat(modal.querySelector('#pe-sell').value) || 0,
+            costPrice: parseFloat(modal.querySelector('#pe-cost').value) || 0,
+            uom: modal.querySelector('#pe-uom').value || 'EACH',
+            taxCode: modal.querySelector('#pe-tax').value,
             isService,
-            trackStock: !isService && document.getElementById('pe-counted').checked,
-            showOnMenu: document.getElementById('pe-on-menu').checked,
+            trackStock: !isService && modal.querySelector('#pe-counted').checked,
+            showOnMenu: modal.querySelector('#pe-on-menu').checked,
             // The field the customer menu actually reads. Without it the
             // picture only ever existed in this device's cache.
-            imagePath: document.getElementById('pe-image-path').value.trim() || null,
+            imagePath: modal.querySelector('#pe-image-path').value.trim() || null,
           });
           await pullCatalogue();
           showNotification('Product saved to the catalogue.', 'success');
@@ -679,47 +752,57 @@ Past sales keep it. You can add it again later.`)) return;
 
     const addBtn = document.getElementById('ledg-add-prod-btn');
     if (addBtn) addBtn.addEventListener('click', () => openEditor(null));
-    
-    pane.addEventListener('click', (e) => {
-      const btn = e.target.closest('.edit-prod-btn');
-      if (btn) {
-        const id = btn.getAttribute('data-id');
-        openEditor(id);
-      }
-    });
 
-    // Counted items are the ones the public menu holds to their House balance,
-    // so this writes to the server catalogue rather than the local cache.
-    pane.addEventListener('click', async (e) => {
+    /**
+     * One handler, assigned rather than added.
+     *
+     * This runs again on every render, but the pane itself survives them - only
+     * its contents are replaced. addEventListener therefore stacked a new
+     * listener each time, so after a few refreshes one click on Edit opened
+     * several copies of the editor at once, and the one on top was the one
+     * whose buttons did nothing.
+     */
+    pane.onclick = (e) => {
+      const edit = e.target.closest('.edit-prod-btn');
+      if (edit) return void openEditor(edit.getAttribute('data-id'));
+
+      // Counted items are the ones the public menu holds to their House
+      // balance, so this writes to the server catalogue, not the local cache.
       const btn = e.target.closest('.track-stock-btn, .menu-visible-btn');
       if (!btn) return;
-      const menu = btn.classList.contains('menu-visible-btn');
-      const change = menu
-        ? { showOnMenu: !btn.getAttribute('data-shown') }
-        : { trackStock: !btn.getAttribute('data-tracked') };
-      btn.disabled = true;
-      try {
-        await callFunction('setProductTracking', { productId: btn.getAttribute('data-id'), ...change });
-        await pullCatalogue();
-        showNotification(
-          menu
-            ? (change.showOnMenu ? 'Item now shows on the customer menu.' : 'Item is store only; it stays sellable at the till.')
-            : (change.trackStock ? 'Item is now counted; the menu will hide it when it runs out.' : 'Item is no longer counted; it always shows on the menu.'),
-          'success',
-        );
-        this.loadSubTab();
-      } catch (error) {
-        showNotification(error.message || 'Could not change this item.', 'error');
-        btn.disabled = false;
-      }
-    });
+      void this.toggleProductFlag(btn);
+    };
+  }
+
+  async toggleProductFlag(btn) {
+    const menu = btn.classList.contains('menu-visible-btn');
+    const change = menu
+      ? { showOnMenu: !btn.getAttribute('data-shown') }
+      : { trackStock: !btn.getAttribute('data-tracked') };
+    btn.disabled = true;
+    try {
+      await callFunction('setProductTracking', { productId: btn.getAttribute('data-id'), ...change });
+      await pullCatalogue();
+      showNotification(
+        menu
+          ? (change.showOnMenu ? 'Item now shows on the customer menu.' : 'Item is store only; it stays sellable at the till.')
+          : (change.trackStock ? 'Item is now counted; the menu will hide it when it runs out.' : 'Item is no longer counted; it always shows on the menu.'),
+        'success',
+      );
+      this.loadSubTab();
+    } catch (error) {
+      showNotification(error.message || 'Could not change this item.', 'error');
+      btn.disabled = false;
+    }
   }
 
   async renderTakes(pane) {
-    const takes = await db.stock_takes.toArray();
+    const takes = await db.stock_takes.where('branch_id').equals(state.currentBranch.id).toArray();
 
     pane.innerHTML = `
       <div class="control-bar">
+        <label for="take-location">Count location</label>
+        <select id="take-location">${stockLocations().map(location => `<option value="${location}" ${location === 'HOUSE' ? 'selected' : ''}>${location === 'HOUSE' ? 'House' : 'Store'}</option>`).join('')}</select>
         <button class="primary-btn" id="new-take-btn">+ New Stock Count</button>
       </div>
 
@@ -737,7 +820,7 @@ Past sales keep it. You can add it again later.`)) return;
             ${takes.map(tk => `
               <tr>
                 <td>${new Date(tk.started_at).toLocaleDateString()}</td>
-                <td>Nairobi CBD</td>
+                <td>${escapeHtml(state.currentBranch.name || state.currentBranch.id)} ? ${escapeHtml(tk.location || 'HOUSE')}</td>
                 <td>
                   <span class="badge ${tk.status === 'COMPLETED' ? 'success' : 'warning'}">${tk.status}</span>
                 </td>
@@ -760,6 +843,7 @@ Past sales keep it. You can add it again later.`)) return;
         id,
         branch_id: state.currentBranch.id,
         status: 'DRAFT',
+        location: pane.querySelector('#take-location').value,
         started_at: new Date().toISOString()
       });
       showNotification('Stock count sheet created.', 'success');
@@ -777,13 +861,8 @@ Past sales keep it. You can add it again later.`)) return;
       btn.addEventListener('click', async (e) => {
         const takeId = e.target.getAttribute('data-id');
         
-        // Block self-approval: Manager cannot approve stock sheet if they entered counts
-        // Simulating approval verification
-        // The role label is still 'Cashier'; only the screens were renamed to
-        // Waiter/Waitress, so comparing against the display name never matched
-        // and every waiter could approve a count sheet.
-        if (state.currentUser.role === 'Cashier') {
-          showNotification('Access denied. Waiter/Waitress cannot approve stock takes.', 'error');
+        if (!this.canEditCatalogue) {
+          showNotification('Only an Owner or Store Manager can approve stock counts.', 'error');
           return;
         }
 
@@ -793,36 +872,25 @@ Past sales keep it. You can add it again later.`)) return;
           return;
         }
 
-        await db.transaction('rw', [db.stock_takes, db.stock_movements], async () => {
-          await db.stock_takes.update(takeId, {
-            status: 'COMPLETED',
-            approved_by: state.currentUser.id,
-            approved_at: new Date().toISOString()
-          });
-
-          // Post stock take variance movements
-          for (const line of lines) {
-            if (line.variance_qty !== 0) {
-              const prod = await db.products.get(line.product_id);
-              await db.stock_movements.add({
-                id: crypto.randomUUID(),
-                tenant_id: state.currentTenant.id,
-                branch_id: state.currentBranch.id,
-                product_id: line.product_id,
-                batch_id: null,
-                type: 'STOCK_TAKE_VARIANCE',
-                qty: line.variance_qty,
-                unit_cost: prod ? prod.cost_price : 0,
-                ref_type: 'STOCK_TAKE',
-                ref_id: takeId,
-                reason: `Stock take reconciliation variance`,
-                created_by: state.currentUser.id,
-                created_at: new Date().toISOString()
-              });
-            }
+        e.target.disabled = true;
+        try {
+          const take = await db.stock_takes.get(takeId);
+          for (let offset = 0; offset < lines.length; offset += 150) {
+            const chunk = lines.slice(offset, offset + 150);
+            const rows = await Promise.all(chunk.map(async line => ({
+              productId: line.product_id, sku: (await db.products.get(line.product_id))?.sku || line.product_id,
+              qty: line.counted_qty,
+            })));
+            const result = await importStock({ mode: 'count', branchId: take.branch_id, location: take.location || 'HOUSE',
+              reason: `Approved stock count ${takeId}`, batchId: `take-${takeId}-${offset}`, rows });
+            if (result.rejected?.length) throw new Error(result.rejected.map(row => `${row.sku}: ${row.message}`).join('; '));
           }
-          await logAuditEvent(state.currentTenant.id, state.currentUser.id, 'APPROVE_STOCK_TAKE', 'STOCK_TAKE', takeId);
-        });
+          await db.stock_takes.update(takeId, { status: 'COMPLETED', approved_by: state.currentUser.id, approved_at: new Date().toISOString() });
+        } catch (error) {
+          showNotification(error.message || 'Could not approve the count. Saved counts are retained.', 'error');
+          e.target.disabled = false;
+          return;
+        }
 
         showNotification('Stock take variances approved and posted to ledger.', 'success');
         this.loadSubTab();
@@ -831,12 +899,15 @@ Past sales keep it. You can add it again later.`)) return;
   }
 
   async openCountSheetModal(takeId) {
-    const products = await db.products.where('is_service').equals(0).toArray();
+    const take = await db.stock_takes.get(takeId);
+    if (!take || take.status !== 'DRAFT') return;
+    const products = (await db.products.where('is_service').equals(0).toArray()).filter(product => !product.retired_at);
+    const saved = new Map((await db.stock_take_lines.where('stock_take_id').equals(takeId).toArray()).map(line => [line.product_id, line]));
     
     const countDiv = document.createElement('div');
     countDiv.className = 'modal active';
     countDiv.innerHTML = `
-      <div class="modal-content" style="max-width: 680px; max-height: 80vh; overflow-y:auto;">
+      <div class="modal-content stock-count-sheet" style="max-width: 680px; max-height: 80vh; overflow-y:auto;">
         <h2>Stock Count Entry Sheet</h2>
         <p>Blind Count Mode: Expected quantities are hidden until you enter your count.</p>
         
@@ -846,16 +917,16 @@ Past sales keep it. You can add it again later.`)) return;
               <th>SKU</th>
               <th>Product</th>
               <th>Counter Entry</th>
-              <th>Actions</th>
+              <th>Variance</th>
             </tr>
           </thead>
           <tbody>
             ${products.map(p => `
               <tr data-prod-id="${p.id}">
-                <td>${p.sku}</td>
-                <td>${p.name}</td>
+                <td>${escapeHtml(p.sku)}</td>
+                <td>${escapeHtml(p.name)}</td>
                 <td>
-                  <input type="number" class="counted-qty-input" placeholder="Counted qty" style="width:100px;background:#333;border:1px solid #444;color:#fff;padding:4px;">
+                  <input type="number" class="counted-qty-input" min="0" max="100000000" step="1" value="${saved.get(p.id)?.counted_qty ?? ''}" aria-label="Count for ${escapeHtml(p.name)}" placeholder="Counted qty" style="width:100px;background:#333;border:1px solid #444;color:#fff;padding:4px;">
                 </td>
                 <td class="variance-result" style="font-weight:bold;">
                   ---
@@ -865,7 +936,7 @@ Past sales keep it. You can add it again later.`)) return;
           </tbody>
         </table>
         
-        <div style="display:flex;gap:12px;margin-top:20px;width:100%;">
+        <div class="stock-count-actions" style="display:flex;gap:12px;margin-top:20px;width:100%;">
           <button class="primary-btn" id="save-count-sheet" style="flex:1;">Save Counts</button>
           <button class="cancel-pay-btn" id="close-count-sheet" style="flex:1;">Close</button>
         </div>
@@ -878,43 +949,19 @@ Past sales keep it. You can add it again later.`)) return;
     document.getElementById('save-count-sheet').addEventListener('click', async () => {
       const rows = countDiv.querySelectorAll('tbody tr');
       
-      await db.transaction('rw', db.stock_take_lines, db.stock_movements, async () => {
+      const button = countDiv.querySelector('#save-count-sheet');
+      button.disabled = true;
+      try {
+        const entries = [...rows].map(row => ({ productId: row.dataset.prodId, value: row.querySelector('.counted-qty-input').value }));
+        const results = await saveStockCount({ db, takeId, branchId: state.currentBranch.id, staffId: state.currentUser.id, entries });
         for (const row of rows) {
-          const productId = row.getAttribute('data-prod-id');
-          const input = row.querySelector('.counted-qty-input').value;
-          if (input === '') continue; // Skip uncounted lines
-
-          const countedQty = parseFloat(input);
-          const expectedQty = await getStockOnHand(productId, state.currentBranch.id);
-          const varianceQty = countedQty - expectedQty;
-
-          // Clear previous entries for the same take
-          await db.stock_take_lines
-            .filter(l => l.stock_take_id === takeId && l.product_id === productId)
-            .delete();
-
-          await db.stock_take_lines.add({
-            id: crypto.randomUUID(),
-            stock_take_id: takeId,
-            product_id: productId,
-            counted_qty: countedQty,
-            expected_qty: expectedQty,
-            variance_qty: varianceQty,
-            variance_value: 0, // Computed at cost later
-            counted_by: state.currentUser.id
-          });
-
-          // Update UI to show if counted equals record
-          const varianceCell = row.querySelector('.variance-result');
-          if (varianceQty === 0) {
-            varianceCell.innerHTML = '<span style="color:var(--success-color, #10b981)">OK</span>';
-          } else if (varianceQty > 0) {
-            varianceCell.innerHTML = `<span style="color:var(--warning-color, #f59e0b)">+${varianceQty} (Surplus)</span>`;
-          } else {
-            varianceCell.innerHTML = `<span style="color:var(--danger-color, #ef4444)">${varianceQty} (Missing)</span>`;
-          }
+          const line = results.find(line => line.product_id === row.dataset.prodId);
+          if (line) row.querySelector('.variance-result').textContent = line.variance_qty === 0 ? 'OK' : `${line.variance_qty > 0 ? '+' : ''}${line.variance_qty}`;
         }
-      });
+      } catch (error) {
+        showNotification(error.message || 'Counts could not be saved. Your entries are still here; try again.', 'error');
+        return;
+      } finally { button.disabled = false; }
 
       showNotification('Counts saved and variances calculated.', 'success');
       // Intentionally NOT closing the modal so the user can review the variances

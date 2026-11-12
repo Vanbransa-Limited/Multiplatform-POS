@@ -52,7 +52,8 @@ export class MpesaService {
     idempotencyKey,
     orderReference,
     customerId,
-    lines
+    lines,
+    serviceChargeMinor = 0
   }) {
     const amountMinor = toMinor(amountKes);
     if (amountMinor <= 0) {
@@ -69,18 +70,9 @@ export class MpesaService {
       };
     }
 
-    // Re-check immediately before initiation. The checkout-open result is only
-    // advisory and may have changed while the cashier was building the tender.
-    const capability = await this.getCapability();
-    if (!capability.available) {
-      return {
-        success: false,
-        status: capability.status,
-        message: capability.message,
-        capability
-      };
-    }
-
+    // The initiation transaction checks lifecycle, tenant, staff and payment
+    // settings itself. A separate capability callable here adds a network
+    // round trip (and potentially another cold start) without authorizing it.
     try {
       const data = await callFunction('initiateMpesaStk', {
         phone,
@@ -91,7 +83,8 @@ export class MpesaService {
         idempotencyKey,
         orderReference,
         customerId: customerId || null,
-        lines: Array.isArray(lines) ? lines : []
+        lines: Array.isArray(lines) ? lines : [],
+        serviceChargeMinor
       });
       const status = typeof data?.status === 'string' ? data.status.toLowerCase() : 'unavailable';
       const attemptId = typeof data?.attemptId === 'string' && data.attemptId
@@ -104,7 +97,6 @@ export class MpesaService {
           attemptId,
           checkoutRequestId: data?.checkoutRequestId || null,
           pricing: data?.pricing || null,
-          capability,
           message: data?.customerMessage || 'M-Pesa did not accept this payment attempt.'
         };
       }
@@ -115,14 +107,13 @@ export class MpesaService {
         attemptId,
         checkoutRequestId: data.checkoutRequestId || null,
         pricing: data.pricing || null,
-        capability,
         customerMessage: data.customerMessage || 'Enter your M-Pesa PIN on the phone.'
       };
     } catch (error) {
       return {
         success: false,
         status: 'unavailable',
-        capability,
+        capability: unavailableMpesaCapability(error.message || 'M-Pesa request failed.'),
         message: error.message || 'M-Pesa request failed.'
       };
     }

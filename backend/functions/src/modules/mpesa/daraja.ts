@@ -253,7 +253,20 @@ async function darajaFetch(
   const url = `${darajaBaseUrl()}${path}`;
   // Without a deadline a stalled Safaricom connection holds the instance until
   // the function times out, and the cashier is left staring at a spinner.
-  const response = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
+  // A rejected fetch - DNS, a refused connection, a timed-out deadline - never
+  // reached the check below, so nothing was logged and the only trace left was
+  // "initiation did not complete". The cause is the one thing worth keeping.
+  let response;
+  try {
+    response = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
+  } catch (error) {
+    logger.error("Daraja could not be reached", {
+      path,
+      // The message and name only: never the body, which carries credentials.
+      cause: error instanceof Error ? `${error.name}: ${error.message}` : "unknown",
+    });
+    throw new HttpsError("unavailable", "M-Pesa is not responding. Take the payment another way.");
+  }
   const text = await response.text();
 
   let payload: unknown = null;
@@ -492,10 +505,23 @@ export async function stkPush(input: StkPayloadInput): Promise<StkPushResult> {
     callbackUrl,
   });
 
+  // The token is fetched before anything reaches Safaricom's push endpoint, so
+  // failing here means no prompt was sent. Reported as "ambiguous" it locked
+  // the order against every further prompt for a request that never left.
+  let token: string;
+  try {
+    token = await darajaToken().catch(() => darajaToken());
+  } catch {
+    throw new HttpsError(
+      "failed-precondition",
+      "M-Pesa could not be reached, so no prompt was sent. Try again, or take the code from the customer's message.",
+    );
+  }
+
   const payload = await darajaFetch("/mpesa/stkpush/v1/processrequest", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${await darajaToken()}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(requestPayload),

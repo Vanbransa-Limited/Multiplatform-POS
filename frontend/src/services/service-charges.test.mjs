@@ -4,8 +4,32 @@ import {
   VIP_CHARGE_ID,
   STAFF_DISCOUNT_ID,
   saleLineRate,
-  recordedSaleTotals
+  recordedSaleTotals,
+  catalogueCartLines
 } from './service-charges.js';
+
+test('a settlement push names the rounds it is charging for, once per product', () => {
+  // Two rounds on one tab, the same beer on both, plus the pseudo-products the
+  // server has no row for. An empty cart, a repeat, or a staff-discount line
+  // each get the push refused and no prompt ever reaches the phone.
+  const lines = [
+    { sale_id: 'r1', product_id: 'p-beer', qty: 2 },
+    { sale_id: 'r1', product_id: STAFF_DISCOUNT_ID, qty: 1 },
+    { sale_id: 'r2', product_id: 'p-beer', qty: 3 },
+    { sale_id: 'r2', product_id: 'p-nyama', qty: 1 },
+    { sale_id: 'r2', product_id: VIP_CHARGE_ID, qty: 1 },
+  ];
+
+  assert.deepEqual(catalogueCartLines(lines), [
+    { productId: 'p-beer', qty: 5 },
+    { productId: 'p-nyama', qty: 1 },
+  ]);
+
+  // The server takes positive integers only.
+  assert.deepEqual(catalogueCartLines([{ product_id: 'p-x', qty: 1.4 }]), [{ productId: 'p-x', qty: 1 }]);
+  assert.deepEqual(catalogueCartLines([{ product_id: 'p-x', qty: 0 }]), []);
+  assert.deepEqual(catalogueCartLines([]), []);
+});
 
 /** The till's own totals, for a cart of goods plus whichever charges are on. */
 function tillTotals({ subtotal, discount = 0, vip = false, staff = false }) {

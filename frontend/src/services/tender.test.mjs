@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { mapPaymentMethod, toMinor } from './tender.js';
+import { mapPaymentMethod, mpesaConfirmationCode, toMinor } from './tender.js';
 
 test('toMinor converts KES floats to integer minor units', () => {
   assert.equal(toMinor(0), 0);
@@ -25,6 +25,8 @@ test('mapPaymentMethod normalises local tender codes', () => {
   assert.equal(mapPaymentMethod('cash'), 'cash');
   assert.equal(mapPaymentMethod('MPESA'), 'mpesa');
   assert.equal(mapPaymentMethod('CREDIT'), 'credit');
+  // A proforma is a receivable, so the server books it as credit.
+  assert.equal(mapPaymentMethod('PROFORMA'), 'credit');
   assert.equal(mapPaymentMethod('BANK'), 'bank_transfer');
   // A split is written as its two real tenders, so SPLIT must never map.
   assert.equal(mapPaymentMethod('SPLIT'), null);
@@ -35,4 +37,12 @@ test('mapPaymentMethod returns null for anything unrecognised', () => {
   for (const bad of ['BITCOIN', '', undefined, null, 'SPLIT']) {
     assert.equal(mapPaymentMethod(bad), null, `expected null for ${String(bad)}`);
   }
+});
+
+test('M-Pesa confirmation codes are normalised and malformed references are refused', () => {
+  assert.equal(mpesaConfirmationCode(' qgh4t21xz9 '), 'QGH4T21XZ9');
+  assert.equal(mpesaConfirmationCode('ABC123'), 'ABC123');
+  assert.equal(mpesaConfirmationCode('short'), null);
+  assert.equal(mpesaConfirmationCode('QGH4-21XZ9'), null);
+  assert.equal(mpesaConfirmationCode(''), null);
 });

@@ -30,8 +30,15 @@ export function ViewMount({ tab, view: View }: { tab: string; view: ViewClass })
 
     try {
       const instance = new View(container);
-      Promise.resolve(instance.load()).catch(() => showNotification('This module could not be opened.', 'error'));
-      return () => { instance.dispose?.(); loadedFor.current = null; };
+      let active = true;
+      Promise.resolve(instance.load()).catch(error => {
+        // A slow screen may finish after navigation has already removed it.
+        // Its stale DOM work must not paint an error over the next screen.
+        if (!active) return;
+        console.error(`Failed to load the ${tab} view:`, error);
+        showNotification('This module could not be opened.', 'error');
+      });
+      return () => { active = false; instance.dispose?.(); loadedFor.current = null; };
     } catch (error) {
       console.error(`Failed to load the ${tab} view:`, error);
       showNotification("This module could not be opened. Check the console for details.", "error");

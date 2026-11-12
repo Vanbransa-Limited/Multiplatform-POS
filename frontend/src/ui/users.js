@@ -4,6 +4,7 @@ import { callFunction } from '../services/firebase';
 import { parseStaffFile } from '../services/csv';
 import { ROLE_CODES, roleCode } from '../services/roles';
 import { downloadStaffTemplate, pullStaff } from '../services/staff';
+import { createMobileFilters } from './mobile-filters';
 
 /**
  * Each row is a Firebase Auth account creation, so the server takes them a
@@ -19,9 +20,16 @@ export class UsersView {
 
   async load() {
     this.render();
-    await this.refresh();
     this.bindEvents();
+    this.actionSheet = createMobileFilters({
+      container: this.container, toolbar: this.container.querySelector('.module-toolbar'),
+      controls: [this.container.querySelector('.staff-toolbar-actions'), this.container.querySelector('.staff-import-guidance')],
+      title: 'Staff actions', buttonLabel: 'Actions', closeOnSelect: true, doneLabel: 'Done',
+    });
+    await this.refresh();
   }
+
+  dispose() { this.disposed = true; this.actionSheet?.dispose(); }
 
   /**
    * The roster lives on the server; Dexie is only this till's cache of it, so
@@ -34,20 +42,20 @@ export class UsersView {
     } catch {
       // An offline till still shows whoever it already knows about.
     }
-    await this.populateUsers();
+    if (!this.disposed) await this.populateUsers();
   }
 
   render() {
     this.container.innerHTML = `
-      <div style="padding: 24px; color: var(--text-primary); max-width: 1200px; margin: 0 auto; font-family: var(--font-main);">
+      <div class="module-page staff-page" style="padding: 24px; color: var(--text-primary); max-width: 1200px; margin: 0 auto; font-family: var(--font-main);">
         
         <!-- Header -->
-        <div style="background: var(--bg-element); border: 1px solid var(--border-color); border-radius: 12px; padding: 24px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
+        <div class="module-toolbar" style="background: var(--bg-element); border: 1px solid var(--border-color); border-radius: 12px; padding: 24px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
           <div>
             <h2 style="margin: 0 0 4px 0; font-size: 20px; font-weight: 800; color: #fff;">User Management</h2>
             <p style="margin: 0; font-size: 13px; color: var(--text-secondary);">Manage dashboard access and staff.</p>
           </div>
-          <div style="display: flex; gap: 12px;">
+          <div class="staff-toolbar-actions" style="display: flex; gap: 12px;">
             <button id="user-template-btn" style="background: rgba(255,255,255,0.1); color: #fff; border: 1px solid var(--border-color); padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px;">
               📄 Download Template
             </button>
@@ -61,12 +69,12 @@ export class UsersView {
           </div>
         </div>
 
-        <p style="font-size:13px;line-height:1.6">Download the template, replace the example rows with your staff, then import CSV or Excel. Include name, unique login email, access level and a password of 8–128 characters. Phone is optional. Blank access defaults to Cashier.</p>
-        <label style="display:block;margin-bottom:16px;font-size:13px"><input id="user-import-cashier-only" type="checkbox" checked> Cashier-only import (reject higher access levels)</label>
+        <div class="staff-import-guidance"><p style="font-size:13px;line-height:1.6">Download the template, replace the example rows with your staff, then import CSV or Excel. Include name, unique login email, access level and a 1–4 digit passcode or a password of 8–128 characters. Phone is optional. Blank access defaults to Cashier.</p>
+        <label style="display:block;margin-bottom:16px;font-size:13px"><input id="user-import-cashier-only" type="checkbox" checked> Cashier-only import (reject higher access levels)</label></div>
         <div id="user-import-report" role="status" aria-live="polite"></div>
 
         <!-- Users Table -->
-        <div style="background: var(--bg-element); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden;">
+        <div class="mobile-table-wrap" style="background: var(--bg-element); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden;">
           <table style="width: 100%; border-collapse: collapse; text-align: left;">
             <thead>
               <tr style="border-bottom: 1px solid var(--border-color); background: rgba(0,0,0,0.2);">
@@ -85,7 +93,7 @@ export class UsersView {
 
       <!-- User Modal Overlay -->
       <div id="user-modal-overlay" class="hidden" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 1000; display: flex; align-items: center; justify-content: center;">
-        <div style="background: var(--bg-element); border: 1px solid var(--border-color); border-radius: 12px; width: 400px; padding: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+        <div class="staff-dialog" style="background: var(--bg-element); border: 1px solid var(--border-color); border-radius: 12px; width: 400px; padding: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
           <h3 id="user-modal-title" style="margin: 0 0 16px 0; color: #fff; font-size: 18px;">Add User</h3>
           <form id="user-form">
             <input type="hidden" id="user-id">
@@ -114,8 +122,8 @@ export class UsersView {
             </div>
 
             <div style="margin-bottom: 24px;">
-              <label style="display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 6px;">Password (at least 8 characters)</label>
-              <input type="password" id="user-password" required minlength="8" autocomplete="new-password" style="width: 100%; padding: 10px; border-radius: 6px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); color: #fff; font-family: var(--font-main); font-size: 13px;">
+              <label style="display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 6px;">Passcode (1–4 digits) or password (8+ characters)</label>
+              <input type="password" id="user-password" required maxlength="128" autocomplete="new-password" style="width: 100%; padding: 10px; border-radius: 6px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); color: #fff; font-family: var(--font-main); font-size: 13px;">
               <p style="margin: 6px 0 0 0; font-size: 11px; color: var(--text-muted);">Hand this to them directly. On an existing user, this sets a new password.</p>
             </div>
 
@@ -148,13 +156,19 @@ export class UsersView {
       else if (u.role === 'Store Keeper') { level = 'Level 2'; }
       else if (u.role === 'Bar Staff') { level = 'Level 1.5'; }
 
+      // A removed person stays on the roster because their sales and audit rows
+      // still point at them. Saying so is the difference between "the delete
+      // did nothing" and "they are out, and can be taken back on".
+      const removed = String(u.status || 'ACTIVE').toUpperCase() !== 'ACTIVE';
+
       return `
-        <tr style="border-bottom: 1px solid var(--border-color);">
+        <tr style="border-bottom: 1px solid var(--border-color);${removed ? 'opacity:0.55;' : ''}">
           <td style="padding: 16px 24px; display: flex; align-items: center; gap: 12px;">
             <div style="width: 32px; height: 32px; background: rgba(255,255,255,0.05); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; color: #F59E0B;">
               ${escapeHtml(initial)}
             </div>
             <span style="font-size: 14px; font-weight: 700; color: #fff;">${escapeHtml(u.name)}</span>
+            ${removed ? '<span style="background:rgba(244,63,94,0.15);color:var(--accent-rose);padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">REMOVED</span>' : ''}
           </td>
           <td style="padding: 16px 24px;">
             <span style="background: rgba(255,255,255,0.1); color: ${levelColor}; padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 700;">
@@ -166,7 +180,9 @@ export class UsersView {
           </td>
           <td style="padding: 16px 24px; text-align: right;">
             <button class="edit-user-btn" data-id="${u.id}" style="background: transparent; border: none; color: var(--accent-blue); cursor: pointer; padding: 4px;">✏️</button>
-            <button class="delete-user-btn" data-id="${u.id}" style="background: transparent; border: none; color: var(--accent-rose); cursor: pointer; padding: 4px;">🗑️</button>
+            ${removed
+              ? ''
+              : `<button class="delete-user-btn" data-id="${u.id}" style="background: transparent; border: none; color: var(--accent-rose); cursor: pointer; padding: 4px;">🗑️</button>`}
           </td>
         </tr>
       `;
@@ -240,8 +256,8 @@ export class UsersView {
         else if (seen.has(email)) rejected.push({ row: line, email, message: 'This email appears twice in the file.' });
         else if (!role) rejected.push({ row: line, email, message: `"${row.role}" is not one of the access levels.` });
         else if (cashierOnly && role !== 'cashier') rejected.push({ row: line, email, message: 'Cashier-only import accepts only Cashier access.' });
-        else if (password.length < 8 || password.length > 128) {
-          rejected.push({ row: line, email, message: 'Password must be 8–128 characters.' });
+        else if (!/^[0-9]{1,4}$/.test(password) && (password.length < 8 || password.length > 128)) {
+          rejected.push({ row: line, email, message: 'Use a 1–4 digit passcode or a password of 8–128 characters.' });
         } else {
           seen.add(email);
           rows.push({ name, email, password, role, phone: String(row.phone ?? '').trim() });
@@ -396,10 +412,10 @@ export class UsersView {
 
       if (deleteBtn) {
         const id = deleteBtn.getAttribute('data-id');
-        if (confirm('Disable this user? They will be signed out and cannot sign back in.')) {
+        if (confirm('Remove this user? They are signed out and cannot sign back in. Their past sales keep their name, and you can add them again later with the same email.')) {
           try {
             await callFunction('setStaffActive', { staffId: id, active: false });
-            showNotification('User disabled', 'success');
+            showNotification('User removed. Adding them again with the same email brings them back.', 'success');
             await this.refresh();
           } catch (err) {
             showNotification(err.message || 'Could not disable that user.', 'error');

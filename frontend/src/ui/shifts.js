@@ -3,6 +3,7 @@ import { logAuditEvent } from '../db/index';
 import { state, showNotification } from '../context';
 import { firebaseConfigured, openShift as openCloudShift } from '../services/firebase';
 import { cashIsEnabled, pullPaymentSettings } from '../services/payment-settings';
+import { shiftCloseBlockers } from '../services/tabs';
 
 export class ShiftsView {
   constructor(container) {
@@ -52,7 +53,7 @@ export class ShiftsView {
         <span class="badge success">OPEN since ${new Date(this.activeShift.opened_at).toLocaleTimeString()}</span>
       </div>
 
-      <div style="display:grid;grid-template-columns: 1fr 1fr;gap:24px;">
+      <div class="shift-columns" style="display:grid;grid-template-columns: 1fr 1fr;gap:24px;">
         <!-- Left: Details and Movements -->
         <div style="background:var(--bg-surface);border:1px solid var(--border-color);border-radius:14px;padding:24px;">
           <h3 style="font-family:var(--font-display);margin-bottom:16px;">Cash Ledger Actions</h3>
@@ -176,7 +177,10 @@ export class ShiftsView {
       opened_at: new Date().toISOString()
     };
 
-    await db.shifts.add(newShift);
+    // The cloud shift id is deterministic and may already have a locally
+    // closed row from yesterday. Reopening replaces that row; add() would
+    // throw a duplicate-key error and leave the waiter apparently off shift.
+    await db.shifts.put(newShift);
     
     await logAuditEvent(state.currentTenant.id, state.currentUser.id, 'SHIFT_OPEN', 'SHIFT', shiftId);
 
@@ -299,6 +303,19 @@ export class ShiftsView {
       return;
     }
 
+    // An open tab is money standing on the floor. Closing over one leaves it
+    // for a morning where nobody remembers who was sitting there, so the night
+    // is resolved by the person who worked it.
+    const blockers = shiftCloseBlockers(await db.tabs.toArray(), state.currentBranch?.id);
+    if (blockers.length > 0) {
+      const tables = blockers.map((tab) => `Table ${tab.table_no}`).join(', ');
+      showNotification(
+        `${blockers.length} tab${blockers.length === 1 ? '' : 's'} still open (${tables}). Settle or close ${blockers.length === 1 ? 'it' : 'them'} in Orders before closing the shift.`,
+        'error'
+      );
+      return;
+    }
+
     const cashVariance = countedCash - this.expectedSums.cash;
     const mpesaVariance = countedMpesa - this.expectedSums.mpesa;
 
@@ -338,6 +355,9 @@ export class ShiftsView {
     `);
 
     showNotification('Shift closed and Z-report archived.', 'success');
+    // Do not let Till reuse the in-memory id after cash-up. Shift Management
+    // is the only path that deliberately opens it again.
+    state.cloudShiftId = null;
     this.activeShift = null;
     this.renderNoActiveShift();
     this.bindEvents();

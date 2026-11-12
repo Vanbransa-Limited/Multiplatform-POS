@@ -1,3 +1,4 @@
+import { tenantStorage } from '../services/tenant-cache.js';
 import { db } from '../db/schema.js';
 import { getStockOnHand } from '../db/index.js';
 import { state, showNotification } from '../context.js';
@@ -7,7 +8,7 @@ import { state, showNotification } from '../context.js';
  * actually served. A hardcoded localhost URL prints QR codes nobody can scan.
  */
 function defaultMenuUrl() {
-  const saved = localStorage.getItem('pos_menu_url');
+  const saved = tenantStorage.getItem('pos_menu_url');
     const url = new URL(saved || 'menu.html', window.location.origin);
     if (url.origin === window.location.origin && url.pathname === '/menu.html') {
       if (state.currentTenant?.id) url.searchParams.set('tenant', state.currentTenant.id);
@@ -31,13 +32,13 @@ export class QrToolsView {
   render() {
     const t = this.activeTab;
     const rows = [
-      '<div style="display:flex;height:calc(100vh - 130px);gap:0;overflow:hidden;">',
-      '<div style="width:185px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border-color);display:flex;flex-direction:column;padding:12px 8px;gap:4px;">',
+      '<div class="settings-shell" style="display:flex;height:calc(100vh - 130px);gap:0;overflow:hidden;">',
+      '<div class="settings-nav" style="width:185px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border-color);display:flex;flex-direction:column;padding:12px 8px;gap:4px;">',
       '<button class="pane-nav-btn ' + (t === 'qr' ? 'active' : '') + '" data-qtab="qr">\uD83D\uDCF1 QR Menu</button>',
       '<button class="pane-nav-btn ' + (t === 'export' ? 'active' : '') + '" data-qtab="export">\uD83D\uDCCA Export Reports</button>',
       '<button class="pane-nav-btn ' + (t === 'alerts' ? 'active' : '') + '" data-qtab="alerts">\uD83D\uDD14 Stock Alerts</button>',
       '</div>',
-      '<div style="flex:1;overflow-y:auto;padding:20px;">',
+      '<div class="settings-content" style="flex:1;overflow-y:auto;padding:20px;">',
 
       // QR TAB
       '<div id="qt-qr" style="display:' + (t === 'qr' ? 'block' : 'none') + '">',
@@ -99,7 +100,7 @@ export class QrToolsView {
       '<div class="discount-section">',
       '<h3>\u2699\uFE0F Alert Configuration</h3>',
       '<div class="discount-form-grid">',
-      '<div><label>Low Stock Threshold (units)</label><input type="number" id="alert-threshold" value="' + (localStorage.getItem('pos_alert_threshold') || '10') + '" min="1"></div>',
+      '<div><label>Low Stock Threshold (units)</label><input type="number" id="alert-threshold" value="' + (tenantStorage.getItem('pos_alert_threshold') || '10') + '" min="1"></div>',
       '<div><label>Alert On</label><select id="alert-freq"><option value="always" selected>Every Tab Visit</option><option value="login">Login Only</option></select></div>',
       '</div>',
       '<button class="discount-save-btn" id="save-alert-settings">Save & Check Now</button>',
@@ -150,7 +151,7 @@ export class QrToolsView {
       const save = document.getElementById('save-alert-settings');
       if (save) save.addEventListener('click', async () => {
         const val = document.getElementById('alert-threshold').value;
-        localStorage.setItem('pos_alert_threshold', val);
+        tenantStorage.setItem('pos_alert_threshold', val);
         showNotification('Alert threshold: ' + val + ' units saved.', 'success');
         await this.runAlertCheck();
       });
@@ -161,7 +162,7 @@ export class QrToolsView {
     const urlEl = document.getElementById('qr-url-input');
     const sizeEl = document.getElementById('qr-size-sel');
     const encodedUrl = (urlEl && urlEl.value.trim()) || defaultMenuUrl();
-    if (urlEl) localStorage.setItem('pos_menu_url', encodedUrl);
+    if (urlEl) tenantStorage.setItem('pos_menu_url', encodedUrl);
     const size = parseInt(sizeEl ? sizeEl.value : '220');
 
     const renderQR = () => {
@@ -212,7 +213,7 @@ export class QrToolsView {
     const wrap = document.getElementById('qr-canvas-wrap');
     if (!wrap) return;
     const win = window.open('', '_blank');
-    win.document.write('<!DOCTYPE html><html><head><title>Titanium Menu QR</title></head>');
+    win.document.write('<!DOCTYPE html><html><head><title>Business Menu QR</title></head>');
     win.document.write('<body style="text-align:center;padding:60px;font-family:sans-serif;background:#fff;">');
     win.document.write('<h2 style="margin-bottom:8px;color:#1a0c04;">Scan to View Our Menu</h2>');
     win.document.write('<p style="color:#666;margin-bottom:28px;font-size:14px;">Vanbransa Lounge — Browse &amp; Order from your phone</p>');
@@ -246,7 +247,7 @@ export class QrToolsView {
         rows = prods.map(p => [p.sku, p.name, cats.get(p.category_id) || 'General', p.uom, Number(p.sell_price).toFixed(2), p.is_active ? 'Yes' : 'No']);
       } else if (type === 'discounts') {
         headers = ['Name', 'Applies To', 'Target', 'Value', 'Type', 'Status'];
-        const discs = JSON.parse(localStorage.getItem('pos_discounts') || '[]');
+        const discs = JSON.parse(tenantStorage.getItem('pos_discounts') || '[]');
         rows = discs.map(d => [d.name, d.type, d.target || '-', d.value, d.kind === 'percent' ? '%' : 'KES Fixed', d.status]);
       }
     } catch (e) {
@@ -299,7 +300,7 @@ export class QrToolsView {
 
   // ── STOCK ALERTS ──
   async runAlertCheck() {
-    const threshold = parseInt(localStorage.getItem('pos_alert_threshold') || '10');
+    const threshold = parseInt(tenantStorage.getItem('pos_alert_threshold') || '10');
     const list = document.getElementById('alerts-list');
     if (!list) return;
     list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-secondary);">Scanning all stock levels...</div>';

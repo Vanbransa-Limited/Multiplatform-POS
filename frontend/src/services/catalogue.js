@@ -27,6 +27,26 @@ export function compareNames(a, b) {
   return collator.compare(String(a ?? ''), String(b ?? ''));
 }
 
+/**
+ * The tenant these pulls belong to.
+ *
+ * The signed-in claim is authoritative: it is what the security rules match on
+ * and what Financials already reads. NEXT_PUBLIC_TENANT_ID is only a fallback
+ * for a till that has not signed in yet, because a build-time constant that
+ * disagrees with the session makes every pull return nothing without error.
+ */
+export async function activeTenantId() {
+  const { currentClaims, TENANT_ID } = await import('./firebase.js');
+  try {
+    const claims = await currentClaims();
+    if (claims?.tenant_id) return String(claims.tenant_id);
+  } catch {
+    // Never fall back to a different business after a session-scope failure.
+    return null;
+  }
+  return TENANT_ID || null;
+}
+
 /** Firestore's product document -> the row shape the till's screens read. */
 export function toLocalProduct(doc) {
   return {
@@ -47,6 +67,7 @@ export function toLocalProduct(doc) {
     cost_price: (Number(doc.costPriceMinor) || 0) / 100,
     image_data: doc.imagePath || null,
     is_active: doc.isActive === false ? 0 : 1,
+    retired_at: doc.retiredAt || null,
     // Whether the public menu holds this item to its House balance.
     track_stock: doc.trackStock === true ? 1 : 0,
     // Absent means shown; only an explicit false hides it from customers.
@@ -60,9 +81,13 @@ export function toLocalProduct(doc) {
  * Returns the number of products written, or null when there is no backend.
  */
 export async function pullCatalogue() {
-  const { getFirebase, TENANT_ID } = await import('./firebase.js');
+  const { getFirebase } = await import('./firebase.js');
   const fb = await getFirebase();
   if (!fb) return null;
+  // The signed-in tenant, for the same reason pullSales uses it: a build-time
+  // id that disagrees with the session pulls an empty catalogue in silence,
+  // which leaves the seeded demo rows standing as if they were the menu.
+  const TENANT_ID = await activeTenantId();
   if (!TENANT_ID) return null;
 
   const snapshot = await fb.firestore.getDocs(
@@ -72,7 +97,6 @@ export async function pullCatalogue() {
     )
   );
 
-  if (snapshot.empty) return 0;
 
   // Categories come down with the products. Without them the editor offered
   // the five seeded types while the menu grouped by the tenant's real ones, so
@@ -100,7 +124,13 @@ export async function pullCatalogue() {
   // bulkPut so a re-pull updates prices in place rather than duplicating, and
   // so locally seeded rows are overwritten by the authoritative copy.
   const { db } = await import('../db/schema');
-  await db.products.bulkPut(products);
+  await db.transaction('rw', db.products, async () => {
+    const ids = new Set(products.map(product => product.id));
+    // Keep cached names for historical local receipts, but remove deleted
+    // server items from every selling/stock/editor list.
+    await db.products.filter(product => !ids.has(product.id)).modify({ is_active: 0, show_on_menu: 0, retired_at: new Date().toISOString() });
+    await db.products.bulkPut(products);
+  });
 
   return products.length;
 }
@@ -114,22 +144,34 @@ export async function pullCatalogue() {
  *
  * Returns the number of sales cached, or null when there is no backend.
  */
-export async function pullSales(sinceIso) {
-  const { getFirebase, TENANT_ID } = await import('./firebase.js');
+export async function pullSales(sinceIso, saleUuids) {
+  const { getFirebase } = await import('./firebase.js');
   const fb = await getFirebase();
-  if (!fb || !TENANT_ID) return null;
+  if (!fb) return null;
+  // The signed-in tenant, not the build-time one. Keying this off an env var
+  // meant a build pointed at a different tenant id than the session pulled
+  // nothing at all - silently - and the board showed only this device while
+  // looking perfectly healthy. Financials never had the bug because they read
+  // the claim; this now agrees with them.
+  const tenantId = await activeTenantId();
+  if (!tenantId) throw new Error('Sign in to read the other tills’ sales.');
 
-  const since = sinceIso || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-  const [sales, payments] = await Promise.all([
-    fb.firestore.getDocs(fb.firestore.query(
-      fb.firestore.collection(fb.dbInstance, 'sales'),
-      fb.firestore.where('tenantId', '==', TENANT_ID),
-    )),
-    fb.firestore.getDocs(fb.firestore.query(
-      fb.firestore.collection(fb.dbInstance, 'payments'),
-      fb.firestore.where('tenantId', '==', TENANT_ID),
-    )),
-  ]);
+  const since = new Date(sinceIso || Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  const { readSaleChildren, readSalesSince } = await import('./sale-history.js');
+  let sales;
+  if (saleUuids) {
+    const ids = [...new Set(saleUuids.filter(Boolean))];
+    const docs = [];
+    for (let start = 0; start < ids.length; start += 30) {
+      const snapshot = await fb.firestore.getDocsFromServer(fb.firestore.query(
+        fb.firestore.collection(fb.dbInstance, 'sales'),
+        fb.firestore.where('tenantId', '==', tenantId),
+        fb.firestore.where('idempotencyKey', 'in', ids.slice(start, start + 30)),
+      ));
+      docs.push(...snapshot.docs);
+    }
+    sales = { docs };
+  } else sales = await readSalesSince(fb, tenantId, since);
 
   const asIso = (value) => {
     if (!value) return null;
@@ -146,42 +188,149 @@ export async function pullSales(sinceIso) {
         tenant_id: doc.tenantId,
         branch_id: doc.branchId,
         shift_id: doc.shiftId || null,
+        // Who rang it up. Without this a sale from another till is traceable
+        // to no one here, because this device has neither that shift nor the
+        // staff row the old lookup went through.
+        staff_id: doc.staffId || null,
+        device_id: doc.deviceId || null,
         invoice_no: doc.invoiceNumber || entry.id,
-        sale_uuid: doc.saleUuid || entry.id,
+        // The till's own id for this sale. The server mints its own document
+        // id but stores the till's as the idempotency key, so this is the only
+        // thread back to the row the selling device already holds.
+        sale_uuid: doc.idempotencyKey || doc.saleUuid || entry.id,
         customer_id: doc.customerId || null,
         table_no: doc.tableNumber || null,
+        tab_id: doc.tabId || null,
+        order_reference: doc.orderReference || null,
         // The backend settles in integer minor units; every screen here is
         // still in KES floats.
         subtotal: (Number(doc.subtotalMinor) || 0) / 100,
         discount: (Number(doc.discountMinor) || 0) / 100,
         tax_total: (Number(doc.taxMinor) || 0) / 100,
         grand_total: (Number(doc.totalMinor) || 0) / 100,
-        status: 'COMPLETED',
-        sold_at: asIso(doc.soldAt) || new Date().toISOString(),
-        synced_at: asIso(doc.soldAt),
+        status: String(doc.status || 'completed').toUpperCase(),
+        sold_at: asIso(doc.soldAt || doc.createdAt),
+        synced_at: asIso(doc.soldAt || doc.createdAt),
         fiscal_status: doc.fiscalStatus || 'SENT',
       };
     })
-    .filter((row) => row.sold_at >= since);
+    .filter((row) => row.sold_at && (saleUuids || row.sold_at >= since));
 
-  const paymentRows = payments.docs.map((entry) => {
+  const ids = rows.map(row => row.id);
+  const [payments, lines] = await Promise.all([
+    readSaleChildren(fb, tenantId, 'payments', ids),
+    readSaleChildren(fb, tenantId, 'sale_lines', ids),
+  ]);
+  // The server books every sale "completed", unpaid receivables included.
+  // Taken literally it overwrote a local PENDING_PAYMENT round, which dropped
+  // uploaded tables off Tab Management and made them uneditable.
+  const owing = new Set(payments.docs.flatMap((entry) => {
     const doc = entry.data();
-    return {
+    return doc.method === 'credit' && !doc.settledAt && doc.status !== 'voided' ? [doc.saleId] : [];
+  }));
+  for (const row of rows) if (row.status === 'COMPLETED' && owing.has(row.id)) row.status = 'PENDING_PAYMENT';
+
+  // One local transaction avoids a disk commit per sale and publishes a
+  // consistent snapshot to other readers. All network work finishes above.
+  return db.transaction('rw', [db.sales, db.payments, db.sale_lines], async () => {
+
+  /**
+   * A sale this device sold, it already has - under its own id.
+   *
+   * The server mints a different document id, so pulling one back landed it as
+   * a second row: every synced sale appeared twice on the orders board and was
+   * counted twice in the takings. Rows the till already holds are updated in
+   * place with what only the server knows; only other devices' sales are new.
+   */
+  const localSales = await db.sales.where('sale_uuid').anyOf(rows.map(row => row.sale_uuid)).toArray();
+  const localIdByUuid = new Map(
+    localSales.filter((row) => row.sale_uuid).map((row) => [String(row.sale_uuid), row.id]),
+  );
+  const localIdFor = new Map();
+  const localById = new Map(localSales.map(row => [row.id, row]));
+
+  const fresh = [];
+  for (const row of rows) {
+    const localId = localIdByUuid.get(String(row.sale_uuid));
+    if (!localId) {
+      fresh.push(row);
+      continue;
+    }
+    localIdFor.set(row.id, localId);
+    // Never a wholesale overwrite: the local row carries things the server
+    // does not, such as the kitchen status this device is driving.
+    const updates = {
+      invoice_no: row.invoice_no,
+      fiscal_status: row.fiscal_status,
+      synced_at: row.synced_at,
+      staff_id: row.staff_id,
+      status: row.status,
+    };
+    if (Object.entries(updates).some(([key, value]) => localById.get(localId)?.[key] !== value)) {
+      await db.sales.update(localId, updates);
+    }
+  }
+
+  const paymentRows = [];
+  for (const entry of payments.docs) {
+    const doc = entry.data();
+    const saleId = doc.saleId || doc.customerOrderId || entry.id;
+    const known = localIdFor.get(saleId);
+    const settlement = doc.source === 'sale_settlement';
+    // The device wrote its own row for a tender it took. Pulling the server's
+    // copy of it would double the money; a settlement recorded elsewhere is
+    // the one payment it cannot already have.
+    if (known && known !== saleId && !settlement) continue;
+
+    paymentRows.push({
       id: entry.id,
-      sale_id: doc.saleId || doc.customerOrderId || entry.id,
+      sale_id: known || saleId,
       method: String(doc.method || '').toUpperCase(),
       amount: (Number(doc.amountMinor) || 0) / 100,
       reference: doc.reference || '',
       provider_txn_id: doc.providerTransactionId || doc.reference || '',
-      verified: 1,
+      verified: doc.verified === false ? 0 : 1,
+      // Set on a receivable once the money it stood for actually arrived.
+      settled_at: asIso(doc.settledAt),
       received_at: asIso(doc.paidAt) || null,
-    };
-  });
+    });
+  }
 
   // bulkPut so a device's own unsynced sales are not wiped by the pull.
-  if (rows.length) await db.sales.bulkPut(rows);
+  if (fresh.length) await db.sales.bulkPut(fresh);
   if (paymentRows.length) await db.payments.bulkPut(paymentRows);
+  const selectedIds = new Set(rows.map(row => row.id));
+  const lineRows = lines.docs.flatMap(entry => {
+    const doc = entry.data();
+    if (!selectedIds.has(doc.saleId)) return [];
+    const localId = localIdFor.get(doc.saleId);
+    if (localId && localId !== doc.saleId) return [];
+    return [{ id: entry.id, sale_id: doc.saleId, product_id: doc.productId,
+      product_name: doc.productName, qty: doc.qty, tax_code: doc.taxCode,
+      unit_price: (Number(doc.unitPriceMinor) || 0) / 100,
+      discount: (Number(doc.discountMinor) || 0) / 100,
+      tax_amount: (Number(doc.taxMinor) || 0) / 100,
+      line_total: (Number(doc.lineTotalMinor) || 0) / 100 }];
+  });
+  if (lineRows.length) await db.sale_lines.bulkPut(lineRows);
+
+  // A receivable settled anywhere is settled here: without this the till that
+  // raised the proforma keeps reporting it outstanding for good.
+  const settledCreditIds = new Set(payments.docs.flatMap(entry => {
+    const doc = entry.data();
+    return doc.method === 'credit' && doc.settledAt ? [doc.saleId] : [];
+  }));
+  for (const [serverSaleId, localId] of localIdFor) {
+    if (!settledCreditIds.has(serverSaleId)) continue;
+    const rowsHere = await db.payments.where('sale_id').equals(localId).toArray();
+    for (const row of rowsHere) {
+      if (row.settled_at || !['CREDIT', 'PROFORMA'].includes(String(row.method).toUpperCase())) continue;
+      await db.payments.update(row.id, { settled_at: new Date().toISOString() });
+    }
+  }
+
   return rows.length;
+  });
 }
 
 /**
@@ -193,9 +342,13 @@ export async function pullSales(sinceIso) {
  * "Vanbransa" ended up on Titanium's paper. The server is the authority.
  */
 export async function pullIdentity() {
-  const { getFirebase, TENANT_ID } = await import('./firebase.js');
+  const { getFirebase } = await import('./firebase.js');
   const fb = await getFirebase();
-  if (!fb || !TENANT_ID) return null;
+  if (!fb) return null;
+  // Same reason as the other pulls: the session's tenant is the real one, so a
+  // till never prints the name of a business it is not signed in to.
+  const TENANT_ID = await activeTenantId();
+  if (!TENANT_ID) return null;
 
   const { db } = await import('../db/schema');
   const { state } = await import('../context');
@@ -212,6 +365,7 @@ export async function pullIdentity() {
     etims_mode: doc.etimsMode || 'none',
     phone: doc.phone || '',
     status: doc.status || 'active',
+    logo_url: doc.logoUrl || '',
   };
   await db.tenants.put(tenant);
   // The receipts read this, not the table, so it has to move too.
@@ -243,5 +397,6 @@ export async function pullIdentity() {
     }
   }
 
+  window.dispatchEvent(new Event('tenant-identity-changed'));
   return tenant.trading_name;
 }

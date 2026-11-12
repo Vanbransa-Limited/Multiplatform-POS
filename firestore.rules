@@ -45,24 +45,62 @@ service cloud.firestore {
           'cashEnabled',
           'lowStockThresholdQty',
           'acceptedPaymentMethods',
+          // When the trading day rolls over, and where the night session
+          // begins. These decide which day money is booked to, so they are
+          // writable only by the same roles that own the rest of settings.
+          'dayStartHour',
+          'nightStartHour',
           'updatedAt',
           'updatedByStaffId'
         ])
-        && request.resource.data.establishmentName is string
-        && request.resource.data.establishmentName.size() > 0
-        && request.resource.data.establishmentName.size() <= 120
-        && request.resource.data.receiptFooter is string
-        && request.resource.data.receiptFooter.size() <= 500
-        && request.resource.data.locale is string
-        && request.resource.data.timezone is string
-        && request.resource.data.cashEnabled is bool
-        && request.resource.data.lowStockThresholdQty is int
-        && request.resource.data.lowStockThresholdQty >= 0
+        // Each field is checked only when the document actually carries it.
+        // Asserting on all of them unconditionally meant a settings document
+        // written without a receipt footer, locale or timezone could never be
+        // updated again - the owner ticked a payment method, the rule refused
+        // the whole write, and nothing on the screen could explain why.
+        && (!('establishmentName' in request.resource.data) || (
+          request.resource.data.establishmentName is string
+          && request.resource.data.establishmentName.size() > 0
+          && request.resource.data.establishmentName.size() <= 120
+        ))
+        && (!('receiptFooter' in request.resource.data) || (
+          request.resource.data.receiptFooter is string
+          && request.resource.data.receiptFooter.size() <= 500
+        ))
+        && (!('locale' in request.resource.data) || request.resource.data.locale is string)
+        && (!('timezone' in request.resource.data) || request.resource.data.timezone is string)
+        && (!('cashEnabled' in request.resource.data) || request.resource.data.cashEnabled is bool)
+        && (!('lowStockThresholdQty' in request.resource.data) || (
+          request.resource.data.lowStockThresholdQty is int
+          && request.resource.data.lowStockThresholdQty >= 0
+        ))
         && request.resource.data.acceptedPaymentMethods is list
         && request.resource.data.acceptedPaymentMethods.size() > 0
+        // 'credit' is a stored value, not a tender anyone chooses: a proforma
+        // books to it. Leaving it out of this list meant any business whose
+        // settings already carried it was frozen out of its own settings
+        // screen for good, because hasOnly checks the whole resulting list.
         && request.resource.data.acceptedPaymentMethods.hasOnly([
-          'cash', 'mpesa', 'card', 'airtel_money', 'bank_transfer'
-        ]);
+          'cash', 'mpesa', 'card', 'airtel_money', 'bank_transfer', 'credit'
+        ])
+        // Validated only when present, so a business that has never set its
+        // trading hours can still save every other setting. The night must
+        // begin after the day, or a session would be empty or inverted.
+        && (!('dayStartHour' in request.resource.data) || (
+          request.resource.data.dayStartHour is int
+          && request.resource.data.dayStartHour >= 0
+          && request.resource.data.dayStartHour <= 23
+        ))
+        && (!('nightStartHour' in request.resource.data) || (
+          request.resource.data.nightStartHour is int
+          && request.resource.data.nightStartHour >= 0
+          && request.resource.data.nightStartHour <= 23
+        ))
+        && (
+          !('dayStartHour' in request.resource.data)
+          || !('nightStartHour' in request.resource.data)
+          || request.resource.data.nightStartHour > request.resource.data.dayStartHour
+        );
     }
 
     // Tenant creation and claim assignment are Admin-only operations.
@@ -129,11 +167,20 @@ service cloud.firestore {
 
     match /customer_orders/{documentId} {
       allow read: if canReadTenantDocument()
-        && request.auth.token.staff_role in ['owner', 'store_manager', 'supervisor', 'bar_staff', 'cashier'];
+        && request.auth.token.staff_role in ['owner', 'store_manager', 'supervisor', 'bar_staff', 'cashier', 'store_keeper'];
       allow write: if false;
     }
 
     match /sale_lines/{documentId} {
+      allow read: if canReadTenantDocument();
+      allow write: if false;
+    }
+
+    // Open tabs, published by each till so the business can be watched while it
+    // is running. Readable by everyone who works here - an owner needs the whole
+    // floor, and a cashier taking over a table needs to see it. Server-written
+    // only: this is a mirror of what a till holds, never a source of money.
+    match /open_orders/{documentId} {
       allow read: if canReadTenantDocument();
       allow write: if false;
     }

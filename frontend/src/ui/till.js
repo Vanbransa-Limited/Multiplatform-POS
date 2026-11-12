@@ -1,19 +1,43 @@
+import { tenantStorage } from '../services/tenant-cache.js';
+import { createMobileFilters } from './mobile-filters';
+import { WALK_IN_CUSTOMER_ID } from '../services/firebase';
 import { db } from '../db/schema';
 import { logAuditEvent, getHouseStock } from '../db/index';
 import { state, showNotification } from '../context';
 import { MpesaService } from '../services/mpesa';
-import { DEVICE_ID } from '../services/firebase';
+import { paginate, pagerHtml, bindPager } from '../services/paginate';
+import { DEVICE_ID, firebaseConfigured, openShift as openCloudShift } from '../services/firebase';
 import {
   ensureMpesaAttempt,
   mpesaAttemptFingerprint,
   unavailableMpesaCapability
 } from '../services/mpesa-state';
-import { toMinor } from '../services/tender';
+import { mpesaConfirmationCode, toMinor, mapPaymentMethod } from '../services/tender';
+import { isReceivable } from '../services/takings';
 import { enqueuePrintJob, isStationOnline } from '../services/print-queue';
+import { escapeHtml, renderReceiptHtml } from '../services/print-receipt';
+import { compareNames, pullCatalogue } from '../services/catalogue';
+import { pullCustomers, saveCustomer } from '../services/customers';
+import { saleAsOrder, voidSale, settleSale, claimSalePayment } from '../services/customer-orders';
 import { pullStock } from '../services/stock';
-import { pullCatalogue } from '../services/catalogue';
-import { isStaffPhoneNumber } from '../data/staff-directory';
-import { saleLineRate, recordedSaleTotals } from '../services/service-charges';
+import { closingUpdate, newTab, OPEN, openTabAt, roundTotals } from '../services/tabs';
+import { removeTabLine, freeSettledTab, readOpenTabs } from '../services/tab-edit';
+import { tillDraftKey, readTillDraft, writeTillDraft } from '../services/till-draft';
+import {
+  saleLineRate,
+  recordedSaleTotals,
+  VIP_CHARGE_ID,
+  STAFF_DISCOUNT_ID
+} from '../services/service-charges';
+
+/**
+ * How long a till keeps a just-registered order to itself.
+ *
+ * Long enough to choose a tender and take the money, short enough that an
+ * order abandoned mid-checkout reaches the other tills while the customer is
+ * still in the building.
+ */
+const HELD_ORDER_MS = 3 * 60 * 1000;
 
 export function getCanonicalCategoryName(rawName) {
   if (!rawName) return 'Other';
@@ -33,13 +57,21 @@ export function getCanonicalCategoryName(rawName) {
 export class TillView {
   constructor(container) {
     this.container = container;
+    this.productPage = 1;
+    this.catalogueProducts = [];
+    this.filteredProducts = [];
     this.cart = []; // Current cart items { product, qty, discount_amount, discount_percent, batch }
     this.parkedCarts = []; // Suspended carts
     this.selectedCustomer = null;
+    // The order registered at Pay Now, until its tender settles or voids it.
+    this.pendingSale = null;
+    // The tab this cart is adding a round to, and the open tabs on the floor.
+    this.activeTable = null;
+    this.openTabs = [];
     this.mpesa = new MpesaService();
     this.selectedPaymentMethod = 'CASH'; // CASH, MPESA, CARD, CREDIT
     this.mpesaRef = null;
-    // Only ever set from a backend-confirmed payment; gates finalizeInvoice.
+    // Only ever set from a backend-confirmed payment; gates automatic order registration.
     this.mpesaVerified = false;
     this.mpesaCapability = unavailableMpesaCapability();
     this.mpesaCapabilityRequest = 0;
@@ -52,16 +84,75 @@ export class TillView {
     // sell alongside waiters. The server agrees: `supervisor` is in
     // SELLING_ROLES. Discounting is still owner and manager only.
 
-    this.selectedCustomer = await db.customers.where('id').equals('cust-walkin').first();
+    this.selectedCustomer = await db.customers.where('id').equals(WALK_IN_CUSTOMER_ID).first();
     if (!this.selectedCustomer) {
       // Safety fallback to prevent app crashing if DB record is missing
-      this.selectedCustomer = { id: 'cust-walkin', name: 'Walk-In Customer', price_tier: 'RETAIL' };
+      this.selectedCustomer = { id: WALK_IN_CUSTOMER_ID, name: 'Walk-In Customer', price_tier: 'RETAIL' };
     }
+    await this.restoreDraft();
     this.render();
     await this.loadProducts();
-    await this.loadCustomerDropdown();
+    await this.loadCustomerDropdown(this.selectedCustomer?.id || WALK_IN_CUSTOMER_ID);
+    await this.loadOpenTabs();
+    // Tab Management's "Add a round" arrives with the table in the link.
+    const linkedTable = new URLSearchParams(window.location.search).get('table');
+    if (linkedTable) this.addToTab(linkedTable);
     this.updateCartUI();
     this.refreshCatalogue();
+  }
+
+  dispose() {
+    this.filterSheet?.dispose();
+    this.persistDraft();
+    this.disposed = true;
+    this.releaseHeldLease();
+  }
+
+  async restoreDraft() {
+    this.draftKey = tillDraftKey({ tenantId: state.currentTenant?.id,
+      staffId: state.currentUser?.id, branchId: state.currentBranch?.id });
+    try {
+      const draft = readTillDraft(sessionStorage, this.draftKey);
+      if (draft) {
+        // A crash after commit but before clearing the draft must never offer
+        // the saved cart as a new sale. Its original ledger row is the proof.
+        const saved = draft.cartId ? await db.sales.filter(sale => sale.draft_id === draft.cartId).first() : null;
+        this.cart = saved ? [] : draft.cart;
+        this.parkedCarts = draft.parkedCarts;
+        this.cartDraftId = saved ? null : draft.cartId;
+        this.recoveredPaymentAttempt = saved || !draft.cart.length ? null : draft.paymentAttemptKey || null;
+        this.selectedCustomer = draft.customer || this.selectedCustomer;
+        this.activeTable = draft.activeTable || null;
+        this.activeTabId = draft.activeTabId || null;
+        if (saved || this.cart.length || this.parkedCarts.length) showNotification(saved
+          ? 'The previous cart was already saved. Review its original order in Orders.'
+          : 'Restored unfinished work from this browser tab. It has not been submitted as a new order.', 'info');
+      }
+      this.draftReady = true;
+    } catch (error) {
+      console.error('Till draft restore failed', error);
+      showNotification('Saved draft could not be read. Keep browser data intact and contact support.', 'warning');
+    }
+  }
+
+  persistDraft() {
+    if (!this.draftReady) return;
+    if (!this.draftKey) this.draftKey = tillDraftKey({ tenantId: state.currentTenant?.id,
+      staffId: state.currentUser?.id, branchId: state.currentBranch?.id });
+    if (!this.draftKey) return;
+    try {
+      if (this.cart.length && !this.cartDraftId) this.cartDraftId = crypto.randomUUID();
+      writeTillDraft(sessionStorage, this.draftKey, { cartId: this.cartDraftId || null,
+        paymentAttemptKey: this.cart.length ? (this.recoveredPaymentAttempt || this.mpesaAttempt?.idempotencyKey || null) : null,
+        cart: this.cart, parkedCarts: this.parkedCarts, customer: this.selectedCustomer,
+        activeTable: this.activeTable, activeTabId: this.activeTabId, savedAt: new Date().toISOString() });
+      if (!this.cart.length) this.cartDraftId = null;
+      this.draftBackupFailed = false;
+    } catch (error) {
+      if (!this.draftBackupFailed) showNotification('Draft backup failed. Save this cart as an order before leaving or reloading.', 'warning');
+      this.draftBackupFailed = true;
+      console.error('Till draft backup failed', error);
+    }
   }
 
   /**
@@ -97,15 +188,19 @@ export class TillView {
 
   render() {
     this.container.innerHTML = `
-      <div class="till-grid">
+      <div class="till-mobile-tabs" aria-label="Till workspace">
+        <span class="till-mobile-title" id="till-mobile-title">Products</span>
+        <button type="button" id="till-cart-toggle" aria-expanded="false" aria-controls="till-sale-panel"><span id="mobile-cart-action">View cart</span> <span id="mobile-sale-summary" aria-live="polite">0 items</span></button>
+      </div>
+      <div class="till-grid" data-mobile-panel="products">
         <!-- Products Column -->
-        <div class="till-catalogue-col">
+        <div class="till-catalogue-col" id="till-products-panel">
           <div class="till-search-bar">
             <div class="search-input-wrapper">
               <input type="text" id="till-search" placeholder="Search by name, SKU or barcode...">
             </div>
             <button class="sec-btn" id="till-park-btn">Park Cart</button>
-            <button class="sec-btn" id="till-resume-btn">Resume Carts (<span id="parked-count">0</span>)</button>
+            <button class="sec-btn" id="till-resume-btn">Resume Carts (<span id="parked-count">${this.parkedCarts.length}</span>)</button>
           </div>
           
           <div class="cat-filters" id="cat-filters">
@@ -115,13 +210,32 @@ export class TillView {
           <div class="product-grid" id="till-prod-grid">
             <!-- Populated dynamically -->
           </div>
+          <div id="till-product-pager"></div>
         </div>
 
         <!-- Cart Column -->
-        <div class="till-cart-col">
+        <div class="till-cart-col" id="till-sale-panel">
           <div class="cart-header">
-            <h3>Current Sale</h3>
+            <h3 id="cart-heading">Current Sale</h3>
             <span class="cart-count" id="cart-item-count">0 Items</span>
+          </div>
+
+          <!-- Table and open tabs. A table that keeps ordering gets another
+               round on the same tab rather than a second unrelated sale
+               nobody can find. Always visible: the first tab of the night has
+               to be openable from here, not only from inside checkout. -->
+          <div id="till-tab-bar" class="till-tab-bar">
+            <div class="till-tab-row">
+              <!-- Open tables are suggested as one is typed; the floor itself
+                   lives in Tab Management rather than as chips over the cart. -->
+              <input type="text" id="till-table-input" list="till-table-options" placeholder="Takeaway — type a table to open a tab">
+              <datalist id="till-table-options"></datalist>
+              <button type="button" class="sec-btn" id="till-tab-clear">Takeaway</button>
+            </div>
+            <a href="/tabs" id="till-open-tabs-label" class="till-tab-label hidden"></a>
+            <!-- Everything on the table so far, so an item nobody ordered can
+                 be taken off before the bill is asked for. -->
+            <button type="button" class="sec-btn hidden" id="till-review-tab-btn" style="width:100%;">Review tab items</button>
           </div>
 
           <div class="cart-list" id="cart-list">
@@ -137,10 +251,23 @@ export class TillView {
               <span>Attach Customer</span>
               <span id="price-tier-indicator" style="color:var(--accent-cyan)">Retail Pricing</span>
             </div>
-            <div class="customer-selector">
-              <select id="cart-customer-select">
+            <div class="customer-selector" style="display:flex;gap:8px;align-items:center;">
+              <select id="cart-customer-select" style="flex:1;">
                 <!-- Loaded dynamically -->
               </select>
+              ${['Owner', 'Supervisor'].includes(state.currentUser?.role)
+                ? '<button type="button" class="sec-btn" id="cart-new-customer-btn" style="white-space:nowrap;padding:6px 10px;">+ New</button>'
+                : ''}
+            </div>
+            <!-- Registering here attaches them to this sale straight away,
+                 which is the whole reason the cashier opened it. -->
+            <div id="cart-new-customer-form" class="hidden" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">
+              <input type="text" id="cart-new-customer-name" placeholder="Customer or company name" style="flex:1 1 100%;">
+              <input type="tel" id="cart-new-customer-phone" placeholder="Phone (optional)" style="flex:1 1 45%;">
+              <input type="text" id="cart-new-customer-kra" placeholder="KRA PIN (optional)" style="flex:1 1 45%;">
+              <button type="button" class="primary-btn" id="cart-new-customer-save" style="flex:1;">Save &amp; attach</button>
+              <button type="button" class="sec-btn" id="cart-new-customer-cancel" style="flex:0 0 auto;">Cancel</button>
+              <p id="cart-new-customer-msg" style="flex:1 1 100%;margin:0;font-size:12px;color:var(--text-secondary);"></p>
             </div>
             <div class="buyer-pin-row">
               <input type="text" id="cart-buyer-pin" placeholder="Buyer KRA PIN (Optional)">
@@ -173,7 +300,12 @@ export class TillView {
               <span>Total</span>
               <span id="summary-total">KES 0.00</span>
             </div>
+            <!-- The round that is not being paid for yet. Without this the
+                 only exits from a cart were pay it or cancel it, so every
+                 round a table did not settle on the spot was voided. -->
+            <button class="sec-btn hidden" id="till-add-to-tab-btn" style="width:100%;margin-bottom:8px;">Add to Tab</button>
             <button class="checkout-btn" id="till-pay-now-btn" disabled>Pay Now</button>
+            <p id="till-tab-due-note" class="hidden" style="margin-top:8px;text-align:center;font-size:11px;color:var(--text-secondary);"></p>
           </div>
         </div>
       </div>
@@ -186,7 +318,7 @@ export class TillView {
 
           <div class="checkout-modal-grid">
             <!-- Methods Column -->
-            <div class="checkout-payment-methods">
+            <div class="checkout-payment-methods" role="tablist" aria-label="Payment method">
               <div class="payment-method-card selected" data-method="CASH">
                 <span style="font-size:20px;">💵</span>
                 <div>
@@ -201,6 +333,13 @@ export class TillView {
                   <p id="payment-method-mpesa-note">Checking M-Pesa availability...</p>
                 </div>
               </div>
+              <div class="payment-method-card" data-method="MPESA_CODE">
+                <span style="font-size:20px;">🧾</span>
+                <div>
+                  <h4>M-Pesa Code</h4>
+                  <p>Customer already paid — enter the SMS code</p>
+                </div>
+              </div>
               <div class="payment-method-card" data-method="CARD">
                 <span style="font-size:20px;">💳</span>
                 <div>
@@ -213,6 +352,13 @@ export class TillView {
                 <div>
                   <h4>On Account (Credit)</h4>
                   <p>Charge against debtor limits</p>
+                </div>
+              </div>
+              <div class="payment-method-card" data-method="PROFORMA">
+                <span style="font-size:20px;">🧾</span>
+                <div>
+                  <h4>Proforma - Print First, Pay Later</h4>
+                  <p>Process and print the order now, collect payment afterwards</p>
                 </div>
               </div>
             </div>
@@ -262,6 +408,16 @@ export class TillView {
                 </div>
               </div>
 
+              <!-- This is independent of STK availability: the customer has
+                   already paid and the cashier is recording the SMS proof. -->
+              <div class="checkout-inputs hidden" id="payment-inputs-mpesa-code">
+                <label style="font-size:13px;color:var(--text-secondary)">M-Pesa Confirmation Code</label>
+                <input type="text" id="pay-mpesa-code" maxlength="32" placeholder="e.g. QGH4T21XZ9" autocapitalize="characters" spellcheck="false">
+                <p style="font-size:13px;color:var(--text-secondary);margin-top:8px;line-height:1.5;">
+                  Enter the code from the customer's M-Pesa message. It stays on the order for reconciliation.
+                </p>
+              </div>
+
               <!-- Card fields. The terminal charges the card; recording the
                    reference it prints is the only thread back to that slip. -->
               <div class="checkout-inputs hidden" id="payment-inputs-card">
@@ -285,11 +441,59 @@ export class TillView {
                 <p id="credit-warn-text" class="error-msg"></p>
               </div>
 
+              <!-- Proforma: the order is processed and printed now and the
+                   money arrives later, so the sale is booked against a named
+                   debtor and the ledger carries it as unpaid until it is. -->
+              <div class="checkout-inputs hidden" id="payment-inputs-proforma">
+                <label style="font-size:13px;color:var(--text-secondary)">Order / LPO Reference (Optional)</label>
+                <input type="text" id="pay-proforma-reference" maxlength="60" placeholder="Their purchase order or job number...">
+                <p style="font-size:13px;color:var(--text-secondary);margin-top:8px;line-height:1.5;">
+                  Prints a proforma invoice marked UNPAID and releases the order. The amount stays on this customer's account until it is settled.
+                </p>
+                <p id="proforma-warn-text" class="error-msg"></p>
+              </div>
+
               <div style="display:flex;gap:10px;margin-top:auto;">
-                <button class="cancel-pay-btn" style="flex:1;" id="pay-cancel-btn">Back to Cart</button>
-                <button class="confirm-pay-btn" style="flex:1.5;" id="pay-confirm-btn">Confirm & Print</button>
+                <button class="cancel-pay-btn" style="flex:1;" id="pay-cancel-btn">Leave pending</button>
+                <button class="confirm-pay-btn" style="flex:1.5;" id="pay-confirm-btn">Complete Sale</button>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab review. Items are corrected here rather than in the cart,
+           because by now they are rounds already rung up and stock already
+           taken; removing one has to put that stock back. -->
+      <div id="tab-review-modal" class="modal">
+        <div class="modal-content" style="max-width: 520px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <h2 style="font-size:16px;" id="tab-review-title">Tab</h2>
+            <span id="tab-review-order-no" class="cart-count"></span>
+          </div>
+          <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+            Everything billed to this table. Removing an item puts its stock back and re-rings the round it came from.
+          </p>
+          <div id="tab-review-list" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;"></div>
+          <div class="receipt-totals-row" style="margin-top:12px;font-size:15px;">
+            <span>Tab total</span><span id="tab-review-total">KES 0.00</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:16px;">
+            <button class="sec-btn" style="flex:1;" id="tab-review-close">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stacking a round does not print it. Pushed here, the bill waits in
+           the Print Station queue, where anyone at the counter machine finds
+           it by order number or table and prints it. -->
+      <div id="tab-queue-modal" class="modal">
+        <div class="modal-content" style="max-width:360px;">
+          <h2 style="font-size:16px;">Send to print queue?</h2>
+          <p id="tab-queue-summary" style="font-size:13px;color:var(--text-secondary);line-height:1.5;"></p>
+          <div style="display:flex;gap:10px;margin-top:12px;">
+            <button class="sec-btn" style="flex:1;" id="tab-queue-skip">Not now</button>
+            <button class="primary-btn" style="flex:1.5;" id="tab-queue-send">Push to print queue</button>
           </div>
         </div>
       </div>
@@ -297,7 +501,7 @@ export class TillView {
       <!-- ESC/POS Thermal Receipt Paper Simulation Modal -->
       <div id="receipt-modal" class="modal">
         <div class="modal-content" style="max-width: 420px; background: #222; padding: 20px;">
-          <h2 style="font-size:16px; margin-bottom: 12px; color: #fff;">Simulated Printed Receipt</h2>
+          <h2 style="font-size:16px; margin-bottom: 12px; color: #fff;">Order Registered · Receipt Preview</h2>
           
           <div style="display:flex; gap: 8px; margin-bottom: 12px; width:100%;">
             <button class="primary-btn active" id="receipt-format-58" style="flex:1;">58mm Roll</button>
@@ -309,7 +513,7 @@ export class TillView {
           </div>
 
           <div style="display:flex; gap: 10px; width: 100%; margin-top: 16px;">
-            <button class="sec-btn" style="flex:1;" id="receipt-print-btn">Print</button>
+            <button class="sec-btn" style="flex:1;" id="receipt-print-btn">Push to print queue</button>
             <button class="primary-btn" style="flex:1;" id="receipt-close-btn">Done (New Sale)</button>
           </div>
         </div>
@@ -317,9 +521,24 @@ export class TillView {
     `;
 
     this.bindEvents();
+    this.filterSheet = createMobileFilters({
+      container: this.container, toolbar: this.container.querySelector('.search-input-wrapper'),
+      controls: [this.container.querySelector('#cat-filters')], title: 'Product categories',
+      count: () => Number(Boolean(this.container.querySelector('#cat-filters .active:not([data-cat="all"])'))),
+      reset: () => this.container.querySelector('#cat-filters [data-cat="all"]')?.click(),
+    });
   }
 
   bindEvents() {
+    const cartToggle = this.container.querySelector('#till-cart-toggle');
+    cartToggle.addEventListener('click', () => {
+      const expanded = cartToggle.getAttribute('aria-expanded') !== 'true';
+      this.container.querySelector('.till-grid').dataset.mobilePanel = expanded ? 'sale' : 'products';
+      cartToggle.setAttribute('aria-expanded', String(expanded));
+      this.container.querySelector('#mobile-cart-action').textContent = expanded ? 'Hide cart' : 'View cart';
+      this.container.querySelector('#till-mobile-title').textContent = expanded ? 'Current sale' : 'Products';
+      if (window.matchMedia('(max-width: 767px)').matches) this.container.closest('.app-main-content')?.scrollTo({ top: 0 });
+    });
     // Search filter typing
     const searchInput = document.getElementById('till-search');
     searchInput.addEventListener('input', () => {
@@ -351,21 +570,87 @@ export class TillView {
       document.getElementById('cart-buyer-pin').value = this.selectedCustomer.kra_pin || '';
       
       this.recomputeTotals();
+      this.persistDraft();
+    });
+
+    this.bindNewCustomer();
+
+    document.getElementById('till-review-tab-btn').addEventListener('click', () => {
+      void this.openTabReview().catch((error) => {
+        showNotification(error.message || 'That tab could not be opened.', 'error');
+      });
+    });
+
+    document.getElementById('tab-review-close').addEventListener('click', () => {
+      document.getElementById('tab-review-modal').classList.remove('active');
+    });
+
+    document.getElementById('till-add-to-tab-btn').addEventListener('click', () => {
+      void this.addRoundToTab()
+        .then((added) => added && this.offerTabPrint())
+        .catch((error) => {
+          showNotification(error.message || 'That round could not be added to the tab.', 'error');
+        });
+    });
+
+    // Adding a round only asks. The paper comes out wherever the queue is
+    // opened, by whoever is signed in there.
+    document.getElementById('tab-queue-skip').addEventListener('click', () => {
+      document.getElementById('tab-queue-modal').classList.remove('active');
+    });
+    document.getElementById('tab-queue-send').addEventListener('click', () => {
+      document.getElementById('tab-queue-modal').classList.remove('active');
+      void this.sendReceiptToCounter().catch((error) => {
+        showNotification(error.message || 'The bill could not be queued. Print it from the counter instead.', 'error');
+      });
+    });
+
+    // Typing a table here is what opens the first tab of the night; the open
+    // tab buttons below are only a shortcut back to one that already exists.
+    document.getElementById('till-table-input').addEventListener('input', (event) => {
+      this.activeTable = event.target.value.trim() || null;
+      // Picking a suggested table is how an existing tab is chosen now.
+      this.activeTabId = (this.openTabs || []).find((tab) => tab.table === this.activeTable)?.id || null;
+      this.persistDraft();
+      this.renderOpenTabs();
+    });
+
+    // Leaves the tab alone and starts a sale of its own.
+    document.getElementById('till-tab-clear').addEventListener('click', () => {
+      this.clearActiveTab();
+      showNotification('Next sale is takeaway — its own order, not a round on a tab.', 'info');
     });
 
     // Pay now triggers checkout modal
     document.getElementById('till-pay-now-btn').addEventListener('click', () => {
+      // On a tab, paying means paying the table, not just what is on screen.
+      if (this.activeTable) {
+        void this.openTabCheckout().catch((error) => {
+          showNotification(error.message || 'That tab could not be opened for payment.', 'error');
+        });
+        return;
+      }
       this.openCheckoutModal();
     });
 
     // Payment method switcher
-    document.querySelectorAll('.payment-method-card').forEach(card => {
+    this.container.querySelectorAll('#payment-modal .payment-method-card').forEach(card => {
+      card.setAttribute('role', 'tab');
+      card.setAttribute('tabindex', '0');
+      card.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); card.click(); }
+      });
       card.addEventListener('click', (e) => {
         const methodCard = e.target.closest('.payment-method-card');
+        const method = methodCard.getAttribute('data-method');
+        // Switching tender throws away the provider's proof, and the customer
+        // has already paid on it.
+        if (method !== this.selectedPaymentMethod
+          && !this.confirmDiscardingPaidMpesa(`Switching to ${method}`)) return;
+
         document.querySelectorAll('.payment-method-card').forEach(c => c.classList.remove('selected'));
         methodCard.classList.add('selected');
-        
-        const method = methodCard.getAttribute('data-method');
+
         this.selectPaymentMethod(method);
       });
     });
@@ -387,13 +672,45 @@ export class TillView {
     });
 
     // Cancel / Close buttons
-    document.getElementById('pay-cancel-btn').addEventListener('click', () => {
+    document.getElementById('pay-cancel-btn').addEventListener('click', async () => {
+      if (this.pendingRegistration) await this.pendingRegistration;
+      if (this.mpesaAttempt && !this.mpesaVerified) {
+        showNotification('Wait for the M-Pesa attempt to resolve before leaving this payment.', 'warning');
+        return;
+      }
+      if (!this.confirmDiscardingPaidMpesa('Leave pending')) return;
       this.invalidateMpesaAttempt();
       document.getElementById('payment-modal').classList.remove('active');
+
+      // On a tab the round is not a mistake, it is the nine o'clock beer. It
+      // stays owed and the cart clears, because voiding it here is what
+      // cancelled every round a table did not pay for on the spot.
+      if (this.activeTabId) {
+        this.pendingSale = null;
+        this.releaseHeldLease();
+        this.cart = [];
+        this.redeemedPoints = 0;
+        this.updateCartUI();
+        void this.loadOpenTabs().catch(() => {});
+        showNotification(`Left on Table ${this.activeTable}'s tab. Settle it when they leave.`, 'info');
+        return;
+      }
+
+      if (this.pendingSale) {
+        this.pendingSale = null;
+        this.pendingRegistration = null;
+        this.cartDraftId = null;
+        this.releaseHeldLease();
+        this.clearCart();
+        showNotification('Order left unpaid in Pending. Use Pay now in Orders to clear it.', 'info');
+      }
+
     });
 
     document.getElementById('pay-confirm-btn').addEventListener('click', () => {
-      this.finalizeInvoice();
+      void this.finalizeInvoice().catch((error) => {
+        showNotification(error.message || 'The order could not be registered. Please retry.', 'error');
+      });
     });
 
     document.getElementById('receipt-close-btn').addEventListener('click', () => {
@@ -431,24 +748,23 @@ export class TillView {
   }
 
   async loadProducts() {
-    const [products, stockMovements, barcodes, categories] = await Promise.all([
+    const [products, stockRows, barcodes, categories] = await Promise.all([
       db.products.where('is_active').equals(1).toArray(),
-      db.stock_movements.toArray(),
+      firebaseConfigured ? db.stock_balances.where('branchId').equals(state.currentBranch?.id || '').toArray() : db.stock_movements.toArray(),
       db.barcodes.toArray(),
       db.categories.toArray()
     ]);
-    const grid = document.getElementById('till-prod-grid');
-    grid.innerHTML = '';
+    if (!this.container.isConnected) return;
     this.renderCategoryFilters(products, categories);
 
     const branchId = state.currentBranch?.id;
     const houseStockByProduct = new Map();
-    for (const movement of stockMovements) {
+    for (const movement of stockRows) {
       if (movement.location !== 'HOUSE') continue;
       if (branchId && movement.branch_id && String(movement.branch_id) !== String(branchId)) continue;
 
-      const productId = String(movement.product_id);
-      const quantity = Number(movement.qty) || 0;
+      const productId = String(firebaseConfigured ? movement.productId : movement.product_id);
+      const quantity = (Number(movement.qty) || 0) - (firebaseConfigured ? Number(movement.reservedQty || 0) : 0);
       houseStockByProduct.set(productId, (houseStockByProduct.get(productId) || 0) + quantity);
     }
 
@@ -461,9 +777,26 @@ export class TillView {
     }
 
     const categoryMap = new Map(categories.map(c => [String(c.id), c.name]));
+    this.houseStockByProduct = houseStockByProduct;
+    this.barcodeByProduct = barcodeByProduct;
+    this.categoryMap = categoryMap;
+    this.catalogueProducts = products.map((product) => ({
+      ...product,
+      searchText: `${product.name || ''} ${product.sku || ''} ${barcodeByProduct.get(String(product.id)) || ''}`.toLowerCase(),
+      canonicalCategory: getCanonicalCategoryName(categoryMap.get(String(product.category_id)) || String(product.source_category || product.category_id || '')),
+    }));
+    this.filterCatalogue();
+  }
+
+  renderProductPage() {
+    const grid = document.getElementById('till-prod-grid');
+    if (!grid) return;
+    const page = paginate(this.filteredProducts, this.productPage, 48);
+    this.productPage = page.page;
+    const { houseStockByProduct, barcodeByProduct, categoryMap } = this;
     const fragment = document.createDocumentFragment();
-    
-    for (const prod of products) {
+
+    for (const prod of page.rows) {
       const productId = String(prod.id);
       const name = String(prod.name ?? 'Unnamed product');
       const sku = String(prod.sku ?? '');
@@ -516,13 +849,35 @@ export class TillView {
         </div>
       `;
 
+      // Only the current page gets image elements; off-screen images load on demand.
+      const media = card.querySelector('.card-media');
+      media.style.background = 'rgba(255,255,255,0.03)';
+      if (imageData) {
+        const image = document.createElement('img');
+        image.src = imageData;
+        image.alt = '';
+        image.loading = 'lazy';
+        image.decoding = 'async';
+        image.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:8px';
+        media.replaceChildren(image);
+      }
       card.addEventListener('click', () => {
         this.addToCart(normalizedProduct);
       });
       fragment.appendChild(card);
     }
 
-    grid.appendChild(fragment);
+    grid.replaceChildren(fragment);
+    grid.scrollTop = 0;
+    if (!page.total) grid.textContent = 'No products match your search.';
+    const pager = document.getElementById('till-product-pager');
+    if (pager) {
+      pager.innerHTML = pagerHtml('till-page-controls', page);
+      bindPager('till-page-controls', page, (next) => {
+        this.productPage = next;
+        this.renderProductPage();
+      });
+    }
   }
 
   renderCategoryFilters(products, categories) {
@@ -565,14 +920,16 @@ export class TillView {
       .sort((a, b) => a[0].localeCompare(b[0]));
 
     const fragment = document.createDocumentFragment();
-    const allItemsChip = document.createElement('div');
+    const allItemsChip = document.createElement('button');
+    allItemsChip.type = 'button';
     allItemsChip.className = 'filter-chip active';
     allItemsChip.dataset.cat = 'all';
     allItemsChip.textContent = 'All Items';
     fragment.appendChild(allItemsChip);
 
     for (const [name, idsSet] of canonicalCategories) {
-      const chip = document.createElement('div');
+      const chip = document.createElement('button');
+      chip.type = 'button';
       chip.className = 'filter-chip';
       chip.dataset.catIds = Array.from(idsSet).join(',');
       chip.dataset.catName = name;
@@ -583,17 +940,95 @@ export class TillView {
     categoryFilters.replaceChildren(fragment);
   }
 
-  async loadCustomerDropdown() {
-    const list = await db.customers.toArray();
+  async loadCustomerDropdown(selectedId = WALK_IN_CUSTOMER_ID) {
+    // The directory is the server's; refresh it so a customer registered on
+    // the office machine is attachable here without reloading the app.
+    try {
+      await pullCustomers();
+    } catch {
+      // Offline is normal at a till: fall back to what this device has.
+    }
+
+    const list = (await db.customers.toArray())
+      .sort((a, b) => (a.id === WALK_IN_CUSTOMER_ID ? -1 : b.id === WALK_IN_CUSTOMER_ID ? 1 : compareNames(a.name, b.name)));
     const select = document.getElementById('cart-customer-select');
     select.innerHTML = '';
-    
+
     list.forEach(cust => {
       const opt = document.createElement('option');
       opt.value = cust.id;
       opt.innerText = cust.name + (cust.phone ? ` (${cust.phone})` : '');
-      if (cust.id === 'cust-walkin') opt.selected = true;
+      if (cust.id === selectedId) opt.selected = true;
       select.appendChild(opt);
+    });
+  }
+
+  /**
+   * Registers a customer without leaving the sale.
+   *
+   * Attaching one is the moment you discover they are not on file - most of
+   * all on a proforma, which is refused without a real customer to bill - and
+   * sending the cashier to another screen loses the cart they were building.
+   */
+  bindNewCustomer() {
+    const form = document.getElementById('cart-new-customer-form');
+    const toggle = document.getElementById('cart-new-customer-btn');
+    // Adding a customer is the owner's and supervisor's, so on every other
+    // till there is no button to bind.
+    if (!toggle) return;
+    const name = document.getElementById('cart-new-customer-name');
+    const message = document.getElementById('cart-new-customer-msg');
+    const say = (text, colour) => {
+      message.innerText = text;
+      message.style.color = colour;
+    };
+
+    const close = () => {
+      form.classList.add('hidden');
+      say('', 'var(--text-secondary)');
+      for (const id of ['name', 'phone', 'kra']) {
+        document.getElementById(`cart-new-customer-${id}`).value = '';
+      }
+    };
+
+    toggle.addEventListener('click', () => {
+      form.classList.toggle('hidden');
+      if (!form.classList.contains('hidden')) name.focus();
+    });
+    document.getElementById('cart-new-customer-cancel').addEventListener('click', close);
+
+    document.getElementById('cart-new-customer-save').addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const typedName = name.value.trim();
+      if (!typedName) {
+        say('Give the customer a name.', 'var(--accent-rose)');
+        return;
+      }
+
+      button.disabled = true;
+      say('Registering…', 'var(--text-secondary)');
+      try {
+        const saved = await saveCustomer({
+          name: typedName,
+          phone: document.getElementById('cart-new-customer-phone').value.trim(),
+          kraPin: document.getElementById('cart-new-customer-kra').value.trim()
+        });
+
+        await this.loadCustomerDropdown(saved.id);
+        this.selectedCustomer = saved;
+        document.getElementById('cart-buyer-pin').value = saved.kra_pin || '';
+        document.getElementById('price-tier-indicator').innerText =
+          saved.price_tier === 'WHOLESALE' ? 'Wholesale Pricing' : 'Retail Pricing';
+        this.recomputeTotals();
+        close();
+        showNotification(`${saved.name} is attached to this sale.`, 'success');
+      } catch (error) {
+        // A customer the server never accepted is a sale that will not sync,
+        // so this fails loudly rather than attaching a local-only name.
+        say(error.message || 'That customer could not be registered.', 'var(--accent-rose)');
+      } finally {
+        button.disabled = false;
+      }
     });
   }
 
@@ -603,26 +1038,17 @@ export class TillView {
     const activeCat = activeChip?.getAttribute('data-cat') || activeChip?.dataset.catName || 'all';
     const activeCatName = activeChip?.dataset.catName || null;
     const activeCatIds = activeChip?.getAttribute('data-cat-ids') ? activeChip.getAttribute('data-cat-ids').split(',') : null;
-    const cards = document.querySelectorAll('.product-card');
-
-    cards.forEach(card => {
-      const name = card.getAttribute('data-name');
-      const sku = card.getAttribute('data-sku');
-      const bar = card.getAttribute('data-barcode');
-      const cat = card.getAttribute('data-cat');
-      const canonicalCat = card.getAttribute('data-canonical-cat');
-
-      const matchesQuery = !query || name.includes(query) || sku.includes(query) || bar.includes(query);
-      const matchesCat = activeCat === 'all' 
-        || (activeCatName && canonicalCat === activeCatName)
+    // Search plain data across the full catalogue; render just one small page.
+    this.filteredProducts = this.catalogueProducts.filter((product) => {
+      const matchesQuery = !query || product.searchText.includes(query);
+      const cat = String(product.category_id ?? '');
+      const matchesCat = activeCat === 'all'
+        || (activeCatName && product.canonicalCategory === activeCatName)
         || (activeCatIds ? activeCatIds.includes(cat) : cat === activeCat);
-
-      if (matchesQuery && matchesCat) {
-        card.classList.remove('hidden');
-      } else {
-        card.classList.add('hidden');
-      }
+      return matchesQuery && matchesCat;
     });
+    this.productPage = 1;
+    this.renderProductPage();
   }
 
   async addToCart(product) {
@@ -711,6 +1137,12 @@ export class TillView {
   }
 
   updateCartUI() {
+    this.persistDraft();
+    const mobileSummary = document.getElementById('mobile-sale-summary');
+    if (mobileSummary) {
+      const count = this.cart.reduce((sum, item) => sum + Number(item.qty || 0), 0);
+      mobileSummary.textContent = `${count} ${count === 1 ? 'item' : 'items'}`;
+    }
     const list = document.getElementById('cart-list');
     const payBtn = document.getElementById('till-pay-now-btn');
     
@@ -860,12 +1292,26 @@ export class TillView {
 
     // Store calculations on class reference
     this.totals = { subtotal, discount, tax, total, vipSurcharge, staffDiscount };
+    // The tab buttons quote the cart plus what is already owed, so they move
+    // with the cart rather than only when the tab list reloads.
+    this.renderTabActions();
   }
 
+  /**
+   * The cart as the server can price it.
+   *
+   * The VIP charge and the staff discount are percentages the till carries as
+   * pseudo-products; only this device has a document for either. Sending them
+   * asked the server to price records it has never seen, so every STK push
+   * from a cart holding one was refused with "Product prod-staff-discount is
+   * not active for this tenant" and no prompt ever reached the phone. Their
+   * money travels as the declared service charge and the reduced amount.
+   */
   compactCartLines() {
     const quantities = new Map();
     for (const item of this.cart) {
       const productId = String(item.product.id);
+      if (productId === VIP_CHARGE_ID || productId === STAFF_DISCOUNT_ID) continue;
       quantities.set(productId, (quantities.get(productId) || 0) + item.qty);
     }
     return [...quantities.entries()]
@@ -905,7 +1351,50 @@ export class TillView {
       this.mpesaAttempt.requestAmountMinor = amountMinor;
       this.mpesaAttempt.cashAmountMinor = cashAmountMinor;
     }
+    this.persistDraft();
     return this.mpesaAttempt;
+  }
+
+  /**
+   * Stands between a confirmed M-Pesa payment and being thrown away.
+   *
+   * A confirmed payment normally registers its sale immediately. This guard
+   * covers only the recovery window where payment succeeded but that automatic
+   * registration failed and the cashier still has the paid cart on screen.
+   *
+   * Discarding is still allowed, because a cashier who has refunded by hand
+   * must be able to move on. It is recorded when it happens.
+   */
+  confirmDiscardingPaidMpesa(action) {
+    if (!this.mpesaVerified || !this.mpesaRef) return true;
+
+    const amount = (this.mpesaConfirmedAmountMinor || 0) / 100;
+    const proceed = window.confirm(
+      `M-Pesa has CONFIRMED KES ${amount.toFixed(2)} (ref ${this.mpesaRef}).\n\n`
+        + `${action} now leaves that money received with no sale recorded - it will not appear in Orders, `
+        + 'the takings or eTIMS.\n\nPress Cancel to let the order finish registering instead.\n\n'
+        + 'Discard the confirmed payment anyway?'
+    );
+
+    if (!proceed) return false;
+
+    showNotification(
+      `Discarded a confirmed M-Pesa payment (${this.mpesaRef}). Reconcile it by hand.`,
+      'error'
+    );
+    // Written whatever the cashier chose to do next, so a payment that reached
+    // the business but never became a sale can still be found afterwards.
+    void logAuditEvent(
+      state.currentTenant?.id,
+      state.currentUser?.id,
+      'MPESA_CONFIRMED_DISCARDED',
+      'PAYMENT',
+      this.mpesaRef,
+      null,
+      JSON.stringify({ amount, action })
+    ).catch(() => {});
+
+    return true;
   }
 
   invalidateMpesaAttempt({ preservePricing = false } = {}) {
@@ -998,11 +1487,11 @@ export class TillView {
     return capability;
   }
 
+  /** What the line is booked at, so the VIP charge and the staff discount
+   *  weigh here exactly as they do on the sale. */
   cartLineGrossMinor(item) {
-    const price = this.selectedCustomer.price_tier === 'WHOLESALE'
-      ? item.product.cost_price * 1.15
-      : item.product.sell_price;
-    return toMinor(price * item.qty);
+    const rate = saleLineRate(item.product, this.totals, this.selectedCustomer.price_tier);
+    return toMinor(rate * item.qty);
   }
 
   allocateDiscount(discounts, indexes, amountMinor, grossByIndex) {
@@ -1050,6 +1539,20 @@ export class TillView {
       || amountMinor !== baseAmountMinor - discountMinor
     ) {
       return { ok: false, message: 'M-Pesa returned invalid discount totals. Do not complete this sale.' };
+    }
+
+    // No membership discount means the server priced the cart exactly as the
+    // till tendered it, and there is nothing to re-allocate. The allocation
+    // below exists only to apply a server-granted discount; running it with
+    // nothing to give away rewrote every line's discount to zero - wiping the
+    // cashier's own discounts and the staff discount - and then failed the
+    // reconciliation it had just broken. Every discounted M-Pesa sale died here.
+    if (discountMinor === 0) {
+      attempt.pricingApplied = true;
+      attempt.pricing = pricing;
+      attempt.settledAmountMinor = amountMinor;
+      attempt.fingerprint = this.paymentAttemptFingerprint(phone, amountMinor, 0);
+      return { ok: true, amountMinor };
     }
 
     const grossByIndex = this.cart.map(item => this.cartLineGrossMinor(item));
@@ -1135,8 +1638,48 @@ export class TillView {
     return { ok: true, amountMinor };
   }
 
+  /**
+   * Opens checkout for a whole tab.
+   *
+   * Whatever is in the cart becomes the last round first, so the amount being
+   * charged is simply what the tab owes - the beer, the food, the liquor and
+   * the round just rung up - counted once, in one place.
+   */
+  async openTabCheckout() {
+    if (this.cart.length > 0) await this.addRoundToTab();
+    await this.loadOpenTabs();
+
+    const tab = (this.openTabs || []).find((entry) => entry.table === this.activeTable);
+    if (!tab || tab.dueMinor <= 0) {
+      showNotification(`Nothing is owed on Table ${this.activeTable}.`, 'warning');
+      return false;
+    }
+
+    // The rounds carry the tax and discounts that were rung at the time; the
+    // checkout charges their sum rather than recomputing an emptied cart.
+    const rounds = await db.sales.bulkGet(tab.unpaidRounds.map((round) => round.id));
+    const sum = (field) => rounds.reduce((total, sale) => total + (Number(sale?.[field]) || 0), 0);
+    this.totals = {
+      subtotal: sum('subtotal'),
+      discount: sum('discount'),
+      tax: sum('tax_total'),
+      total: tab.dueMinor / 100,
+      vipSurcharge: 0,
+      staffDiscount: 0
+    };
+    this.openCheckoutModal();
+    return true;
+  }
+
   openCheckoutModal() {
-    const cashEnabled = localStorage.getItem('pos_cash_enabled') !== 'false';
+    if (this.recoveredPaymentAttempt) {
+      showNotification('This restored draft has an earlier M-Pesa attempt. Reconcile that payment in Financials before taking payment again.', 'warning');
+      return;
+    }
+    const cashEnabled = tenantStorage.getItem('pos_cash_enabled') !== 'false';
+    // The cart already knows which tab this is; show the same table here
+    // rather than letting the two disagree about where the order is going.
+    if (this.activeTable) document.getElementById('checkout-table-number').value = this.activeTable;
     this.originalDue = this.totals.total;
     this.redeemedPoints = 0;
 
@@ -1149,7 +1692,7 @@ export class TillView {
     const redeemStatus = document.getElementById('loyalty-redeem-status');
     redeemStatus.style.display = 'none';
 
-    if (this.selectedCustomer && this.selectedCustomer.id !== 'cust-walkin') {
+    if (this.selectedCustomer && this.selectedCustomer.id !== WALK_IN_CUSTOMER_ID) {
       const pts = this.selectedCustomer.loyalty_points || 0;
       ptsSpan.textContent = `${pts} pts`;
       redeemBtn.disabled = pts <= 0;
@@ -1183,27 +1726,54 @@ export class TillView {
     // Hide/show cash payment option based on owner setting
     const cashCard = document.querySelector('[data-method="CASH"]');
     if (cashCard) cashCard.style.display = cashEnabled ? '' : 'none';
+    document.getElementById('pay-mpesa-code').value = '';
 
-    // Default to cash if enabled, otherwise M-Pesa
-    this.selectPaymentMethod(cashEnabled ? 'CASH' : 'MPESA');
+    // Require a deliberate tender choice before revealing its fields.
+    this.selectPaymentMethod(null);
     void this.refreshMpesaCapability();
+    // On a tab the rounds are already registered and this is settling them,
+    // so there is nothing further to register. Off a tab the order joins the
+    // board here, before any tender is chosen, so a push that never confirms
+    // can no longer take the whole order down with it.
+    if (!this.activeTabId) {
+      this.pendingRegistration = this.registerPendingOrder().catch((error) => {
+        showNotification(error.message || 'The order could not be registered.', 'error');
+        return false;
+      });
+    }
   }
 
   selectPaymentMethod(method) {
     if (method !== this.selectedPaymentMethod) this.invalidateMpesaAttempt();
     this.selectedPaymentMethod = method;
+    this.container.querySelectorAll('#payment-modal .payment-method-card').forEach(card => {
+      const selected = card.dataset.method === method;
+      card.classList.toggle('selected', selected);
+      card.setAttribute('aria-selected', String(selected));
+    });
     
     // Hide all input areas
     document.getElementById('payment-inputs-cash').classList.add('hidden');
     document.getElementById('payment-inputs-mpesa').classList.add('hidden');
+    document.getElementById('payment-inputs-mpesa-code').classList.add('hidden');
     document.getElementById('payment-inputs-credit').classList.add('hidden');
     document.getElementById('payment-inputs-card').classList.add('hidden');
+    document.getElementById('payment-inputs-proforma').classList.add('hidden');
+    if (!method) {
+      document.getElementById('pay-confirm-btn').disabled = true;
+      document.getElementById('pay-confirm-btn').innerText = 'Choose a payment method';
+      return;
+    }
 
     // Every tender starts confirmable; only the credit check takes that away.
     // Without this reset, a breached credit limit left the button disabled for
     // whatever tender the cashier switched to next.
     document.getElementById('pay-confirm-btn').disabled = false;
+    document.getElementById('pay-confirm-btn').innerText = method === 'MPESA'
+      ? 'Await M-Pesa confirmation'
+      : 'Complete Sale';
     document.getElementById('credit-warn-text').innerText = '';
+    document.getElementById('proforma-warn-text').innerText = '';
 
     // Show selected
     if (method === 'CASH') {
@@ -1215,11 +1785,22 @@ export class TillView {
       document.getElementById('pay-mpesa-phone').value = this.selectedCustomer.phone || '';
       document.getElementById('stk-status-area').classList.add('hidden');
       document.getElementById('pay-trigger-stk').disabled = true;
+    } else if (method === 'MPESA_CODE') {
+      document.getElementById('payment-inputs-mpesa-code').classList.remove('hidden');
     } else if (method === 'CREDIT') {
       document.getElementById('payment-inputs-credit').classList.remove('hidden');
       this.applyCreditLimit();
     } else if (method === 'CARD') {
       document.getElementById('payment-inputs-card').classList.remove('hidden');
+    } else if (method === 'PROFORMA') {
+      document.getElementById('payment-inputs-proforma').classList.remove('hidden');
+      // An unpaid invoice against a walk-in is a debt nobody can chase, so the
+      // sale is refused until a real customer is attached to it.
+      const anonymous = !this.selectedCustomer?.id || this.selectedCustomer.id === WALK_IN_CUSTOMER_ID;
+      document.getElementById('proforma-warn-text').innerText = anonymous
+        ? 'Attach a customer to the cart first - an unpaid invoice needs someone to bill.'
+        : '';
+      document.getElementById('pay-confirm-btn').disabled = anonymous;
     }
 
     this.applyMpesaCapabilityToUi();
@@ -1242,8 +1823,10 @@ export class TillView {
       .where('sale_id').anyOf(sales.map(sale => sale.id))
       .toArray();
 
+    // Proformas are the same debt under a different name, so they count
+    // against the same limit.
     return payments
-      .filter(payment => String(payment.method).toUpperCase() === 'CREDIT')
+      .filter(payment => isReceivable(payment.method))
       .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
   }
 
@@ -1273,26 +1856,17 @@ export class TillView {
     document.getElementById('pay-cash-change').innerText = `KES ${change.toFixed(2)}`;
   }
 
-  validateStaffDiscountPhone(phone) {
-    const hasStaffDiscount = this.cart.some(item => item.product.id === 'prod-staff-discount');
-    if (!hasStaffDiscount) return true;
-
-    const staffMember = isStaffPhoneNumber(phone);
-    if (staffMember) {
-      showNotification(`✅ Staff Verified: ${staffMember.name} (${staffMember.phone})`, 'success');
-      return true;
-    } else {
-      showNotification(`❌ Phone number "${phone || 'N/A'}" is NOT an authorized staff number. Staff 20% discount rejected and removed. Charging normal price.`, 'error');
-      const idx = this.cart.findIndex(item => item.product.id === 'prod-staff-discount');
-      if (idx > -1) {
-        this.cart.splice(idx, 1);
-        this.updateCartUI();
-        this.originalDue = this.totals.total;
-        document.getElementById('checkout-due-amount').innerText = `KES ${this.totals.total.toFixed(2)}`;
-      }
-      return false;
-    }
-  }
+  /*
+   * The staff discount and the VIP surcharge are ordinary catalogue items.
+   *
+   * The till used to hold the staff discount against a hardcoded list of staff
+   * phone numbers at payment time: an M-Pesa number that was not on the list
+   * had the discount torn out of the cart mid-checkout and the tender refused,
+   * which is wrong whenever somebody else's phone pays for a staff member -
+   * which is most of the time. Adding either item now just changes the total,
+   * and payment proceeds like any other sale. Who may apply one is a floor
+   * decision, and the audit trail records that it was applied.
+   */
 
   /**
    * STK needs Safaricom reachable on both legs. There is no queue that makes an
@@ -1309,10 +1883,16 @@ export class TillView {
   }
 
   async runMpesaAttempt(kind) {
+    if (this.pendingRegistration) await this.pendingRegistration;
+    if (firebaseConfigured && !this.activeTabId && !this.pendingSale) {
+      showNotification('Save this order to Pending before taking payment. Close checkout and retry Pay Now.', 'error');
+      return;
+    }
+    if (this.pendingSale && firebaseConfigured) {
+      try { await state.syncManager.publishSale(this.pendingSale.saleId); }
+      catch (error) { showNotification(error.message, 'error'); return; }
+    }
     const phone = document.getElementById('pay-mpesa-phone').value;
-    // A staff discount is only good on an authorised staff number, and this is
-    // the leg where that number is entered.
-    if (!this.validateStaffDiscountPhone(phone)) return;
     const trigger = document.getElementById('pay-trigger-stk');
     const mpesaMinor = toMinor(this.totals.total);
     if (mpesaMinor <= 0) {
@@ -1334,6 +1914,16 @@ export class TillView {
     trigger.disabled = true;
 
     try {
+      if (firebaseConfigured) {
+        const ids = await this.roundsBeingSettled();
+        const rounds = [];
+        for (const id of ids) rounds.push(await state.syncManager.publishSale(id));
+        this.settlementRequestId ||= crypto.randomUUID();
+        await claimSalePayment({
+          saleUuids: rounds.map(round => round.sale_uuid), checkoutId: this.settlementRequestId,
+          stkKey: attempt.idempotencyKey, expectedMinor: mpesaMinor,
+        });
+      }
       const res = await this.mpesa.initiateStkPush({
         phone,
         amountKes: attempt.requestAmountMinor / 100,
@@ -1345,7 +1935,9 @@ export class TillView {
         // ("mpesa_" + a 36-char UUID). Truncating keeps it unique per attempt.
         orderReference: attempt.idempotencyKey.slice(0, 40),
         customerId: this.selectedCustomer?.id || null,
-        lines: this.compactCartLines()
+        lines: this.compactCartLines(),
+        // The only part of the total that is not a catalogue price.
+        serviceChargeMinor: toMinor(this.totals.vipSurcharge || 0)
       });
       if (res.capability) {
         this.mpesaCapability = res.capability;
@@ -1408,11 +2000,28 @@ export class TillView {
         this.mpesaConfirmedAmountMinor = expectedAmountMinor;
         this.showMpesaStatus(
           kind,
-          result.receipt ? `Confirmed. Code: ${result.receipt}` : 'Confirmed by M-Pesa.',
+          result.receipt ? `Confirmed. Registering order ${result.receipt}...` : 'Confirmed. Registering order...',
           'success'
         );
-        document.getElementById('pay-confirm-btn').disabled = false;
-        showNotification(`M-Pesa payment received. Ref: ${this.mpesaRef}`, 'success');
+
+        // Payment confirmation is the business event that registers the
+        // order. Receipt viewing and printing happen afterwards and can no
+        // longer strand received money outside Orders and Financials.
+        const confirm = document.getElementById('pay-confirm-btn');
+        confirm.disabled = true;
+        confirm.innerText = 'Registering order...';
+        try {
+          const registered = await this.finalizeInvoice();
+          if (!registered) throw new Error('The order is not registered yet.');
+          showNotification(`M-Pesa paid and order registered. Ref: ${this.mpesaRef}`, 'success');
+        } catch (error) {
+          // M-Pesa remains confirmed. Keep a manual retry available, while the
+          // server-side attempt continues to show as received for reconciliation.
+          confirm.disabled = false;
+          confirm.innerText = 'Retry order registration';
+          this.showMpesaStatus(kind, 'Payment confirmed, but order registration needs a retry.', 'danger');
+          showNotification(error.message || 'Payment was received, but the order could not be registered.', 'error');
+        }
       } else if (result.status === 'pending') {
         this.showMpesaStatus(kind, 'Unconfirmed - do not release goods', 'warning');
         showNotification('M-Pesa has not confirmed this payment. Retry safely or use another tender.', 'warning');
@@ -1434,13 +2043,6 @@ export class TillView {
   }
 
   async triggerPaystack(channel) {
-    if (channel === 'mobile_money') {
-      const airtelPhone = document.getElementById('pay-airtel-phone').value;
-      if (!this.validateStaffDiscountPhone(airtelPhone)) {
-        return;
-      }
-    }
-
     const emailInputId = channel === 'card' ? 'pay-card-email' : channel === 'mobile_money' ? 'pay-airtel-email' : 'pay-bank-email';
     const statusWrapId = channel === 'card' ? 'card-paystack-status' : channel === 'mobile_money' ? 'airtel-paystack-status' : 'bank-paystack-status';
     const badgeId = channel === 'card' ? 'card-paystack-badge' : channel === 'mobile_money' ? 'airtel-paystack-badge' : 'bank-paystack-badge';
@@ -1517,6 +2119,26 @@ export class TillView {
       })];
     }
 
+    if (this.selectedPaymentMethod === 'MPESA_CODE') {
+      const code = mpesaConfirmationCode(document.getElementById('pay-mpesa-code')?.value);
+      return [row('MPESA', this.totals.total, code, false, { typedCode: true })];
+    }
+
+    if (this.selectedPaymentMethod === 'PROFORMA') {
+      // Nothing has been paid. The row exists so the invoice, the debtor
+      // balance and the takings report all agree on what is still owed.
+      //
+      // ponytail: like credit, this stays outstanding for good - there is no
+      // settlement screen yet. When one exists it flips this row's method to
+      // the tender that paid it, and every reader here follows.
+      return [row(
+        'PROFORMA',
+        this.totals.total,
+        document.getElementById('pay-proforma-reference')?.value.trim() || '',
+        false
+      )];
+    }
+
     if (this.selectedPaymentMethod === 'CARD') {
       // The terminal already took the money; its reference is the only thread
       // back to the slip if the charge is ever queried.
@@ -1539,50 +2161,502 @@ export class TillView {
       === this.paymentAttemptFingerprint(phone, mpesaMinor, 0);
   }
 
-  async finalizeInvoice() {
-    // Validate Staff Discount Phone Number if present
-    if (this.cart.some(item => item.product.id === 'prod-staff-discount')) {
-      let targetPhone = '';
-      if (this.selectedPaymentMethod === 'MPESA') {
-        targetPhone = document.getElementById('pay-mpesa-phone').value;
-      } else if (this.selectedPaymentMethod === 'AIRTEL_PAYSTACK') {
-        targetPhone = document.getElementById('pay-airtel-phone').value;
-      } else if (this.selectedPaymentMethod === 'SPLIT') {
-        targetPhone = document.getElementById('pay-split-phone').value;
-      }
+  /** Saves Pay Now to the shared Pending board before tender is taken. */
+  async registerPendingOrder() {
+    // The same latch the tender uses: two taps of Pay Now must not write the
+    // order twice, and neither must a tap that lands mid-settlement.
+    if (this.finalizingInvoice || this.pendingSale || this.cart.length === 0) return;
+    this.finalizingInvoice = true;
 
-      if (['MPESA', 'AIRTEL_PAYSTACK', 'SPLIT'].includes(this.selectedPaymentMethod) || targetPhone) {
-        if (!this.validateStaffDiscountPhone(targetPhone)) {
-          return; // Discount removed and normal price charged, stop so cashier re-confirms with updated total
+    try {
+      const registered = await this.registerOrder(
+        // Booked as the receivable it is: nothing has been paid yet.
+        this.buildPendingPaymentRecords(),
+        { pending: true }
+      );
+      if (!registered) return;
+
+      this.pendingSale = registered;
+      this.releaseHeldLease();
+      await db.sales.update(registered.saleId, { server_pending: true, held_until: null });
+      if (firebaseConfigured) await state.syncManager.publishSale(registered.saleId);
+      showNotification(`Order ${registered.saleRecord.invoice_no} saved in Pending ? awaiting payment.`, 'info');
+      return true;
+    } finally {
+      this.finalizingInvoice = false;
+    }
+  }
+
+  /**
+   * Closes a tab the moment nothing on it is owed.
+   *
+   * A table that pays as it goes never leaves a tab behind to block the shift,
+   * and a tab that still owes something stays open for whoever settles it.
+   */
+  async settleEmptyTab(tabId) {
+    // One closing path for both screens: the Orders Viewer settles tabs too,
+    // and only this one was freeing the table.
+    const freed = await freeSettledTab(tabId);
+    if (freed !== null && this.activeTabId === tabId) this.clearActiveTab();
+  }
+
+  /**
+   * The tables that still owe money, so another round can join their tab.
+   *
+   * Read from the same rows the Orders board reads, so a tab opened on this
+   * till and one pulled from another agree about what a table owes.
+   */
+  async loadOpenTabs() {
+    // Guard on an element that exists: an id that was never rendered returned
+    // here every time, so a round added to a tab vanished from the till.
+    if (!document.getElementById('till-table-options')) return;
+
+    try {
+      this.openTabs = await readOpenTabs(state.currentBranch?.id);
+      // The first round is what opens a typed table's tab, so its id is only
+      // known once read back; without it review and settle had nothing to act on.
+      if (this.activeTable) {
+        this.activeTabId = this.openTabs.find((tab) => tab.table === this.activeTable)?.id || null;
+      }
+    } catch {
+      this.openTabs = [];
+    }
+
+    this.renderOpenTabs();
+  }
+
+  renderOpenTabs() {
+    const options = document.getElementById('till-table-options');
+    const label = document.getElementById('till-open-tabs-label');
+    if (!options || !label) return;
+
+    const tabs = this.openTabs || [];
+    options.replaceChildren(...tabs.map((tab) => Object.assign(document.createElement('option'), {
+      value: tab.table,
+      label: `KES ${(tab.dueMinor / 100).toFixed(2)} · ${tab.rounds.length} round${tab.rounds.length === 1 ? '' : 's'}`
+    })));
+    label.classList.toggle('hidden', tabs.length === 0);
+    label.textContent = `${tabs.length} open tab${tabs.length === 1 ? '' : 's'} · Manage tabs →`;
+
+    // Never while it is being typed into, or the cursor jumps mid-word.
+    const input = document.getElementById('till-table-input');
+    if (input && document.activeElement !== input) input.value = this.activeTable || '';
+
+    document.getElementById('till-tab-bar')?.classList.toggle('on-tab', Boolean(this.activeTable));
+
+    const heading = document.getElementById('cart-heading');
+    if (heading) {
+      heading.innerHTML = this.activeTable
+        ? `Adding to <span class="on-tab-note">Table ${escapeHtml(this.activeTable)}</span>`
+        : 'Current Sale';
+    }
+
+    this.renderTabActions();
+  }
+
+  /**
+   * Saves this cart as another round on the tab, unpaid.
+   *
+   * This is the nine-thirty plate of food: rung up, sent, and added to what
+   * table nine owes. The cart empties and the tab stays selected, because the
+   * next thing that table asks for is another round on the same bill.
+   */
+  async addRoundToTab() {
+    if (!this.activeTable) return;
+    if (this.cart.length === 0) {
+      showNotification('Add items to the cart before putting a round on the tab.', 'warning');
+      return;
+    }
+    if (this.finalizingInvoice) return;
+    this.finalizingInvoice = true;
+
+    try {
+      const registered = await this.registerOrder(this.buildPendingPaymentRecords(), { pending: true });
+      if (!registered) return;
+
+      // Nobody is about to pay for it, so it carries no lease: it belongs to
+      // the tab now and any till may settle or void it.
+      await db.sales.update(registered.saleId, { held_until: null });
+      void Promise.resolve().then(() => state.syncManager.syncOutbox()).catch(() => {});
+
+      this.cart = [];
+      this.redeemedPoints = 0;
+      this.updateCartUI();
+      await this.loadOpenTabs();
+      const tab = (this.openTabs || []).find((entry) => entry.table === this.activeTable);
+      showNotification(
+        `Added to Table ${this.activeTable}. KES ${((tab?.dueMinor || 0) / 100).toFixed(2)} now on this tab.`,
+        'success'
+      );
+      return true;
+    } finally {
+      this.finalizingInvoice = false;
+    }
+  }
+
+  /**
+   * Everything billed to this table, across every round.
+   *
+   * The bill a customer asks for is the table's, not one trip to it, so the
+   * lines are read across the rounds and shown under the tab's own order
+   * number.
+   */
+  async tabItems(tabId) {
+    const rounds = (await db.sales.where('tab_id').equals(tabId).toArray())
+      .filter((sale) => sale.status !== 'VOIDED');
+    const ledger = await db.payments.where('sale_id').anyOf(rounds.map(sale => sale.id)).toArray();
+    const bySale = new Map();
+    for (const row of ledger) bySale.set(row.sale_id, [...(bySale.get(row.sale_id) || []), row]);
+
+    const unpaid = rounds.filter((sale) => saleAsOrder(sale, { payments: bySale.get(sale.id) })
+      .paymentStatus === 'unpaid');
+    const lines = await db.sale_lines.where('sale_id').anyOf(unpaid.map((sale) => sale.id)).toArray();
+    const products = new Map((await db.products.toArray()).map((product) => [product.id, product.name]));
+
+    return lines.map((line) => ({
+      ...line,
+      name: line.product_name || products.get(line.product_id) || 'Item',
+      soldAt: unpaid.find((sale) => sale.id === line.sale_id)?.sold_at
+    }));
+  }
+
+  async openTabReview() {
+    if (!this.activeTabId) return;
+    const tab = await db.tabs.get(this.activeTabId);
+    const items = await this.tabItems(this.activeTabId);
+
+    document.getElementById('tab-review-title').innerText = `Table ${tab?.table_no || ''} — tab items`;
+    document.getElementById('tab-review-order-no').innerText = tab?.order_no || '';
+    document.getElementById('tab-review-total').innerText =
+      `KES ${items.reduce((sum, line) => sum + (Number(line.line_total) || 0), 0).toFixed(2)}`;
+
+    const list = document.getElementById('tab-review-list');
+    list.replaceChildren(...items.map((line) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border-color);border-radius:8px;';
+      row.innerHTML = `<div style="min-width:0;">
+          <div style="font-size:13px;font-weight:600;">${escapeHtml(line.name)}</div>
+          <div style="font-size:11px;color:var(--text-secondary);">${line.qty} × KES ${(Number(line.unit_price) || 0).toFixed(2)} · ${new Date(line.soldAt).toLocaleTimeString()}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
+          <span style="font-size:13px;font-weight:700;">KES ${(Number(line.line_total) || 0).toFixed(2)}</span>
+        </div>`;
+
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'sec-btn';
+      remove.style.cssText = 'padding:4px 10px;font-size:11px;';
+      remove.innerText = 'Remove';
+      remove.addEventListener('click', () => {
+        if (!window.confirm(`Remove ${line.qty} × ${line.name} from this tab? Its stock goes back.`)) return;
+        remove.disabled = true;
+        void this.removeTabItem(line).catch((error) => {
+          remove.disabled = false;
+          showNotification(error.message || 'That item could not be removed.', 'error');
+        });
+      });
+      row.lastElementChild.appendChild(remove);
+      return row;
+    }));
+
+    if (items.length === 0) list.textContent = 'Nothing is on this tab yet.';
+    document.getElementById('tab-review-modal').classList.add('active');
+  }
+
+  /**
+   * Takes one item off the tab.
+   *
+   * The round it belongs to has already been rung up and its stock already
+   * taken, and it may already be on the server, so the round is voided whole -
+   * which is the one operation that reliably puts stock back in both places -
+   * and what the table actually had is rung again on the same tab. The tab
+   * keeps its order number throughout, so the bill the customer is shown never
+   * changes its name.
+   */
+  async removeTabItem(line) {
+    const { freedTable } = await removeTabLine(line.id);
+    if (freedTable) {
+      document.getElementById('tab-review-modal').classList.remove('active');
+      this.clearActiveTab();
+      await this.loadOpenTabs();
+      showNotification(`${line.name} removed. Nothing is left on Table ${freedTable}, so its tab is closed.`, 'success');
+      return;
+    }
+    await this.loadOpenTabs();
+    await this.openTabReview();
+    showNotification(`${line.name} removed from Table ${this.activeTable}'s tab.`, 'success');
+  }
+
+  /**
+   * Offers the table's bill to the counter queue instead of printing it here.
+   *
+   * The whole unpaid tab goes, under the tab's order number, as a proforma:
+   * that number and the table are what the Print Station search matches.
+   */
+  async offerTabPrint() {
+    const tab = this.activeTabId ? await db.tabs.get(this.activeTabId) : null;
+    const items = tab ? await this.tabItems(tab.id) : [];
+    if (!items.length) return;
+
+    const totals = roundTotals(items);
+    this.lastReceiptPayload = {
+      tenantName: state.currentTenant.trading_name,
+      branchName: state.currentBranch.name,
+      kraPin: state.currentTenant.kra_pin,
+      branchCode: state.currentBranch.etims_bhf_id,
+      phone: state.currentTenant.phone,
+      invoiceNo: tab.order_no,
+      soldAt: new Date().toLocaleString(),
+      cashierName: state.currentUser?.name || '',
+      customerName: this.selectedCustomer?.name || 'Guest',
+      tableNo: tab.table_no,
+      lines: items.map((line) => ({
+        name: line.name,
+        qty: line.qty,
+        unitPrice: line.unit_price,
+        lineTotal: line.line_total,
+        taxCode: line.tax_code
+      })),
+      subtotal: totals.subtotal,
+      taxTotal: totals.tax_total,
+      grandTotal: totals.grand_total,
+      paymentMethod: 'PROFORMA',
+      paymentReference: null,
+      unpaid: true,
+      fiscal: null
+    };
+
+    document.getElementById('tab-queue-summary').innerText =
+      `Table ${tab.table_no} · ${tab.order_no} · KES ${totals.grand_total.toFixed(2)} unpaid. `
+      + 'Print it at the Print Station by searching the order number or table.';
+    document.getElementById('tab-queue-modal').classList.add('active');
+  }
+
+  /** Points the cart at an existing tab; the next Pay Now is another round. */
+  addToTab(table) {
+    const tab = (this.openTabs || []).find((entry) => entry.table === table);
+    this.activeTable = table;
+    this.activeTabId = tab?.id || null;
+    this.persistDraft();
+    this.renderOpenTabs();
+    showNotification(
+      `Adding a round to Table ${table}. KES ${((tab?.dueMinor || 0) / 100).toFixed(2)} already open on this tab.`,
+      'info'
+    );
+  }
+
+  clearActiveTab() {
+    this.activeTable = null;
+    this.activeTabId = null;
+    this.persistDraft();
+    this.renderOpenTabs();
+  }
+
+  /**
+   * The tab this round belongs to, opening one if the table has none.
+   *
+   * A tab is only ever closed by somebody, so a table with one already open
+   * keeps it and the round joins on. That is what makes the nine o'clock beer
+   * and the midnight round one bill.
+   */
+  async resolveTabForRound(tableNo, shiftId) {
+    const table = String(tableNo || '').trim();
+    if (!table) return null;
+
+    const existing = openTabAt(await db.tabs.where('status').equals(OPEN).toArray(), state.currentBranch?.id, table);
+    if (existing) return existing.id;
+
+    const tab = newTab({
+      id: crypto.randomUUID(),
+      tenantId: state.currentTenant?.id,
+      branchId: state.currentBranch?.id,
+      tableNo: table,
+      customerId: this.selectedCustomer?.id === WALK_IN_CUSTOMER_ID ? null : this.selectedCustomer?.id,
+      staffId: state.currentUser?.id,
+      shiftId,
+      now: new Date().toISOString()
+    });
+    await db.tabs.add(tab);
+    return tab.id;
+  }
+
+  /**
+   * The two ways out of a cart that sits on a tab.
+   *
+   * "Add to Tab" saves the round and leaves it owed; "Pay Now" settles the
+   * whole table, this cart included. Off a tab there is only Pay Now, exactly
+   * as before.
+   */
+  renderTabActions() {
+    const add = document.getElementById('till-add-to-tab-btn');
+    const pay = document.getElementById('till-pay-now-btn');
+    const note = document.getElementById('till-tab-due-note');
+    if (!add || !pay || !note) return;
+
+    const tab = (this.openTabs || []).find((entry) => entry.table === this.activeTable);
+    const dueMinor = tab?.dueMinor || 0;
+    const onTab = Boolean(this.activeTable);
+
+    add.classList.toggle('hidden', !onTab);
+    add.disabled = this.cart.length === 0;
+
+    // Only worth offering once there is something on the tab to correct.
+    document.getElementById('till-review-tab-btn')?.classList.toggle('hidden', !(onTab && dueMinor > 0));
+
+    // With rounds already owed, paying settles the night rather than the cart,
+    // so the button says the number the customer is about to be asked for.
+    const settlingTotal = dueMinor + Math.round((this.totals?.total || 0) * 100);
+    pay.innerText = onTab && dueMinor > 0
+      ? `Settle Table ${this.activeTable} · KES ${(settlingTotal / 100).toFixed(2)}`
+      : 'Pay Now';
+    // An empty cart can still settle a tab that already has rounds on it.
+    if (onTab && dueMinor > 0) pay.disabled = false;
+
+    note.classList.toggle('hidden', !(onTab && dueMinor > 0));
+    note.innerText = onTab && dueMinor > 0
+      ? `${tab.unpaidRounds.length} round${tab.unpaidRounds.length === 1 ? '' : 's'} already on this tab · KES ${(dueMinor / 100).toFixed(2)}`
+      : '';
+  }
+
+  /** Stops renewing the lease; the order is no longer this till's to work. */
+  releaseHeldLease() {
+    clearInterval(this.heldLease);
+    this.heldLease = null;
+  }
+
+  /** The single unpaid row a just-registered order carries. */
+  buildPendingPaymentRecords() {
+    return [{
+      id: crypto.randomUUID(),
+      method: 'PROFORMA',
+      amount: Number(this.totals.total.toFixed(2)),
+      reference: '',
+      provider_txn_id: '',
+      verified: 0,
+      metadata: undefined,
+      received_at: new Date().toISOString()
+    }];
+  }
+
+  async finalizeInvoice() {
+    if (this.pendingRegistration) await this.pendingRegistration;
+    if (firebaseConfigured && !this.activeTabId && !this.pendingSale) {
+      showNotification('Save this order to Pending before taking payment. Close checkout and retry Pay Now.', 'error');
+      return false;
+    }
+    if (this.finalizingInvoice) return false;
+    if (!this.selectedPaymentMethod) {
+      showNotification('Choose a payment method first.', 'warning');
+      return false;
+    }
+    if (this.selectedPaymentMethod === 'MPESA_CODE'
+      && !mpesaConfirmationCode(document.getElementById('pay-mpesa-code')?.value)) {
+      showNotification('Enter the M-Pesa confirmation code from the customer’s message.', 'error');
+      return false;
+    }
+    this.finalizingInvoice = true;
+    try {
+      // Registered at Pay Now, or already sitting on a tab as rounds: either
+      // way the tender settles what exists rather than writing it again.
+      if (this.pendingSale || this.activeTabId) return await this.settlePendingOrder();
+
+      const registered = await this.registerOrder(this.buildPaymentRecords(), { pending: false });
+      if (!registered) return false;
+      this.completeRegisteredOrder(registered);
+      return true;
+    } finally {
+      this.finalizingInvoice = false;
+    }
+  }
+
+  /**
+   * Writes a sale, its lines, its stock depletion and its tender rows.
+   *
+   * `pending` withholds the customer's credit and loyalty movement: an order
+   * that nobody has paid for yet must not move a debtor balance, and settling
+   * it applies both once the money is real.
+   */
+  async registerOrder(paymentRecords, { pending }) {
+    if (this.recoveredPaymentAttempt) {
+      showNotification('Reconcile the restored draft’s earlier M-Pesa attempt before registering it again.', 'warning');
+      return false;
+    }
+    const saleId = crypto.randomUUID();
+    const invoiceNo = `INV-BH001-${new Date().getTime().toString().slice(-6)}`;
+    // The STK attempt and the sale share one stable identity. If the response
+    // is lost and registration is retried, the backend replays the same sale
+    // rather than booking the payment and stock twice.
+    const saleUuid = this.selectedPaymentMethod === 'MPESA' && !pending
+      ? this.mpesaAttempt?.idempotencyKey
+      : crypto.randomUUID();
+    const buyerPin = document.getElementById('cart-buyer-pin').value || '';
+    // A round joins the tab the cart is pointed at; the checkout field is what
+    // opens a new one.
+    const tableNo = this.activeTable || document.getElementById('checkout-table-number').value || '';
+
+    // Prefer the trusted shift opened at sign-in. The old check looked only in
+    // Dexie, so a valid cloud shift was rejected after yesterday's local row
+    // had been closed. Constrain the offline fallback to this person and
+    // branch; another waiter's open row must never author this sale.
+    const ownBranchShifts = await db.shifts.where('user_id').equals(state.currentUser?.id)
+      .filter((shift) => shift.branch_id === state.currentBranch?.id)
+      .toArray();
+    let openShift = ownBranchShifts.find((shift) => shift.status === 'OPEN') || null;
+    const cloudRow = state.cloudShiftId
+      ? ownBranchShifts.find((shift) => shift.id === state.cloudShiftId)
+      : null;
+    // A locally cashed-up shift stays closed even if the backend id remains in
+    // memory. It is reopened only through Shift Management.
+    let shiftId = openShift?.id
+      || (state.cloudShiftId && cloudRow?.status !== 'CLOSED' ? state.cloudShiftId : null);
+
+    // Cloud setup is deliberately non-blocking at sign-in. A very fast Pay Now
+    // can reach here before it finishes, so idempotently open the same shift
+    // rather than reporting that nobody is on duty.
+    if (!shiftId && ownBranchShifts.length === 0
+      && firebaseConfigured && state.syncManager?.connectionStatus !== 'OFFLINE') {
+      try {
+        const cloudShift = await openCloudShift(state.currentBranch?.id);
+        shiftId = cloudShift?.shiftId || null;
+        state.cloudShiftId = shiftId;
+        if (shiftId) {
+          openShift = {
+            id: shiftId,
+            branch_id: state.currentBranch.id,
+            user_id: state.currentUser.id,
+            opening_float: Number(cloudShift?.openingFloatMinor || 0) / 100,
+            status: 'OPEN',
+            opened_at: cloudShift?.openedAt || new Date().toISOString(),
+            closed_at: null,
+          };
+          await db.shifts.put(openShift);
         }
+      } catch {
+        // A genuinely offline till may still use the local shift above.
       }
     }
 
-    const saleId = crypto.randomUUID();
-    const invoiceNo = `INV-BH001-${new Date().getTime().toString().slice(-6)}`;
-    const saleUuid = crypto.randomUUID();
-    const buyerPin = document.getElementById('cart-buyer-pin').value || '';
-    const tableNo = document.getElementById('checkout-table-number').value || '';
-
-    // Verify waiter/waitress shift is open
-    const openShift = await db.shifts.where('status').equals('OPEN').first();
-    if (!openShift) {
+    if (!shiftId) {
       showNotification('No open waiter/waitress shift found. Open shift before completing sales.', 'error');
-      return;
+      return false;
     }
 
     const hasKdsItems = this.cart.some(item => !item.product.is_service);
     // A sale is never booked against an M-Pesa payment the backend has not
     // confirmed. Cash and credit are settled at the counter; M-Pesa is not.
+    // A pending order carries no tender at all, so there is nothing to prove.
     if (
-      this.selectedPaymentMethod === 'MPESA'
+      !pending
+      && this.selectedPaymentMethod === 'MPESA'
       && !this.mpesaProofMatchesCurrentCart()
     ) {
       this.invalidateMpesaAttempt();
       showNotification('M-Pesa proof no longer matches this cart. Run a new STK push and wait for confirmation.', 'error');
-      return;
+      return false;
     }
 
+    // Opened here rather than when the table was typed, so a table tapped and
+    // then abandoned does not leave an empty tab on the floor.
     const recorded = recordedSaleTotals(this.totals);
     const saleRecord = {
       id: saleId,
@@ -1591,18 +2665,33 @@ export class TillView {
       device_id: DEVICE_ID,
       // Online sales must use the deterministic shift opened by the trusted
       // backend. A local id remains the offline fallback for queued cash sales.
-      shift_id: state.cloudShiftId || openShift.id,
+      shift_id: shiftId,
       invoice_no: invoiceNo,
       sale_uuid: saleUuid,
+      draft_id: this.cartDraftId || null,
+      // Who rang it up. Absent here - and only here, of the three paths that
+      // write a sale - every order registered at Pay Now was unattributable on
+      // the board ("Nobody has handled this yet") and was refused by createSale,
+      // which requires a staffId. That is why they queued forever and no other
+      // till, the owner's included, ever saw them.
+      created_by: state.currentUser?.id || null,
+      staff_id: state.currentUser?.id || null,
       customer_id: this.selectedCustomer.id || null,
       table_no: tableNo,
+      // What ties this round to the nine o'clock one at the same table.
+      tab_id: null,
       buyer_pin: buyerPin,
       // Recorded so that subtotal - discount is exactly what was charged.
       subtotal: recorded.subtotal,
       discount: recorded.discount,
       tax_total: this.totals.tax,
       grand_total: recorded.grandTotal,
-      status: 'COMPLETED',
+      // The board reads this to tell an order awaiting payment from a settled
+      // one. The lease beside it keeps the order on this till while the
+      // cashier is still working it; once it lapses the order transmits as
+      // the receivable it is, and any till can settle or void it.
+      status: pending ? 'PENDING_PAYMENT' : 'COMPLETED',
+      held_until: pending ? new Date(Date.now() + HELD_ORDER_MS).toISOString() : null,
       kds_status: hasKdsItems ? 'PENDING' : 'SERVED',
       sold_at: new Date().toISOString(),
       synced_at: null,
@@ -1610,12 +2699,29 @@ export class TillView {
       etims_solution: 'OSCU'
     };
 
-    const paymentRecords = this.buildPaymentRecords(saleId);
+    // Rows are built before the sale id exists, so they are stamped with it here.
+    for (const record of paymentRecords) record.sale_id = saleId;
     // The receipt prints one settlement line; a split shows its M-Pesa half.
     const paymentRecord = paymentRecords[paymentRecords.length - 1];
 
     // Perform database operations within atomic transactions
-    await db.transaction('rw', [db.sales, db.sale_lines, db.payments, db.stock_movements, db.audit_log, db.customers], async () => {
+    const registered = await db.transaction('rw', [db.tabs, db.sales, db.sale_lines, db.payments, db.stock_movements, db.audit_log, db.customers], async () => {
+      // A previous browser transaction may have committed before returning an
+      // error. Reuse its M-Pesa sale under this same write lock on retry.
+      if (!pending && this.selectedPaymentMethod === 'MPESA') {
+        const existing = await db.sales.where('sale_uuid').equals(saleUuid).first();
+        if (existing) {
+          const tender = await db.payments.where('sale_id').equals(existing.id).filter(row => row.method === 'MPESA').first();
+          if (existing.tenant_id !== state.currentTenant.id || existing.grand_total !== saleRecord.grand_total || tender?.reference !== this.mpesaRef) {
+            throw new Error('This M-Pesa payment already belongs to another recorded order. Review it in Orders.');
+          }
+          return { saleId: existing.id, saleRecord: existing, paymentRecord: tender, replayed: true };
+        }
+      }
+      // Resolve/create the tab under the same lock as its first round. A
+      // concurrent settlement cannot close its header between these writes,
+      // and a failed sale cannot leave a header without the order behind it.
+      saleRecord.tab_id = await this.resolveTabForRound(tableNo, shiftId);
       // 1. Write Sale
       await db.sales.add(saleRecord);
 
@@ -1668,13 +2774,14 @@ export class TillView {
         await db.payments.add(record);
       }
 
-      // 4. Update Customer Loyalty & Credit Balance
-      if (this.selectedCustomer && this.selectedCustomer.id !== 'cust-walkin') {
+      // 4. Update Customer Loyalty & Credit Balance. An order nobody has paid
+      //    for moves neither; settling it applies both once the money is real.
+      if (!pending && this.selectedCustomer && this.selectedCustomer.id !== WALK_IN_CUSTOMER_ID) {
         const customer = await db.customers.get(this.selectedCustomer.id);
         if (customer) {
           const updates = {};
           
-          if (this.selectedPaymentMethod === 'CREDIT') {
+          if (isReceivable(this.selectedPaymentMethod)) {
             updates.credit_balance = (customer.credit_balance || 0) + this.totals.total;
           }
 
@@ -1690,29 +2797,297 @@ export class TillView {
       }
 
       // 5. Log audit session
-      await logAuditEvent(state.currentTenant.id, state.currentUser.id, 'SALE_CHECKOUT', 'SALE', saleId);
+      await logAuditEvent(
+        state.currentTenant.id,
+        state.currentUser.id,
+        pending ? 'SALE_REGISTERED' : 'SALE_CHECKOUT',
+        'SALE',
+        saleId
+      );
+      return { saleId, saleRecord, paymentRecord };
     });
 
-    // Check low stock
-    for (const item of this.cart) {
-      if (!item.product.is_service) {
-        const remainingStock = await getHouseStock(item.product.id, state.currentBranch.id);
-        if (remainingStock <= 20) {
-          showNotification(`Low Stock Alert: ${item.product.name} is down to ${remainingStock} in House! Please request more.`, 'warning');
+    if (registered.replayed) return registered;
+
+    // The order already exists at this point. A secondary stock-alert read may
+    // fail offline, but it must never make the till offer to register it twice.
+    try {
+      for (const item of this.cart) {
+        if (!item.product.is_service) {
+          const remainingStock = await getHouseStock(item.product.id, state.currentBranch.id);
+          if (remainingStock <= 20) {
+            showNotification(`Low Stock Alert: ${item.product.name} is down to ${remainingStock} in House! Please request more.`, 'warning');
+          }
         }
+      }
+    } catch {}
+
+    return registered;
+  }
+
+  /** Closes the checkout, prints, and drains the outbox. */
+  completeRegisteredOrder({ saleRecord, paymentRecord, settledRoundIds }) {
+    // The round just landed, so the tab's running total is now out of date.
+    // A tab whose rounds are all paid closes itself here; one still owing
+    // stays open until somebody deals with it.
+    void this.settleEmptyTab(saleRecord.tab_id)
+      .then(() => this.loadOpenTabs())
+      .catch(() => {});
+    // Triggers background sync outbox process immediately if online. The drain
+    // refreshes the House balances once the server has taken the sale, so the
+    // grid is redrawn after it and not beside it.
+    void Promise.resolve()
+      .then(() => state.syncManager.syncOutbox())
+      .then(() => this.container.isConnected && this.loadProducts())
+      .catch(() => {});
+
+    document.getElementById('payment-modal').classList.remove('active');
+    // Receipt preparation and printing are downstream actions. Neither can
+    // roll back or decide whether this order was registered.
+    void this.openPrintedReceipt(saleRecord, paymentRecord, settledRoundIds).catch(() => {
+      showNotification('Order registered, but the receipt preview could not be opened.', 'warning');
+    });
+  }
+
+  /**
+   * Clears the order registered at Pay Now with the tender that actually paid.
+   *
+   * The receivable row is stamped rather than deleted - the order really did
+   * sit unpaid, however briefly - and the tender that cleared it is its own
+   * row. `tenderTotals` skips a settled receivable, so the drawer counts the
+   * money once and only under the tender that arrived.
+   */
+  /**
+   * The rounds this payment is clearing.
+   *
+   * On a tab that is every round nobody has paid for - the beer, the food, the
+   * liquor - so one payment closes the night rather than four. Off a tab it is
+   * just the order that was registered at Pay Now.
+   */
+  async roundsBeingSettled() {
+    const own = this.pendingSale ? [this.pendingSale.saleId] : [];
+    if (!this.activeTabId) return own;
+
+    const rounds = await db.sales.where('tab_id').equals(this.activeTabId).toArray();
+    const ledger = await db.payments.where('sale_id').anyOf(rounds.map(sale => sale.id)).toArray();
+    const bySale = new Map();
+    for (const row of ledger) {
+      bySale.set(row.sale_id, [...(bySale.get(row.sale_id) || []), row]);
+    }
+
+    const unpaid = rounds
+      .filter((sale) => sale.status !== 'VOIDED'
+        && saleAsOrder(sale, { payments: bySale.get(sale.id) }).paymentStatus === 'unpaid')
+      .map((sale) => sale.id);
+
+    return [...new Set([...own, ...unpaid])];
+  }
+
+  async settlePendingOrder() {
+    // Settling a tab there is no cart for: the rounds are already written, so
+    // this payment has no order of its own to anchor to.
+    const { saleId, saleRecord } = this.pendingSale || {};
+    this.releaseHeldLease();
+
+    if (
+      this.selectedPaymentMethod === 'MPESA'
+      && !this.mpesaProofMatchesCurrentCart()
+    ) {
+      this.invalidateMpesaAttempt();
+      showNotification('M-Pesa proof no longer matches this cart. Run a new STK push and wait for confirmation.', 'error');
+      return false;
+    }
+
+    const settledAt = new Date().toISOString();
+    const paymentRecords = this.buildPaymentRecords(saleId);
+    for (const record of paymentRecords) record.sale_id = saleId;
+    const paymentRecord = paymentRecords[paymentRecords.length - 1];
+    // Every round this payment clears. On a tab that is the whole night.
+    const settling = await this.roundsBeingSettled();
+    const serverSettlements = new Map();
+    if (!isReceivable(this.selectedPaymentMethod)) {
+      this.settlementRequestId ||= crypto.randomUUID();
+      if (firebaseConfigured) {
+        const rounds = [];
+        for (const id of settling) rounds.push(await state.syncManager.publishSale(id));
+        await claimSalePayment({
+          saleUuids: rounds.map(round => round.sale_uuid), checkoutId: this.settlementRequestId,
+          ...(this.selectedPaymentMethod === 'MPESA' ? { stkKey: this.mpesaAttempt.idempotencyKey } : {}),
+        });
+      }
+      for (let index = 0; index < settling.length; index++) {
+        let round = await db.sales.get(settling[index]);
+        if (firebaseConfigured && round && !round.synced_at) round = await state.syncManager.publishSale(round.id);
+        if (!round?.synced_at) continue;
+        const result = await settleSale({
+          saleUuid: round.sale_uuid, requestId: `${this.settlementRequestId}-${index}`,
+          checkoutId: this.settlementRequestId,
+          method: mapPaymentMethod(paymentRecord.method), reference: paymentRecord.reference || '',
+          ...(this.selectedPaymentMethod === 'MPESA' ? { attemptId: this.mpesaAttempt.attemptId } : {}),
+        });
+        serverSettlements.set(round.id, result);
       }
     }
 
-    // Triggers background sync outbox process immediately if online
-    state.syncManager.syncOutbox();
+    await db.transaction('rw', [db.sales, db.payments, db.audit_log, db.customers, db.tabs], async () => {
+      // A tender that is itself a receivable - proforma or credit - settles
+      // nothing. The order stays owed under the row it already has, and
+      // stamping that row would show it paid with nothing having paid it.
+      if (!isReceivable(this.selectedPaymentMethod)) {
+        for (const roundId of settling) {
+          const settled = serverSettlements.get(roundId);
+          if (settled) {
+            for (const row of await db.payments.where('sale_id').equals(roundId).toArray()) {
+              if (isReceivable(row.method) && !row.settled_at) await db.payments.update(row.id, { settled_at: settledAt, settled_method: this.selectedPaymentMethod, settled_reference: settled.reference });
+            }
+            await db.payments.put({ ...paymentRecord, id: settled.paymentId, sale_id: roundId, method: String(settled.method).toUpperCase(),
+              amount: settled.settledMinor / 100, reference: settled.reference || '', verified: settled.verified ? 1 : 0 });
+            continue;
+          }
+          for (const row of await db.payments.where('sale_id').equals(roundId).toArray()) {
+            if (!isReceivable(row.method) || row.settled_at) continue;
+            await db.payments.update(row.id, {
+              settled_at: settledAt,
+              settled_method: this.selectedPaymentMethod,
+              settled_reference: paymentRecord.reference || null
+            });
+            // Each round carries the tender that cleared it, for its own
+            // amount, so the rounds still sum to the money actually taken.
+            if (roundId !== saleId) {
+              await db.payments.add({
+                ...paymentRecord,
+                id: crypto.randomUUID(),
+                sale_id: roundId,
+                amount: Number(row.amount)
+              });
+            }
+          }
+        }
+        // Only when this payment had a cart of its own behind it.
+        if (saleId && !serverSettlements.has(saleId)) for (const record of paymentRecords) await db.payments.add(record);
+      }
 
-    document.getElementById('payment-modal').classList.remove('active');
-    this.openPrintedReceipt(saleRecord, paymentRecord);
+      // Settled, so the lease is released and the round transmits once, paid.
+      for (const roundId of settling) {
+        await db.sales.update(roundId, { status: 'COMPLETED', held_until: null });
+      }
+
+      if (this.selectedCustomer && this.selectedCustomer.id !== WALK_IN_CUSTOMER_ID) {
+        const customer = await db.customers.get(this.selectedCustomer.id);
+        if (customer) {
+          const updates = {};
+          if (isReceivable(this.selectedPaymentMethod)) {
+            updates.credit_balance = (customer.credit_balance || 0) + this.totals.total;
+          }
+          const pointsEarned = Math.floor(this.totals.total / 100);
+          updates.loyalty_points = Math.max(0, (customer.loyalty_points || 0) + pointsEarned - (this.redeemedPoints || 0));
+          await db.customers.update(customer.id, updates);
+          this.selectedCustomer.credit_balance = updates.credit_balance !== undefined
+            ? updates.credit_balance
+            : customer.credit_balance;
+          this.selectedCustomer.loyalty_points = updates.loyalty_points;
+        }
+      }
+
+      // Paying the last round is what closes the tab, which is what lets the
+      // next customer at that table start a bill of their own.
+
+      await logAuditEvent(
+        state.currentTenant.id,
+        state.currentUser.id,
+        'SALE_CHECKOUT',
+        'SALE',
+        saleId || settling[settling.length - 1] || null
+      );
+    });
+
+    const settledTable = this.activeTable;
+    const freedTable = this.activeTabId && !isReceivable(this.selectedPaymentMethod)
+      ? await freeSettledTab(this.activeTabId) : null;
+    this.pendingSale = null;
+    if (freedTable) this.clearActiveTab();
+
+    // A tab settled from an empty cart has no order of its own, so the receipt
+    // shows the last round that was paid.
+    const printed = saleRecord || await db.sales.get(settling[settling.length - 1]);
+    this.completeRegisteredOrder({
+      saleRecord: { ...printed, status: 'COMPLETED' },
+      paymentRecord,
+      settledRoundIds: settling
+    });
+    if (settledTable && settling.length > 1) {
+      showNotification(`Table ${settledTable} settled — ${settling.length} rounds closed.`, 'success');
+    }
+    return true;
   }
 
-  async openPrintedReceipt(sale, payment) {
+  /**
+   * Takes back an order registered at Pay Now.
+   *
+   * The stock it depleted is put back and the order is kept as VOIDED rather
+   * than deleted: a mis-tap that moved stock is exactly the thing somebody
+   * will want to find later. Published orders are withdrawn on the server
+   * before their local state is changed.
+   */
+  async voidPendingOrder(reason) {
+    if (!this.pendingSale) return;
+    const { saleId, saleRecord } = this.pendingSale;
+    this.pendingSale = null;
+    this.releaseHeldLease();
+
+    // The order may already have reached the server, where the stock it took
+    // was deducted from balances this device does not own. Withdrawing it
+    // there first means a failure leaves the order standing in both places
+    // rather than voided here and live everywhere else.
+    const synced = (await db.sales.get(saleId))?.synced_at;
+    if (synced) {
+      await voidSale({ saleUuid: saleRecord.sale_uuid, reason });
+      // The stock came back on the server, so the till's copy of the balances
+      // is now one void behind what is actually on the shelf.
+      await pullStock().catch(() => {});
+      if (this.container.isConnected) await this.loadProducts();
+    }
+
+    await db.transaction('rw', [db.sales, db.payments, db.stock_movements, db.audit_log], async () => {
+      await db.sales.update(saleId, { status: 'VOIDED', voided_at: new Date().toISOString() });
+      for (const row of await db.payments.where('sale_id').equals(saleId).toArray()) {
+        await db.payments.delete(row.id);
+      }
+      // Reversed rather than deleted, so the movement ledger still shows what
+      // happened and stock arrives back at the same number it left.
+      for (const movement of await db.stock_movements.where('ref_id').equals(saleId).toArray()) {
+        if (movement.type !== 'SALE') continue;
+        await db.stock_movements.add({
+          ...movement,
+          id: crypto.randomUUID(),
+          type: 'SALE_VOID',
+          qty: -movement.qty,
+          reason: `Voided: ${reason}`,
+          created_by: state.currentUser.id,
+          created_at: new Date().toISOString()
+        });
+      }
+      await logAuditEvent(
+        state.currentTenant.id,
+        state.currentUser.id,
+        'SALE_VOIDED',
+        'SALE',
+        saleId,
+        null,
+        JSON.stringify({ reason })
+      );
+    });
+  }
+
+  async openPrintedReceipt(sale, payment, settledRoundIds) {
     const selectCustomerName = this.selectedCustomer.name;
-    const lines = await db.sale_lines.where('sale_id').equals(sale.id).toArray();
+    // A tab is billed as one document: every round the payment just cleared,
+    // under the tab's order number, because the table asked for their bill and
+    // not for four of them.
+    const lines = settledRoundIds?.length
+      ? await db.sale_lines.where('sale_id').anyOf(settledRoundIds).toArray()
+      : await db.sale_lines.where('sale_id').equals(sale.id).toArray();
+    const tab = sale.tab_id ? await db.tabs.get(sale.tab_id) : null;
     
     // Load products names mapping
     const productsList = await db.products.toArray();
@@ -1733,23 +3108,34 @@ export class TillView {
       kraPin: state.currentTenant.kra_pin,
       branchCode: state.currentBranch.etims_bhf_id,
       phone: state.currentTenant.phone,
-      invoiceNo: sale.invoice_no,
+      // The table's bill is known by the tab's order number; the round's own
+      // invoice number is the fiscal document behind it.
+      invoiceNo: tab?.order_no || sale.invoice_no,
+      fiscalInvoiceNo: tab ? sale.invoice_no : null,
       soldAt: new Date(sale.sold_at).toLocaleString(),
       cashierName: state.currentUser.name,
       customerName: selectCustomerName,
+      // The runner at the counter matches paper to a table, not to an invoice
+      // number, so the table travels with the job and is searchable there.
+      tableNo: sale.table_no || null,
       buyerPin: sale.buyer_pin || null,
       lines: lines.map((line) => ({
-        name: prodMap.get(line.product_id)?.name || 'Unknown Item',
+        name: line.product_name || prodMap.get(line.product_id)?.name || 'Unknown Item',
         qty: line.qty,
         unitPrice: line.unit_price,
         lineTotal: line.line_total,
         taxCode: line.tax_code
       })),
-      subtotal: sale.subtotal,
-      taxTotal: sale.tax_total,
-      grandTotal: sale.grand_total,
+      // A tab's bill totals every round it just settled, not the last one.
+      // An ordinary sale keeps its own recorded figures untouched.
+      ...(settledRoundIds?.length > 1
+        ? { subtotal: this.totals.subtotal, taxTotal: this.totals.tax, grandTotal: this.totals.total }
+        : { subtotal: sale.subtotal, taxTotal: sale.tax_total, grandTotal: sale.grand_total }),
       paymentMethod: payment.method,
       paymentReference: payment.reference || null,
+      // A proforma is a demand for money, not proof of it. The paper has to
+      // say so, or it gets filed as a paid receipt at both ends.
+      unpaid: isReceivable(payment.method),
       fiscal: hasFiscal
         ? {
             cuSerial: fiscal.cu_serial,
@@ -1759,92 +3145,13 @@ export class TillView {
         : null
     };
 
-    paperView.innerHTML = `
-      <div class="receipt-header">
-        <h2>${state.currentTenant.trading_name || ''}</h2>
-        ${state.currentBranch.name ? `<p>${state.currentBranch.name}</p>` : ''}
-        ${state.currentTenant.kra_pin ? `<p>PIN: ${state.currentTenant.kra_pin}</p>` : ''}
-        ${state.currentBranch.etims_bhf_id ? `<p>Branch ID: ${state.currentBranch.etims_bhf_id}</p>` : ''}
-        ${state.currentTenant.phone ? `<p>Tel: ${state.currentTenant.phone}</p>` : ''}
-      </div>
-      <div class="receipt-divider"></div>
-      <div style="font-size:13px; margin-bottom: 8px;">
-        <div><b>Invoice:</b> ${sale.invoice_no}</div>
-        <div><b>Date:</b> ${new Date(sale.sold_at).toLocaleString()}</div>
-        <div><b>Waiter/Waitress:</b> ${state.currentUser.name}</div>
-        <div><b>Customer:</b> ${selectCustomerName}</div>
-        ${sale.buyer_pin ? `<div><b>Buyer PIN:</b> ${sale.buyer_pin}</div>` : ''}
-      </div>
-      <div class="receipt-divider"></div>
-      <div class="receipt-items">
-        ${lines.map(line => {
-          const prod = prodMap.get(line.product_id);
-          return `
-            <div class="receipt-item-details">
-              <div class="receipt-item-row">
-                <span>${prod ? prod.name : 'Unknown Item'}</span>
-                <span>${line.line_total.toFixed(2)}</span>
-              </div>
-              <div style="font-size:12px; color:#555;">
-                ${line.qty} x ${line.unit_price.toFixed(2)} (Tax: ${line.tax_code})
-              </div>
-            </div>
-          `;
-        }).join('')}
-      </div>
-      <div class="receipt-divider"></div>
-      <div class="receipt-totals-row">
-        <span>Subtotal</span>
-        <span>${sale.subtotal.toFixed(2)}</span>
-      </div>
-      <div class="receipt-totals-row">
-        <span>VAT Tax</span>
-        <span>${sale.tax_total.toFixed(2)}</span>
-      </div>
-      <div class="receipt-totals-row" style="font-size:13px;">
-        <span>TOTAL DUE</span>
-        <span>KES ${sale.grand_total.toFixed(2)}</span>
-      </div>
-      <div class="receipt-divider"></div>
-      <div style="font-size:13px; margin-bottom: 8px;">
-        <div><b>Settlement:</b> ${payment.method}</div>
-        ${payment.reference ? `<div><b>Ref:</b> ${payment.reference}</div>` : ''}
-      </div>
-      <div class="receipt-divider"></div>
-      
-      <!-- eTIMS block -->
-      <div class="receipt-header" style="font-size:12px;">
-        <p><b>*** KRA eTIMS FISCAL RECORD ***</b></p>
-        ${hasFiscal ? `
-          <p>CU Serial: ${fiscal.cu_serial}</p>
-          <p style="word-break: break-all;">Signature: ${fiscal.receipt_signature}</p>
-          <p>Invoice No: ${fiscal.cu_invoice_no}</p>
-          <div class="receipt-qr-container">
-            <div class="receipt-qr-mock">
-              [ SCAN TO VERIFY KRA ]
-            </div>
-            <p style="font-size:8px; color:#555;">Verification QR Code</p>
-          </div>
-        ` : `
-          <p style="color:#e11d48;font-weight:bold;">AWAITING FISCAL SIGNATURE</p>
-          <p>Invoice queued offline and will transmit on link reconnection.</p>
-        `}
-      </div>
-      <div class="receipt-divider"></div>
-      <div class="receipt-header" style="font-size:12px; margin-top:8px;">
-        <p>Thank you for shopping with us!</p>
-        <p>Powered by KPOS Pro Systems</p>
-      </div>
-    `;
+    // The receipt on screen is rendered by the same function the print
+    // station uses, so what the cashier reads is exactly what comes out of
+    // the printer. A second copy of this layout here had already drifted:
+    // different labels, an eTIMS block the paper never carried.
+    paperView.innerHTML = renderReceiptHtml(this.lastReceiptPayload);
 
     document.getElementById('receipt-modal').classList.add('active');
-
-    // The server decremented the House when it took the sale, but the till
-    // reads a local copy of those balances. Without this refresh the on-hand
-    // figures sit frozen at whatever they were when the app booted.
-    void pullStock()
-      .then(() => this.loadProducts())
-      .catch(() => {});
   }
 
   /**
@@ -1890,6 +3197,8 @@ export class TillView {
   }
 
   clearCart() {
+    if (this.recoveredPaymentAttempt && !window.confirm('This restored draft has an earlier M-Pesa attempt. Check Financials first so the customer is not charged twice. Clear this draft only after reconciling that payment. Continue?')) return;
+    this.recoveredPaymentAttempt = null;
     this.invalidateMpesaAttempt({ preservePricing: true });
     this.cart = [];
     this.selectedPaymentMethod = 'CASH';
@@ -1902,15 +3211,18 @@ export class TillView {
       return;
     }
     
+    const paymentAttemptKey = this.recoveredPaymentAttempt || this.mpesaAttempt?.idempotencyKey || null;
     this.invalidateMpesaAttempt();
     this.parkedCarts.push({
       id: crypto.randomUUID(),
+      paymentAttemptKey,
       cart: [...this.cart],
       customer: this.selectedCustomer,
       timestamp: new Date().getTime()
     });
 
     this.cart = [];
+    this.recoveredPaymentAttempt = null;
     showNotification('Current cart suspended/parked successfully.', 'success');
     
     document.getElementById('parked-count').innerText = this.parkedCarts.length;
@@ -1918,6 +3230,10 @@ export class TillView {
   }
 
   resumeParkedCart() {
+    if (this.cart.length) {
+      showNotification('Save or park the current cart before restoring another one.', 'warning');
+      return;
+    }
     if (this.parkedCarts.length === 0) {
       showNotification('No parked carts found.', 'error');
       return;
@@ -1925,6 +3241,7 @@ export class TillView {
 
     this.invalidateMpesaAttempt();
     const resumed = this.parkedCarts.pop();
+    this.recoveredPaymentAttempt = resumed.paymentAttemptKey || null;
     this.cart = resumed.cart;
     this.selectedCustomer = resumed.customer;
 

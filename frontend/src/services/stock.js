@@ -1,3 +1,4 @@
+import { tenantStorage } from './tenant-cache.js';
 import { getFirebase, currentClaims, callFunction } from './firebase';
 import { db } from '../db/schema';
 
@@ -6,7 +7,7 @@ import { db } from '../db/schema';
  * Cached locally so navigation can hide the Store screen before the network
  * answers, and refreshed by pullStock.
  */
-export const storeIsEnabled = () => localStorage.getItem('pos_store_enabled') !== 'false';
+export const storeIsEnabled = () => tenantStorage.getItem('pos_store_enabled') !== 'false';
 export const stockLocations = () => storeIsEnabled() ? ['STORE', 'HOUSE'] : ['HOUSE'];
 
 /** Where a delivery may be booked. With a Store, that is the only door. */
@@ -23,7 +24,7 @@ export async function pullStock() {
   // Mirrors the server's fallback: a tenant never migrated off the old
   // three-way mode keeps whatever Store it already had.
   const enabled = typeof data.storeEnabled === 'boolean' ? data.storeEnabled : data.stockMode !== 'house_only';
-  localStorage.setItem('pos_store_enabled', String(enabled));
+  tenantStorage.setItem('pos_store_enabled', String(enabled));
   await db.transaction('rw', db.stock_balances, async () => {
     await db.stock_balances.clear();
     await db.stock_balances.bulkPut(balances.docs.map((doc) => ({ ...doc.data(), id: doc.id })));

@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { canViewTab, groupForTab, NAV_GROUPS } from "@/navigation";
-import { showNotification } from "@/context";
+import { showNotification, state } from "@/context";
 
 import { usePosSession } from "./pos-session";
 
@@ -21,6 +21,7 @@ function initials(name: string) {
 export function Sidebar() {
   const [, refreshStockPolicy] = useState(0);
   useEffect(() => { const refresh = () => refreshStockPolicy((n) => n + 1); window.addEventListener('stock-policy-changed', refresh); return () => window.removeEventListener('stock-policy-changed', refresh); }, []);
+  useEffect(() => { const refresh = () => refreshStockPolicy(n => n + 1); window.addEventListener('tenant-identity-changed', refresh); return () => window.removeEventListener('tenant-identity-changed', refresh); }, []);
   const pathname = usePathname();
   const { user, queueCount, online, setOnline, signOut } = usePosSession();
   const activeTab = pathname.split("/").filter(Boolean)[0] ?? "";
@@ -36,7 +37,9 @@ export function Sidebar() {
   return (
     <aside className="app-sidebar">
       <div className="sidebar-logo" style={{ padding: "10px 0", display: "flex", justifyContent: "center", alignItems: "center" }}>
-        <img src="/logo.png" alt="Titanium Logo" style={{ height: 38, objectFit: "contain" }} />
+        {state.currentTenant?.logo_url || state.currentTenant?.id === 'tenant-01'
+          ? <img src={state.currentTenant?.logo_url || '/logo.png'} alt={`${state.currentTenant?.trading_name || 'Titanium'} logo`} style={{ height: 38, maxWidth: 180, objectFit: "contain" }} />
+          : <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, textAlign: 'center', overflowWrap: 'anywhere' }}>{state.currentTenant?.trading_name || 'Your business'}</span>}
       </div>
 
       <div className="sidebar-status-row">

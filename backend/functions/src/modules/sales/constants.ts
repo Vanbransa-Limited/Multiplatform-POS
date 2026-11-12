@@ -2,14 +2,15 @@ export const MAX_DISTINCT_LINES = 50;
 export const MAX_PAYMENTS = 5;
 export const MAX_QTY_PER_LINE = 10_000;
 
-// A supervisor runs the floor and covers the till when it is busy, so they
-// sell alongside cashiers. Discounting stays with the owner and manager below.
+// Every staff role can sell and use the standard staff preset. Custom
+// checkout discounts require an owner, manager or provider authorization.
 export const SELLING_ROLES = new Set([
   "owner",
   "store_manager",
   "supervisor",
   "cashier",
   "bar_staff",
+  "store_keeper",
 ]);
 
 export const DISCOUNT_ROLES = new Set(["owner", "store_manager"]);
@@ -24,16 +25,33 @@ export const PAYMENT_METHODS = new Set([
 ]);
 
 /**
- * Methods settled by an outside provider, which must therefore present a
- * verified payment_intents document before a sale can consume them.
+ * Methods this system can actually verify against a provider.
  *
- * Cash is settled at the drawer and credit is a receivable on the books, so
- * neither has a provider reference to verify. dependencies.ts and records.ts
- * both walk the intent documents positionally, so they have to agree on this
- * predicate exactly - it lives here rather than being spelled out twice.
+ * A verified payment_intents document only exists where there is an
+ * integration to produce one, and M-Pesa is the only one there is: the
+ * mpesa module is the sole writer of that collection.
+ *
+ * This used to be written as "anything but cash and credit", which quietly
+ * demanded provider proof for tenders no provider ever touches. A bank
+ * transfer is a reference read off a statement and a card payment is a slip
+ * from the terminal - both typed in by a person, with nothing on this side
+ * able to check them. So every one was refused with "not verified or was
+ * already consumed", and the money stayed on the till that took it.
+ *
+ * Recording them is an act of trust, and it is the only record obtainable;
+ * `verified` on the settlement says which kind of record it is, and
+ * Financials shows bank and card references as unverified for that reason.
+ *
+ * dependencies.ts and records.ts both walk the intent documents positionally,
+ * so they have to agree on this predicate exactly - it lives here rather than
+ * being spelled out twice.
  */
-export function needsProviderIntent(method: string): boolean {
-  return method !== "cash" && method !== "credit";
+const PROVIDER_VERIFIED_METHODS = new Set(["mpesa"]);
+
+export function needsProviderIntent(method: string, unverified = false): boolean {
+  // An M-Pesa code typed when a tab was settled is recorded on the cashier's
+  // word, exactly as settleSale records one it cannot match.
+  return PROVIDER_VERIFIED_METHODS.has(method) && !unverified;
 }
 
 export const TAX_BASIS_POINTS = {

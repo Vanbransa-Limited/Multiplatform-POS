@@ -10,6 +10,7 @@
  * this screen.
  */
 
+import { downloadCsvTemplate } from './csv.js';
 import { roleLabel } from './roles.js';
 
 /** Firestore's staff document -> the row shape the user screen reads. */
@@ -31,19 +32,33 @@ export function toLocalUser(doc) {
  * Returns the number of people written, or null when there is no backend.
  */
 export async function pullStaff() {
-  const { getFirebase, TENANT_ID } = await import('./firebase.js');
+  const { getFirebase, currentClaims } = await import('./firebase.js');
+  const TENANT_ID = (await currentClaims())?.tenant_id;
   const fb = await getFirebase();
   if (!fb || !TENANT_ID) return null;
 
-  const snapshot = await fb.firestore.getDocs(
-    fb.firestore.query(
-      fb.firestore.collection(fb.dbInstance, 'staff'),
-      fb.firestore.where('tenantId', '==', TENANT_ID)
-    )
-  );
+  const { db } = await import('../db/schema');
+  let snapshot;
+  try {
+    snapshot = await fb.firestore.getDocs(
+      fb.firestore.query(
+        fb.firestore.collection(fb.dbInstance, 'staff'),
+        fb.firestore.where('tenantId', '==', TENANT_ID)
+      )
+    );
+  } catch {
+    // Not a manager: the roster is closed, but "billed by" still needs names.
+    // Only ids missing here are added, so a full row is never overwritten.
+    const { callFunction } = await import('./firebase.js');
+    const { staff = [] } = (await callFunction('listStaffNames', {})) || {};
+    const known = new Set((await db.users.toArray()).map((row) => row.id));
+    const missing = staff.filter((row) => !known.has(row.id))
+      .map((row) => ({ id: row.id, tenant_id: TENANT_ID, name: row.name, status: 'NAME_ONLY' }));
+    if (missing.length) await db.users.bulkPut(missing);
+    return staff.length;
+  }
 
   const users = snapshot.docs.map((entry) => toLocalUser({ id: entry.id, ...entry.data() }));
-  const { db } = await import('../db/schema');
   // bulkPut so a re-pull updates roles in place and overwrites seeded rows with
   // the authoritative copy, rather than duplicating either.
   if (users.length) await db.users.bulkPut(users);
@@ -60,10 +75,5 @@ export const STAFF_TEMPLATE_CSV = [
 
 /** Hands the operator a file to fill in. */
 export function downloadStaffTemplate(filename = 'staff-import-template.csv') {
-  const url = URL.createObjectURL(new Blob([STAFF_TEMPLATE_CSV], { type: 'text/csv' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
+  downloadCsvTemplate(STAFF_TEMPLATE_CSV, filename);
 }

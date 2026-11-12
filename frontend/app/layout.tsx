@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 import "@/ui/styles.css";
+import "@/ui/mobile.css";
+import "../public/select-control.css";
+import { SelectControls } from "@/components/select-controls";
 
 export const metadata: Metadata = {
   title: "KPOS Pro — KRA eTIMS Multi-Platform POS",
@@ -20,6 +23,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         />
       </head>
       <body className="dark-mode">
+        <SelectControls />
         <div id="app-container">{children}</div>
       </body>
     </html>

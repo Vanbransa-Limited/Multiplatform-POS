@@ -11,6 +11,8 @@ import { db } from './db/schema';
 import { seedDatabase, getStockOnHand } from './db/index';
 import { SyncManager } from './services/sync';
 import { state, showNotification } from './context';
+import { firebaseConfigured } from './services/firebase';
+import { selectCacheTenant, selectedCacheTenant, cacheName, tenantStorage, LEGACY_TENANT_ID } from './services/tenant-cache.js';
 
 // Product imagery is repaired on every boot because earlier builds seeded
 // records without it.
@@ -64,6 +66,15 @@ export function bootPos(onSyncStatus) {
 async function runBoot(onSyncStatus) {
   ensureCryptoUuid();
 
+  if (firebaseConfigured) {
+    const { restoreSession } = await import('./services/firebase.js');
+    const restored = await restoreSession();
+    if (restored) selectCacheTenant(restored.tenantId);
+    if (restored && db.name !== cacheName(restored.tenantId)) {
+      window.location.reload();
+      return new Promise(() => {});
+    }
+  }
   await db.open();
   await seedDatabase();
 
@@ -73,8 +84,9 @@ async function runBoot(onSyncStatus) {
   const branches = await db.branches.toArray();
   state.currentBranch = branches[0] || null; // Nairobi CBD default
 
-  try {
+  if (selectedCacheTenant() === LEGACY_TENANT_ID) try {
     const products = await db.products.toArray();
+    const changedProducts = [];
     for (const product of products) {
       let changed = false;
       const lowerName = (product.name || '').toLowerCase();
@@ -108,9 +120,10 @@ async function runBoot(onSyncStatus) {
         changed = true;
       }
       if (changed) {
-        await db.products.put(product);
+        changedProducts.push(product);
       }
     }
+    if (changedProducts.length) await db.products.bulkPut(changedProducts);
 
     // Ensure staff discount product exists if missing
     const hasStaffDiscount = products.some(p => p.id === 'prod-staff-discount');
@@ -160,7 +173,19 @@ export async function signInStaff(email, password) {
   if (!firebaseConfigured) {
     throw new Error('This till has no backend configured, so nobody can sign in.');
   }
-  return signIn(email, password);
+  const user = await signIn(email, password);
+  if (user.platformAdmin) {
+    state.syncManager?.stopSyncScheduler();
+    window.location.replace('/platform/');
+    return new Promise(() => {});
+  }
+  selectCacheTenant(user.tenantId);
+  if (db.name !== cacheName(user.tenantId)) {
+    state.syncManager?.stopSyncScheduler();
+    window.location.reload();
+    return new Promise(() => {});
+  }
+  return user;
 }
 
 /** Returns the already signed-in staff member on reload, or null. */
@@ -200,6 +225,22 @@ export async function establishCloudSession() {
     if (branchId) {
       const cloudShift = await openShift(branchId);
       state.cloudShiftId = cloudShift?.shiftId || null;
+      // The backend shift is the one createSale accepts, while the Till and
+      // Shift screens also read Dexie. Mirror the trusted shift locally so a
+      // closed row from yesterday cannot make today's valid session look shut.
+      if (state.cloudShiftId && state.currentUser?.id) {
+        const existing = await db.shifts.get(state.cloudShiftId);
+        await db.shifts.put({
+          ...existing,
+          id: state.cloudShiftId,
+          branch_id: branchId,
+          user_id: state.currentUser.id,
+          opening_float: Number(cloudShift?.openingFloatMinor || 0) / 100,
+          status: 'OPEN',
+          opened_at: existing?.opened_at || cloudShift?.openedAt || new Date().toISOString(),
+          closed_at: null,
+        });
+      }
     }
     if (state.syncManager) state.syncManager.syncOutbox();
   } catch (err) {
@@ -236,15 +277,25 @@ export async function endCloudSession() {
 /** Background low-stock sweep run shortly after unlock. */
 export async function reportStockAlerts() {
   try {
-    const threshold = parseInt(localStorage.getItem('pos_alert_threshold') || '10');
+    const threshold = parseInt(tenantStorage.getItem('pos_alert_threshold') || '10');
     const products = await db.products.where('is_active').equals(1).toArray();
     const branchId = state.currentBranch ? state.currentBranch.id : 1;
+    // One branch read replaces a separate IndexedDB transaction for every item.
+    const houseStock = firebaseConfigured ? new Map() : null;
+    if (houseStock) {
+      const balances = await db.stock_balances.where('branchId').equals(branchId).toArray();
+      for (const balance of balances) {
+        if (balance.location !== 'HOUSE') continue;
+        const id = String(balance.productId);
+        houseStock.set(id, (houseStock.get(id) || 0) + Number(balance.qty || 0) - Number(balance.reservedQty || 0));
+      }
+    }
 
     let critical = 0;
     let low = 0;
     for (const product of products) {
       if (product.is_service) continue;
-      const stock = await getStockOnHand(product.id, branchId);
+      const stock = houseStock ? (houseStock.get(String(product.id)) || 0) : await getStockOnHand(product.id, branchId, 'HOUSE');
       if (stock <= 0) critical++;
       else if (stock <= threshold) low++;
     }

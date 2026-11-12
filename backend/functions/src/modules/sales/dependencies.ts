@@ -25,15 +25,15 @@ export async function loadSaleDependencies(
   settings: Record<string, unknown> = {},
 ): Promise<SaleDependencies> {
   const location = sellingLocation();
-  const physicalLines = preparedLines.filter((line) => !line.isService);
-  const balanceRefs = physicalLines.map((line) =>
+  const candidateLines = preparedLines.filter((line) => !line.isService);
+  const candidateRefs = candidateLines.map((line) =>
     db.collection("stock_balances").doc(
       stockBalanceId(input.branchId, line.productId, location),
     ),
   );
 
   const digitalPayments = input.payments.filter(
-    (payment) => needsProviderIntent(payment.method),
+    (payment) => needsProviderIntent(payment.method, payment.unverified),
   );
   for (const payment of digitalPayments) {
     if (!payment.reference) {
@@ -49,39 +49,33 @@ export async function loadSaleDependencies(
     ),
   );
 
-  const dependencyRefs = [...balanceRefs, ...paymentIntentRefs];
+  const dependencyRefs = [...candidateRefs, ...paymentIntentRefs];
   const dependencyDocuments = dependencyRefs.length
     ? await transaction.getAll(...dependencyRefs)
     : [];
-  const balanceDocuments = dependencyDocuments.slice(0, balanceRefs.length);
-  const paymentIntentDocuments = dependencyDocuments.slice(balanceRefs.length);
+  const candidateDocuments = dependencyDocuments.slice(0, candidateRefs.length);
+  const paymentIntentDocuments = dependencyDocuments.slice(candidateRefs.length);
 
-  const updatedBalances = balanceDocuments.map((snapshot, index) => {
-    const line = physicalLines[index];
+  // The till has already sold this and taken the money, so stock never refuses
+  // it: refusing stranded the sale on the device, out of Orders and Financials.
+  // An item with no balance is not counted and moves nothing; a counted item is
+  // deducted even past zero, so the shortfall shows up on the stock screens.
+  const counted = candidateDocuments.flatMap((snapshot, index) => {
+    const line = candidateLines[index];
     const balance = snapshot.data() ?? {};
-    if (
-      !snapshot.exists
-      || balance.tenantId !== input.tenantId
-      || balance.branchId !== input.branchId
-      || balance.productId !== line.productId
-      || balance.location !== location
-    ) {
-      throw new HttpsError(
-        "failed-precondition",
-        `A valid ${location} balance is missing for ${line.productName}.`,
-      );
-    }
-    if (
-      typeof balance.qty !== "number"
-      || !Number.isSafeInteger(balance.qty)
-      || balance.qty - Number(balance.reservedQty || 0) < line.qty
-    ) {
-      throw new HttpsError(
-        "failed-precondition",
-        `Insufficient ${location.toLowerCase()} stock for ${line.productName}.`,
-      );
-    }
+    return snapshot.exists
+      && balance.tenantId === input.tenantId
+      && balance.branchId === input.branchId
+      && balance.productId === line.productId
+      && balance.location === location
+      && Number.isSafeInteger(balance.qty)
+      ? [{ line, balance, snapshot, ref: candidateRefs[index] }]
+      : [];
+  });
+  const physicalLines = counted.map((entry) => entry.line);
+  const balanceRefs = counted.map((entry) => entry.ref);
 
+  const updatedBalances = counted.map(({ line, balance, snapshot }) => {
     return {
       id: snapshot.id,
       tenantId: input.tenantId,

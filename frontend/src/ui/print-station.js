@@ -42,13 +42,15 @@ export class PrintStationView {
     this.claimed = new Set();
     this.attempts = new Map();
     this.events = [];
+    this.search = '';
+    this.disposed = false;
     this.onVisible = () => {
-      if (this.running && document.visibilityState === 'visible') {
-        void this.beat();
-        // A backgrounded tab may have had its listener dropped and its retry
-        // timer throttled; coming back to the foreground rechecks both.
-        if (!this.unsubscribe) this.connect();
-      }
+      if (document.visibilityState !== 'visible' || this.disposed) return;
+      if (this.running) void this.beat();
+      // A backgrounded tab may have had its listener dropped and its retry
+      // timer throttled; coming back to the foreground rechecks both. The
+      // queue is watched whether or not this station is printing.
+      if (!this.unsubscribe) void this.connect();
     };
   }
 
@@ -83,10 +85,18 @@ export class PrintStationView {
 
       <div class="card" style="padding:16px; margin-bottom:16px;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
-          <h3 style="margin:0; font-size:13px;">Waiting</h3>
+          <h3 style="margin:0; font-size:13px;">Waiting <span id="station-waiting-count" class="muted"></span></h3>
           <button type="button" class="co-print" id="station-test">Test print</button>
         </div>
-        <div id="station-queue" class="muted" style="font-size:12px;">Station stopped.</div>
+        <p class="muted" style="font-size:11px;margin:0 0 8px;">
+          Every receipt this branch queues lands here, whoever sent it and from whatever device.
+        </p>
+        <!-- One queue for the whole branch means finding one order in it needs
+             a search, not a scroll: the runner knows the table, not the job id. -->
+        <div class="co-toolbar" style="padding:0 0 12px;">
+          <input id="station-search" class="co-search" type="search" placeholder="Search invoice, order, table, customer, item or who sent it…" aria-label="Search queued print jobs">
+        </div>
+        <div id="station-queue" class="muted" style="font-size:12px;">Connecting to the queue…</div>
       </div>
 
       <!-- Every step is recorded here. Without it a station that prints nothing
@@ -142,8 +152,18 @@ export class PrintStationView {
       }
     });
 
+    this.container.querySelector('#station-search').addEventListener('input', (event) => {
+      this.search = event.target.value;
+      this.renderQueue();
+    });
+
     document.addEventListener('visibilitychange', this.onVisible);
     this.log(`Station opened. Branch: ${state.currentBranch?.name || 'none selected'}.`);
+
+    // Watching is not printing. The queue is listed as soon as this screen
+    // opens so somebody can walk up to the counter machine and print what is
+    // waiting; starting the station is what makes it print by itself.
+    await this.connect();
   }
 
   /** Timestamped record of what the station actually did. */
@@ -155,11 +175,6 @@ export class PrintStationView {
       panel.textContent = this.events.slice(-40).join('\n');
       panel.scrollTop = panel.scrollHeight;
     }
-  }
-
-  dispose() {
-    this.stop();
-    document.removeEventListener('visibilitychange', this.onVisible);
   }
 
   say(text) {
@@ -216,7 +231,7 @@ export class PrintStationView {
    * as a notification and nothing else is what left the station deaf.
    */
   async connect() {
-    if (!this.running) return;
+    if (this.disposed || !this.branchId) return;
     clearTimeout(this.retry);
     this.retry = null;
 
@@ -228,7 +243,7 @@ export class PrintStationView {
           this.log(`Queue update: ${jobs.length} job(s) waiting.`);
           this.pending = jobs;
           this.renderQueue();
-          this.say('Running');
+          if (this.running) this.say('Running');
           void this.drain();
         },
         (error) => this.reconnect(`queue listener error: ${error?.code || ''} ${error?.message || error}`.trim()),
@@ -243,51 +258,117 @@ export class PrintStationView {
       return;
     }
     this.log('Queue listener attached.');
-    this.say('Running');
+    if (this.running) this.say('Running');
   }
 
   reconnect(why) {
-    if (!this.running) return;
+    if (this.disposed) return;
     if (this.unsubscribe) { this.unsubscribe(); this.unsubscribe = null; }
     const wait = RETRY_MS[Math.min(this.retries, RETRY_MS.length - 1)];
     this.retries += 1;
     this.log(`Reconnecting in ${wait / 1000}s — ${why}`);
-    this.say(`Reconnecting… (${why})`);
+    if (this.running) this.say(`Reconnecting… (${why})`);
     clearTimeout(this.retry);
     this.retry = setTimeout(() => void this.connect(), wait);
   }
 
+  /**
+   * Stops printing. The queue listener stays attached, because the list of
+   * what is waiting is the reason somebody walks over to this machine.
+   */
   stop() {
     this.running = false;
-    if (this.unsubscribe) this.unsubscribe();
-    this.unsubscribe = null;
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = null;
-    clearTimeout(this.retry);
-    this.retry = null;
 
-    this.log('Station stopped.');
+    this.log('Station stopped. Still listing the queue; nothing prints by itself.');
     this.say('Stopped');
     const toggle = this.container.querySelector('#station-toggle');
     if (toggle) toggle.textContent = 'Start station';
-    const queue = this.container.querySelector('#station-queue');
-    if (queue) queue.textContent = 'Station stopped. Queued receipts still list here and can be printed by hand.';
     this.renderQueue();
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.stop();
+    if (this.unsubscribe) this.unsubscribe();
+    this.unsubscribe = null;
+    clearTimeout(this.retry);
+    this.retry = null;
+    document.removeEventListener('visibilitychange', this.onVisible);
+  }
+
+  /** What a job is called on paper: an invoice number, or an order reference. */
+  jobTitle(job) {
+    return job.receipt?.invoiceNo || job.receipt?.ref || job.id;
+  }
+
+  /**
+   * Everything about a job somebody might type looking for it.
+   *
+   * A runner holding a table number does not know the invoice, and whoever
+   * queued it is on another device entirely, so all of it is searchable.
+   */
+  jobHaystack(job) {
+    const receipt = job.receipt || {};
+    return [
+      this.jobTitle(job),
+      receipt.customerName,
+      receipt.tableNo,
+      receipt.tableNumber,
+      receipt.cashierName,
+      receipt.paymentMethod,
+      receipt.paymentReference,
+      ...(Array.isArray(receipt.lines) ? receipt.lines.map((line) => line?.name) : []),
+    ].filter(Boolean).join(' ').toLowerCase();
+  }
+
+  /** One line of who and what, so the right paper is picked without opening it. */
+  jobSubtitle(job) {
+    const receipt = job.receipt || {};
+    const when = job.createdAt?.toDate?.();
+    const table = receipt.tableNo || receipt.tableNumber;
+    return [
+      receipt.kind === 'kitchen' ? 'Kitchen ticket' : null,
+      table ? `Table ${table}` : null,
+      receipt.customerName,
+      receipt.grandTotal === undefined ? null : `KES ${Number(receipt.grandTotal).toFixed(2)}`,
+      receipt.unpaid ? 'UNPAID — proforma' : null,
+      receipt.cashierName ? `sent by ${receipt.cashierName}` : null,
+      when ? when.toLocaleTimeString() : null,
+    ].filter(Boolean).join(' · ');
   }
 
   renderQueue() {
     const queue = this.container.querySelector('#station-queue');
     if (!queue) return;
-    if (this.pending.length === 0) {
-      queue.textContent = this.running
-        ? 'Nothing waiting.'
-        : 'Station stopped. Queued receipts still list here and can be printed by hand.';
+
+    const needle = this.search.trim().toLowerCase();
+    const shown = needle
+      ? this.pending.filter((job) => this.jobHaystack(job).includes(needle))
+      : this.pending;
+
+    const count = this.container.querySelector('#station-waiting-count');
+    if (count) {
+      count.textContent = needle && this.pending.length
+        ? `(${shown.length} of ${this.pending.length})`
+        : this.pending.length ? `(${this.pending.length})` : '';
+    }
+
+    if (shown.length === 0) {
+      queue.textContent = this.pending.length
+        ? `Nothing waiting matches “${this.search.trim()}”.`
+        : 'Nothing waiting.';
       return;
     }
-    queue.innerHTML = this.pending.map((job) => {
+
+    queue.innerHTML = shown.map((job) => {
       const failed = (this.attempts.get(job.id) || 0) >= MAX_ATTEMPTS;
       return `<div style="display:flex;align-items:center;gap:10px;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border-color)">
-        <span>${escapeHtml(job.receipt?.invoiceNo || job.receipt?.ref || job.id)}${failed ? ' — failed, needs a hand' : ''}</span>
+        <span>
+          <b>${escapeHtml(this.jobTitle(job))}</b>${failed ? ' — failed, needs a hand' : ''}
+          <span style="display:block;color:var(--text-secondary);font-size:11px;">${escapeHtml(this.jobSubtitle(job))}</span>
+        </span>
         <button type="button" class="co-print" data-print-job="${escapeHtml(job.id)}">Print now</button>
       </div>`;
     }).join('');

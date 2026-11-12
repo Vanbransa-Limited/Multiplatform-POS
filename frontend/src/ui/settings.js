@@ -1,9 +1,20 @@
+import { tenantStorage } from '../services/tenant-cache.js';
 import { db } from '../db/schema';
 import { UsersView } from './users';
 import { verifyAuditTrail } from '../db/index';
 import { state, showNotification } from '../context';
-import { pullPaymentSettings, saveCashEnabled } from '../services/payment-settings';
+import { pullPaymentSettings, saveCashEnabled, pullAcceptedMethods, saveAcceptedMethods, TENDERS } from '../services/payment-settings';
+import { cachedTradingHours, pullTradingHours, saveTradingHours } from '../services/trading-hours';
 import { configureStock, storeIsEnabled, pullStock } from '../services/stock';
+
+/** 00:00 - 23:00 as an hour picker, with the stored hour selected. */
+function hourOptions(selected) {
+  return Array.from({ length: 24 }, (_, hour) => {
+    const suffix = hour < 12 ? 'AM' : 'PM';
+    const shown = hour % 12 === 0 ? 12 : hour % 12;
+    return `<option value="${hour}"${hour === selected ? ' selected' : ''}>${shown}:00 ${suffix}</option>`;
+  }).join('');
+}
 
 export class SettingsView {
   constructor(container) {
@@ -13,21 +24,31 @@ export class SettingsView {
   async load() {
     try { await pullStock(); } catch {}
     try { await pullPaymentSettings(); } catch { showNotification('Could not refresh business payment settings.', 'warning'); }
+    // Falls back to the cached hours rather than blocking the screen; the
+    // financial report applies its own defaults if these were never set.
+    try { this.tradingHours = await pullTradingHours(); } catch { this.tradingHours = cachedTradingHours(); }
+    try { this.acceptedMethods = await pullAcceptedMethods(); } catch { this.acceptedMethods = this.acceptedMethods || []; }
     this.activeTab = this.activeTab || 'general';
     this.render();
     this.bindEvents();
   }
 
   render() {
-    const cashEnabled = localStorage.getItem('pos_cash_enabled') !== 'false';
+    this.usersView?.dispose(); this.usersView = null;
+    const cashEnabled = tenantStorage.getItem('pos_cash_enabled') !== 'false';
     const isOwner = state.currentUser && (state.currentUser.role === 'Owner' || state.currentUser.role === 'Store Manager');
-    const discounts = JSON.parse(localStorage.getItem('pos_discounts') || '[]');
+    const discounts = JSON.parse(tenantStorage.getItem('pos_discounts') || '[]');
+    // The rules refuse these to anyone else, so the control is disabled rather
+    // than offering a save that can only fail.
+    const canSetHours = isOwner;
+    const hours = this.tradingHours || cachedTradingHours();
+    const acceptedMethods = this.acceptedMethods || [];
 
     this.container.innerHTML = `
-      <div style="display:flex;height:calc(100vh - 130px);gap:0;overflow:hidden;">
+      <div class="settings-shell" style="display:flex;height:calc(100vh - 130px);gap:0;overflow:hidden;">
 
         <!-- Left sub-nav -->
-        <div style="width:185px;flex-shrink:0;background:var(--surface);border-right:1px solid rgba(255,255,255,0.07);display:flex;flex-direction:column;padding:12px 8px;gap:4px;">
+        <div class="settings-nav" aria-label="Settings sections" style="width:185px;flex-shrink:0;background:var(--surface);border-right:1px solid rgba(255,255,255,0.07);display:flex;flex-direction:column;padding:12px 8px;gap:4px;">
           <button class="pane-nav-btn ${this.activeTab === 'general' ? 'active' : ''}" data-stab="general">⚙️ General</button>
           <button class="pane-nav-btn ${this.activeTab === 'payments' ? 'active' : ''}" data-stab="payments">💳 Payments</button>
           <button class="pane-nav-btn ${this.activeTab === 'discounts' ? 'active' : ''}" data-stab="discounts">🏷️ Discounts</button>
@@ -37,10 +58,12 @@ export class SettingsView {
         </div>
 
         <!-- Right content -->
-        <div style="flex:1;overflow-y:auto;padding:20px;">
+        <div class="settings-content" style="flex:1;overflow-y:auto;padding:20px;">
           ${this.activeTab === 'general' ? `<section class="discount-section"><h3>Stock locations</h3>
+            <details class="stock-location-help" ${window.matchMedia('(max-width: 1023px)').matches ? '' : 'open'}><summary>How stock locations work</summary>
             <p>Every business has a <b>House</b> — it is what service draws from and what a sale decrements, so it cannot be switched off.</p>
             <p>A <b>Store</b> is an optional back room in front of it. With a Store enabled, every delivery is booked into the Store and the House tops itself up by requesting; the stock moves immediately, with no approval step. Switching the Store off folds everything it holds into the House rather than stranding it.</p>
+            </details>
             <select id="stock-mode" ${state.currentUser?.role === 'Owner' ? '' : 'disabled'}>${[['true','House and Store'],['false','House only']].map(([value,label]) => `<option value="${value}" ${String(storeIsEnabled()) === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
             <button id="save-stock-mode" class="primary-btn" ${state.currentUser?.role === 'Owner' ? '' : 'disabled'}>Save stock locations</button><p id="stock-mode-result" role="status"></p></section>` : ''}
 
@@ -62,14 +85,19 @@ export class SettingsView {
                   <input type="text" value="KES">
                 </div>
                 <div>
-                  <label>Session Start Time</label>
-                  <select>
-                    <option>7:00 AM</option>
-                    <option>8:00 AM</option>
-                    <option>9:00 AM</option>
-                  </select>
+                  <label>Trading day starts</label>
+                  <select id="set-day-start" ${canSetHours ? '' : 'disabled'}>${hourOptions(hours.dayStartHour)}</select>
+                </div>
+                <div>
+                  <label>Night session starts</label>
+                  <select id="set-night-start" ${canSetHours ? '' : 'disabled'}>${hourOptions(hours.nightStartHour)}</select>
                 </div>
               </div>
+              <p style="margin:-6px 0 14px;color:var(--text-secondary);font-size:12px;">
+                A trading day runs from the opening hour to the same hour next morning, so a night that
+                crosses midnight stays on the day it started. The night session is the second half of that day.
+                ${canSetHours ? '' : 'Only the owner or store manager can change these.'}
+              </p>
               <div class="discount-field">
                 <label>Receipt Footer Message</label>
                 <input type="text" value="Thank you for coming to Vanbransa!">
@@ -92,6 +120,28 @@ export class SettingsView {
                 </span>
               </div>
               <p style="font-size:12px;color:var(--text-secondary);margin:-8px 0 20px 0;">Configure accepted payment methods across all Vanbransa checkout tills and online ordering endpoints.</p>
+
+              <!-- A tender that is not enabled here is refused by the server
+                   when the sale syncs, and refused permanently, so the money
+                   stays stranded on the till that took it. -->
+              <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border-color);border-radius:10px;padding:18px;margin-bottom:16px;">
+                <div style="font-weight:800;font-size:15px;color:#fff;">🏦 Other accepted tenders</div>
+                <p style="font-size:12px;color:var(--text-secondary);margin:6px 0 14px;max-width:620px;line-height:1.5;">
+                  A tender switched off here is refused when the sale reaches the server, and refused for good — the sale
+                  stays stuck on the till that took it and never appears in Financials. Switch on everything this business
+                  actually takes.${isOwner ? '' : ' Only the owner or store manager can change these.'}
+                </p>
+                ${TENDERS.map((tender) => `
+                  <label style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px;">
+                    <input type="checkbox" data-tender="${tender.id}" ${acceptedMethods.includes(tender.id) ? 'checked' : ''} ${isOwner ? '' : 'disabled'}>
+                    <span>
+                      <b style="color:#fff;">${tender.label}</b>
+                      <span style="display:block;font-size:11px;color:var(--text-secondary);">${tender.note}</span>
+                    </span>
+                  </label>`).join('')}
+                ${isOwner ? '<button id="save-tenders" class="discount-save-btn" style="margin-top:8px;">Save accepted tenders</button>' : ''}
+                <p id="tenders-result" role="status" style="font-size:12px;color:var(--text-secondary);margin:8px 0 0;"></p>
+              </div>
 
               <!-- Cash Payment Control -->
               <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border-color);border-radius:10px;padding:18px;margin-bottom:16px;">
@@ -279,6 +329,8 @@ export class SettingsView {
     this.usersView.load();
   }
 
+  dispose() { this.usersView?.dispose(); }
+
   bindEvents() {
     const stockButton = this.container.querySelector('#save-stock-mode');
     if (stockButton) stockButton.onclick = async () => {
@@ -306,7 +358,43 @@ export class SettingsView {
         state.currentTenant.trading_name = name;
         await db.tenants.update(state.currentTenant.id, { trading_name: name });
       }
+      // Trading hours decide which day money is booked to, so a failure here
+      // is reported rather than folded into a blanket "saved".
+      const dayEl = document.getElementById('set-day-start');
+      const nightEl = document.getElementById('set-night-start');
+      if (dayEl && nightEl && !dayEl.disabled) {
+        const dayStartHour = Number(dayEl.value);
+        const nightStartHour = Number(nightEl.value);
+        if (dayStartHour !== this.tradingHours?.dayStartHour
+          || nightStartHour !== this.tradingHours?.nightStartHour) {
+          try {
+            this.tradingHours = await saveTradingHours({ dayStartHour, nightStartHour });
+            showNotification('Trading hours saved. Reload Financials to apply them.', 'success');
+          } catch (error) {
+            showNotification(error.message || 'Could not save trading hours.', 'error');
+            return;
+          }
+        }
+      }
       showNotification('General settings saved.', 'success');
+    });
+
+    const saveTenders = document.getElementById('save-tenders');
+    if (saveTenders) saveTenders.addEventListener('click', async () => {
+      const result = document.getElementById('tenders-result');
+      const chosen = [...document.querySelectorAll('[data-tender]')]
+        .filter((box) => box.checked).map((box) => box.dataset.tender);
+      saveTenders.disabled = true;
+      try {
+        this.acceptedMethods = await saveAcceptedMethods(chosen);
+        if (result) result.textContent = 'Saved. Tills will settle these tenders and the sales will sync.';
+        showNotification('Accepted tenders saved.', 'success');
+      } catch (error) {
+        if (result) result.textContent = error.message || 'Could not save accepted tenders.';
+        showNotification(error.message || 'Could not save accepted tenders.', 'error');
+      } finally {
+        saveTenders.disabled = false;
+      }
     });
 
     // Discount Save
@@ -322,9 +410,9 @@ export class SettingsView {
         showNotification('Please enter a valid discount name and value.', 'error');
         return;
       }
-      const discounts = JSON.parse(localStorage.getItem('pos_discounts') || '[]');
+      const discounts = JSON.parse(tenantStorage.getItem('pos_discounts') || '[]');
       discounts.push({ name, type, value, kind, target, status });
-      localStorage.setItem('pos_discounts', JSON.stringify(discounts));
+      tenantStorage.setItem('pos_discounts', JSON.stringify(discounts));
       showNotification('Discount rule "' + name + '" saved!', 'success');
       this.render();
       this.bindEvents();
@@ -334,9 +422,9 @@ export class SettingsView {
     this.container.querySelectorAll('[data-disc-idx]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         const idx = parseInt(e.currentTarget.getAttribute('data-disc-idx'));
-        const discounts = JSON.parse(localStorage.getItem('pos_discounts') || '[]');
+        const discounts = JSON.parse(tenantStorage.getItem('pos_discounts') || '[]');
         discounts.splice(idx, 1);
-        localStorage.setItem('pos_discounts', JSON.stringify(discounts));
+        tenantStorage.setItem('pos_discounts', JSON.stringify(discounts));
         showNotification('Discount rule deleted.', 'warning');
         this.render();
         this.bindEvents();

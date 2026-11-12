@@ -255,6 +255,10 @@ export const importProducts = onCall(
           // Unpriced items exist but cannot be sold until someone prices them.
           isActive: sellPriceMinor > 0,
           updatedAt: Timestamp.now(),
+          catalogueSource: 'menu_admin',
+          updatedByStaffId: staffId,
+          retiredAt: null,
+          retiredByStaffId: null,
           ...(batchId ? { lastImportBatch: batchId } : {}),
           // Columns the sheet left out are not written at all, so a file
           // carrying only names and new prices cannot strip a product of its
@@ -364,6 +368,9 @@ export const upsertProduct = onCall({ region: FUNCTION_REGION }, async (request)
       isActive: input.isActive === false ? false : sellPriceMinor > 0,
       updatedAt: now,
       updatedByStaffId: staffId,
+      catalogueSource: 'menu_admin',
+      retiredAt: null,
+      retiredByStaffId: null,
     }, { merge: true });
 
     transaction.create(db.collection("audit_logs").doc(), {
@@ -474,6 +481,49 @@ export const retireProduct = onCall({ region: FUNCTION_REGION }, async (request)
     });
 
     return { productId, name: data?.name ?? productId };
+  });
+});
+
+/** Remove a rogue catalogue record while retaining an audit copy and history. */
+export const deleteProduct = onCall({ region: FUNCTION_REGION }, async (request) => {
+  const claims = request.auth?.token;
+  const tenantId = claims?.tenant_id;
+  const staffId = claims?.staff_id;
+  if (typeof tenantId !== 'string' || typeof staffId !== 'string' || !ADMIN_ROLES.has(String(claims?.staff_role))) {
+    throw new HttpsError('permission-denied', 'Only an owner or store manager can delete catalogue items.');
+  }
+  const input = asRecord(request.data);
+  const productId = documentId(input.productId, 'productId');
+  if (input.confirmProductId !== productId) throw new HttpsError('invalid-argument', 'Confirm the item being deleted.');
+  const ref = db.collection('products').doc(productId);
+  return db.runTransaction(async tx => {
+    const product = await tx.get(ref);
+    if (!product.exists || product.data()?.tenantId !== tenantId) throw new HttpsError('not-found', 'Product not found.');
+    const balances = await tx.get(db.collection('stock_balances').where('productId', '==', productId));
+    if (balances.size > 450) throw new HttpsError('failed-precondition', 'This item spans too many locations for deletion. Remove it from sale instead.');
+    if (balances.docs.some(doc => doc.data().tenantId !== tenantId || Number(doc.data().qty || 0) !== 0 || Number(doc.data().reservedQty || 0) !== 0)) {
+      throw new HttpsError('failed-precondition', 'This item still holds stock or reservations. Reconcile its stock before deleting it.');
+    }
+    const open = await tx.get(db.collection('open_orders').where('tenantId', '==', tenantId));
+    const pending = await tx.get(db.collection('customer_orders').where('tenantId', '==', tenantId));
+    const contains = (value: unknown): boolean => {
+      if (!value || typeof value !== 'object') return false;
+      if (Array.isArray(value)) return value.some(contains);
+      const row = value as Record<string, unknown>;
+      return row.productId === productId || row.product_id === productId || Object.values(row).some(contains);
+    };
+    if (open.docs.some(doc => contains(doc.data())) || pending.docs.some(doc => !['completed', 'cancelled', 'rejected'].includes(String(doc.data().status)) && contains(doc.data()))) {
+      throw new HttpsError('failed-precondition', 'Complete or cancel open orders containing this item before deleting it.');
+    }
+    const now = Timestamp.now();
+    tx.set(db.collection('deleted_products').doc(productId), { ...product.data(), deletedAt: now, deletedByStaffId: staffId });
+    balances.docs.forEach(doc => tx.delete(doc.ref));
+    tx.delete(ref);
+    tx.create(db.collection('audit_logs').doc(), {
+      tenantId, actorStaffId: staffId, action: 'catalogue.product_deleted', entityType: 'product', entityId: productId,
+      metadata: { name: product.data()?.name, sku: product.data()?.sku, historyPreserved: true }, createdAt: now,
+    });
+    return { productId, deleted: true };
   });
 });
 

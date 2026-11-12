@@ -1,3 +1,4 @@
+import { tenantStorage } from './services/tenant-cache.js';
 /**
  * Sidebar modules and the roles allowed to reach them.
  *
@@ -25,6 +26,8 @@ export const NAV_GROUPS = [
     items: [
       { tab: 'till', icon: '🏪', label: 'Dashboard', short: 'Till' },
       { tab: 'orders', icon: '🧾', label: 'Orders Viewer', short: 'Orders' },
+      { tab: 'tabs', icon: '🍻', label: 'Tab Management', short: 'Tabs' },
+      { tab: 'customers', icon: '👥', label: 'Customers', short: 'People' },
       { tab: 'shifts', icon: '💵', label: 'Shift Management', short: 'Shifts' },
       { tab: 'print-station', icon: '🖨️', label: 'Print Station', short: 'Print' }
     ]
@@ -68,8 +71,8 @@ export const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
  * the same shape and in the same place whoever is signed in.
  */
 export const MOBILE_PRIORITY = [
-  'till', 'orders', 'house-stock', 'shifts', 'inventory',
-  'store-stock', 'mpesa', 'print-station', 'finance', 'qrtools', 'audit-logs', 'settings',
+  'till', 'orders', 'tabs', 'house-stock', 'shifts', 'inventory',
+  'store-stock', 'customers', 'mpesa', 'print-station', 'finance', 'qrtools', 'audit-logs', 'settings',
 ];
 
 const byPriority = (a, b) => MOBILE_PRIORITY.indexOf(a.tab) - MOBILE_PRIORITY.indexOf(b.tab);
@@ -93,11 +96,16 @@ export const RESTRICTED_TABS = {
   'inventory': ['Owner', 'Store Manager', 'Supervisor', 'Store Keeper'],
   'store-stock': ['Owner', 'Store Manager', 'Supervisor', 'Store Keeper'],
   'house-stock': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Store Keeper'],
-  'orders': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Cashier'],
+  'orders': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Cashier', 'Store Keeper'],
+  // The same people who settle a table in Orders; this screen hands off there.
+  'tabs': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Cashier', 'Store Keeper'],
   // The station runs on the one machine holding the printer, but a cashier
   // needs to see the queue to know whether paper is actually coming - and to
   // force a receipt through by hand when it is not.
-  'print-station': ['Owner', 'Store Manager', 'Supervisor', 'Cashier'],
+  'print-station': ['Owner', 'Store Manager', 'Supervisor', 'Cashier', 'Bar Staff', 'Store Keeper'],
+  // A customer record carries a credit limit and a running tab, so who may
+  // create one is a decision about who can let somebody walk out owing money.
+  'customers': ['Owner', 'Supervisor'],
   'finance': ['Owner', 'Store Manager'],
   'qrtools': ['Owner', 'Store Manager', 'Supervisor'],
   'audit-logs': ['Owner', 'Store Manager']
@@ -105,7 +113,7 @@ export const RESTRICTED_TABS = {
 
 export function canViewTab(role, tab) {
   // The House always exists, so only the Store screen can be switched off.
-  const storeEnabled = typeof localStorage === 'undefined' || localStorage.getItem('pos_store_enabled') !== 'false';
+  const storeEnabled = typeof localStorage === 'undefined' || tenantStorage.getItem('pos_store_enabled') !== 'false';
   if (tab === 'store-stock' && !storeEnabled) return false;
   const allowed = RESTRICTED_TABS[tab];
   return !allowed || allowed.includes(role);

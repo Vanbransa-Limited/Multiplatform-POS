@@ -4,9 +4,19 @@ const { parseCustomerOrder, publicProduct, priceCustomerOrder } = require('../li
 const { db } = require('../lib/lib/firebase');
 const { getPublicMenu, submitCustomerOrder, updateCustomerOrder, printCustomerOrder } = require('../lib/modules/customer-orders');
 const { openShift } = require('../lib/modules/shifts/open-shift');
+const { settleCustomerOrderBank } = require('../lib/modules/customer-orders/payments');
 
 const product = { tenantId: 't1', name: 'Actual item', isActive: true, sellPriceMinor: 15000, costPriceMinor: 5000 };
 const input = () => ({ tenantId: 't1', branchId: 'b1', requestId: 'unique-1', customerName: 'Guest', tableNumber: '4', lines: [{ productId: 'p1', qty: 2, unitPriceMinor: 15000 }] });
+
+test('all staff roles can serve orders, while missing and unknown identities are rejected', () => {
+  const { serviceStaff } = require('../lib/modules/customer-orders/domain');
+  for (const role of require('../lib/shared/roles').STAFF_ROLES) {
+    assert.deepEqual(serviceStaff({ tenant_id: 't1', staff_id: 's1', staff_role: role }), { tenantId: 't1', staffId: 's1' });
+  }
+  assert.throws(() => serviceStaff(undefined), /Sign in/);
+  assert.throws(() => serviceStaff({ tenant_id: 't1', staff_id: 's1', staff_role: 'unknown' }), /Sign in/);
+});
 
 test('public catalogue excludes inactive items and private product fields', () => {
   assert.equal(publicProduct('p1', { ...product, isActive: false }), null);
@@ -74,6 +84,15 @@ test('menu submission reaches shared orders, retries do not duplicate, staff can
     assert.equal([...docs.keys()].filter((k) => k.startsWith('customer_orders/')).length, 1);
     await assert.rejects(submitCustomerOrder.run({ ...request, data: { ...input(), note: 'changed' } }), /different order/);
     const auth = { token: { tenant_id: 't1', staff_id: 's1', staff_role: 'cashier' } };
+    docs.set('customer_orders/bank-order', {
+      tenantId: 't1', branchId: 'b1', ref: 'WEB-BANK', totalMinor: 30000,
+      status: 'received', paymentStatus: 'unpaid',
+    });
+    // Nothing verifies a bank reference, so it is recorded as typed.
+    await settleCustomerOrderBank.run({ auth, data: { orderId: 'bank-order', reference: 'BANK-REF-42' } });
+    assert.equal(docs.get('customer_orders/bank-order').paymentStatus, 'paid');
+    assert.equal(docs.get('customer_orders/bank-order').paymentMethod, 'bank_transfer');
+    assert.equal(docs.get('payments/web_bank-order').reference, 'BANK-REF-42');
     await assert.rejects(updateCustomerOrder.run({ data: { orderId: first.orderId, status: 'ready' } }), /Sign in/);
     await updateCustomerOrder.run({ auth, data: { orderId: first.orderId, status: 'preparing' } });
     assert.equal(docs.get(`customer_orders/${first.orderId}`).status, 'preparing');

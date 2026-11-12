@@ -285,6 +285,42 @@ export async function parseImportFile(file, aliases = FIELD_ALIASES, usable = pr
   }
 }
 
+/**
+ * Templates. Each is a header row this parser recognises plus worked examples,
+ * so the sheet explains its own columns and nobody has to guess a spelling.
+ */
+
+/** Full catalogue: names, prices, categories. Menu Admin. */
+export const PRODUCT_TEMPLATE_CSV = [
+  'SKU,Name,Category,UOM,Sell Price,Cost Price,Tax Code',
+  'BEER-TUSK-500,Tusker Lager 500ml,Beers & Ciders,BOTTLE,300,220,A',
+  'FOOD-CHAP-01,Chapati,Food & Meals,PIECE,30,18,A'
+].join('\r\n');
+
+/** Names only, for getting a menu on the till before prices are decided. */
+export const PRODUCT_NAMES_TEMPLATE_CSV = [
+  'SKU,Name,Category',
+  'BEER-TUSK-500,Tusker Lager 500ml,Beers & Ciders',
+  'FOOD-CHAP-01,Chapati,Food & Meals'
+].join('\r\n');
+
+/** A delivery or a count: what the item is and how many. SKU is optional. */
+export const STOCK_TEMPLATE_CSV = [
+  'SKU,Name,Quantity',
+  'BEER-TUSK-500,Tusker Lager 500ml,48',
+  ',Chapati,120'
+].join('\r\n');
+
+/** Hands the operator a file to fill in. */
+export function downloadCsvTemplate(csv, filename) {
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export const parseProductFile = (file) => parseImportFile(file);
 export const parseStaffFile = (file) => parseImportFile(file, STAFF_ALIASES, staffMapping);
 export const parseStockFile = (file) => parseImportFile(file, STOCK_ALIASES, stockMapping);

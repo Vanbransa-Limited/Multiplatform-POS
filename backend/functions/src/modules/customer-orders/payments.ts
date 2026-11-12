@@ -205,6 +205,42 @@ export const settleCustomerOrderCard = onCall({ region: FUNCTION_REGION }, async
 });
 
 /**
+ * Marries a received bank transfer to an unpaid customer order.
+ * There is no bank feed, so nothing here can check the statement reference -
+ * whatever the cashier types is recorded as typed, and the audit trail records
+ * who performed the reconciliation.
+ */
+export const settleCustomerOrderBank = onCall({ region: FUNCTION_REGION }, async (request) => {
+  const actor = serviceStaff(request.auth?.token);
+  const input = asRecord(request.data);
+  const orderId = documentId(input.orderId, 'orderId');
+  const reference = typeof input.reference === 'string' ? input.reference.trim().slice(0, 60) : '';
+  const orderRef = db.collection('customer_orders').doc(orderId);
+
+  return db.runTransaction(async (tx) => {
+    const order = payableOrder((await tx.get(orderRef)).data(), actor.tenantId);
+    const paidAt = Timestamp.now();
+    tx.update(orderRef, {
+      paymentStatus: 'paid', paymentMethod: 'bank_transfer', paymentReference: reference || null, paidAt,
+      settledByStaffId: actor.staffId,
+      status: order.status === 'received' ? 'awaiting_print' : order.status,
+    });
+    tx.set(db.collection('payments').doc(`web_${orderId}`), {
+      tenantId: actor.tenantId, branchId: order.branchId, customerOrderId: orderId,
+      method: 'bank_transfer', amountMinor: order.totalMinor, reference: reference || null,
+      status: 'completed', paidAt, receivedByStaffId: actor.staffId,
+      source: 'customer_menu_bank', verified: false,
+    });
+    tx.create(db.collection('audit_logs').doc(), {
+      tenantId: actor.tenantId, actorStaffId: actor.staffId,
+      action: 'customer_order.bank_settled', entityId: orderId,
+      metadata: { ref: order.ref, amountMinor: order.totalMinor, reference }, createdAt: paidAt,
+    });
+    return { orderId, paymentStatus: 'paid', reference };
+  });
+});
+
+/**
  * Records cash taken at the counter for a table-menu order.
  *
  * Without this a cash house could never release a kitchen ticket, because the

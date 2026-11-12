@@ -35,6 +35,27 @@ test('a name carrying markup is printed as text, never as an element', () => {
   assert.ok(html.includes('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;'));
 });
 
+test('the approved receipt keeps its labels, fiscal block and footer', () => {
+  const html = renderReceiptHtml(receipt);
+  assert.ok(html.includes('Waiter/Waitress'), 'the floor label, not "Cashier"');
+  assert.ok(html.includes('KRA eTIMS FISCAL RECORD'));
+  assert.ok(html.includes('Powered by KPOS Pro Systems'));
+  // No inline size may undercut the print rules that force legible type.
+  assert.ok(!/font-size:\s*1[12]px/.test(html.replace(/font-size:12px; color:#555/g, '')));
+
+  const signed = renderReceiptHtml({
+    ...receipt,
+    fiscal: { cuSerial: 'CU1', signature: 'SIG', invoiceNo: 'CU-1' },
+  });
+  assert.ok(signed.includes('SCAN TO VERIFY KRA'), 'the verification block belongs on a fiscalised receipt');
+});
+
+test('a table is printed when the sale carries one, and skipped when it does not', () => {
+  // What the runner matches the paper against at the counter.
+  assert.ok(renderReceiptHtml({ ...receipt, tableNo: 'Patio 3' }).includes('Patio 3'));
+  assert.ok(!renderReceiptHtml(receipt).includes('<b>Table:</b>'));
+});
+
 test('escapeHtml covers every character that can end a text context', () => {
   assert.equal(escapeHtml(`<>&"'`), '&lt;&gt;&amp;&quot;&#39;');
   assert.equal(escapeHtml(null), '');

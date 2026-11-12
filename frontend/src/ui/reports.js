@@ -1,11 +1,15 @@
+import { loadFinancialSnapshot } from '../services/financial-data.js';
+import { financialAnswer } from '../services/financial-snapshot.js';
 import { db } from '../db/schema';
+import { pullSales } from '../services/catalogue.js';
 import { state } from '../context';
+import { saleTimestamp, tenderTotals } from '../services/takings.js';
 
 // ─── Date helpers ────────────────────────────────────────────────
 function startOfDay(d) { const r = new Date(d); r.setHours(0,0,0,0); return r; }
 function endOfDay(d)   { const r = new Date(d); r.setHours(23,59,59,999); return r; }
 function fmtDate(d)    { return d.toLocaleDateString('en-KE', { day:'2-digit', month:'short', year:'numeric' }); }
-function isoDate(d)    { return d.toISOString().slice(0,10); }
+function isoDate(d)    { return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0,10); }
 
 export class ReportsView {
   constructor(container) {
@@ -210,25 +214,67 @@ export class ReportsView {
     `;
   }
 
+  /**
+   * Sales in the chosen period, with the payments and product names the rest
+   * of this screen needs.
+   *
+   * Every caller used to filter on `created_at` and read `payment_method` off
+   * the sale. The till writes neither, so the period was always empty and the
+   * tender split always zero. One loader now reads the fields that exist.
+   */
+  async _periodData() {
+    try {
+      const count = await pullSales(this.rangeStart.toISOString());
+      this._source = count === null ? 'Cached device data only; server unavailable.' : 'Server refreshed plus local unsynced sales.';
+    } catch {
+      this._source = 'Incomplete: server refresh failed; cached device data only.';
+    }
+    const [allSales, products] = await Promise.all([
+      db.sales.toArray(), db.products.toArray()
+    ]);
+
+    const from = this.rangeStart.getTime();
+    const to = this.rangeEnd.getTime();
+    const inPeriod = (sale) => {
+      const ts = saleTimestamp(sale);
+      return ts >= from && ts <= to
+        && (!state.currentTenant?.id || sale.tenant_id === state.currentTenant.id);
+    };
+    const sales = allSales.filter(s => inPeriod(s) && String(s.status).toUpperCase() === 'COMPLETED');
+    // Rung up but not yet settled. Deliberately kept out of `sales`: an order
+    // nobody has paid for is not revenue and owes no VAT, so it must not reach
+    // gross sales, COGS or the margin. It is reported on its own instead, so
+    // the floor is not simply missing from the day's numbers.
+    const pending = allSales.filter(s => inPeriod(s) && String(s.status).toUpperCase() === 'PENDING_PAYMENT');
+
+    const saleIds = new Set(sales.map(s => s.id));
+    const ids = [...saleIds];
+    const [allLines, allPayments] = ids.length ? await Promise.all([
+      db.sale_lines.where('sale_id').anyOf(ids).toArray(),
+      db.payments.where('sale_id').anyOf(ids).toArray(),
+    ]) : [[], []];
+    const productNames = new Map(products.map(p => [p.id, p.name]));
+
+    return {
+      sales,
+      pending,
+      lines: allLines.filter(l => saleIds.has(l.sale_id)),
+      totals: tenderTotals(allPayments.filter(p => saleIds.has(p.sale_id))),
+      nameOf: (line) => productNames.get(line.product_id) || line.product_name || 'Unknown Item'
+    };
+  }
+
   // ─── Sales Summary ────────────────────────────────────────────
   async renderSummary(pane) {
-    const sales = (await db.sales.toArray()).filter(s =>
-      new Date(s.created_at) >= this.rangeStart && new Date(s.created_at) <= this.rangeEnd
-    );
-    const saleIds = new Set(sales.map(s => s.id));
-    const lines = (await db.sale_lines.toArray()).filter(l => saleIds.has(l.sale_id));
+    const { sales, pending, lines, totals, nameOf } = await this._periodData();
 
     let totalSalesVal = 0, totalCostVal = 0, totalTaxVal = 0;
     sales.forEach(s => { totalSalesVal += s.grand_total || 0; totalTaxVal += s.tax_total || 0; });
+    const pendingVal = pending.reduce((sum, s) => sum + (s.grand_total || 0), 0);
     lines.forEach(l => { totalCostVal += ((l.unit_cost_at_sale || 0) * l.qty); });
     const grossProfit = totalSalesVal - totalTaxVal - totalCostVal;
     const marginPercent = totalSalesVal > 0 ? (grossProfit / (totalSalesVal - totalTaxVal)) * 100 : 0;
 
-    // Payment method breakdown
-    const cashSales = sales.filter(s => s.payment_method === 'CASH').reduce((a, s) => a + s.grand_total, 0);
-    const mpesaSales = sales.filter(s => s.payment_method === 'MPESA').reduce((a, s) => a + s.grand_total, 0);
-    const creditSales = sales.filter(s => s.payment_method === 'CREDIT').reduce((a, s) => a + s.grand_total, 0);
-    const splitSales = sales.filter(s => s.payment_method === 'SPLIT').reduce((a, s) => a + s.grand_total, 0);
 
     pane.innerHTML = `
       ${this._periodBar()}
@@ -253,6 +299,13 @@ export class ReportsView {
           <span class="val" style="color:var(--accent-green)">${marginPercent.toFixed(1)}%</span>
           <span class="trend up">KES ${grossProfit.toFixed(2)} profit</span>
         </div>
+        <!-- Rung up, goods gone, nobody has paid. Not revenue, so it is shown
+             beside the takings rather than inside them. -->
+        <div class="metric-card">
+          <h3>Awaiting Payment</h3>
+          <span class="val" style="color:${pendingVal > 0 ? '#f59e0b' : 'inherit'}">KES ${pendingVal.toFixed(2)}</span>
+          <span class="trend">${pending.length} order${pending.length === 1 ? '' : 's'} open · not in gross sales</span>
+        </div>
       </div>
 
       <div class="charts-grid" style="margin-top:20px;">
@@ -260,10 +313,10 @@ export class ReportsView {
           <h3>💳 Payment Method Breakdown</h3>
           <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px;">
             ${[
-              { label:'Cash', val:cashSales, color:'#10b981', icon:'💵' },
-              { label:'M-Pesa', val:mpesaSales, color:'#6366f1', icon:'📱' },
-              { label:'Credit', val:creditSales, color:'#f59e0b', icon:'💳' },
-              { label:'Split', val:splitSales, color:'#8b5cf6', icon:'⚖️' },
+              { label:'Cash', val:totals.cash, color:'#10b981', icon:'💵' },
+              { label:'M-Pesa', val:totals.mpesa, color:'#6366f1', icon:'📱' },
+              { label:'Card & other', val:totals.other, color:'#8b5cf6', icon:'💳' },
+              { label:'Unpaid (proforma / credit)', val:totals.receivable, color:'#f59e0b', icon:'🧾' },
             ].map(pm => {
               const pct = totalSalesVal > 0 ? (pm.val / totalSalesVal * 100) : 0;
               return `
@@ -285,9 +338,9 @@ export class ReportsView {
           <h3>📦 Top Selling Items</h3>
           <div style="margin-top:12px;display:flex;flex-direction:column;gap:8px;font-size:12px;">
             ${lines.length === 0 ? '<p style="color:var(--text-muted);">No sales in this period.</p>' : (() => {
-              const totals = {};
-              lines.forEach(l => { totals[l.product_name] = (totals[l.product_name] || 0) + l.qty; });
-              return Object.entries(totals)
+              const sold = {};
+              lines.forEach(l => { sold[nameOf(l)] = (sold[nameOf(l)] || 0) + l.qty; });
+              return Object.entries(sold)
                 .sort((a,b) => b[1]-a[1])
                 .slice(0, 6)
                 .map(([name, qty]) => `
@@ -305,12 +358,7 @@ export class ReportsView {
 
   // ─── VAT3 Return ──────────────────────────────────────────────
   async renderVat3(pane) {
-    const allLines = await db.sale_lines.toArray();
-    const allSales = (await db.sales.toArray()).filter(s =>
-      new Date(s.created_at) >= this.rangeStart && new Date(s.created_at) <= this.rangeEnd
-    );
-    const saleIds = new Set(allSales.map(s => s.id));
-    const lines = allLines.filter(l => saleIds.has(l.sale_id));
+    const { lines } = await this._periodData();
 
     let bA_S=0, bA_V=0, bB_S=0, bB_V=0, bC_S=0, bE_S=0;
     lines.forEach(l => {
@@ -554,69 +602,34 @@ export class ReportsView {
       });
     }
 
-    // Build context from real data
-    const sales = (await db.sales.toArray()).filter(s =>
-      new Date(s.created_at) >= this.rangeStart && new Date(s.created_at) <= this.rangeEnd
-    );
-    const lines = (await db.sale_lines.toArray()).filter(l => new Set(sales.map(s=>s.id)).has(l.sale_id));
-
-    const totalRev = sales.reduce((a,s)=>a+s.grand_total,0);
-    const totalTax = sales.reduce((a,s)=>a+s.tax_total,0);
-    const cashTotal = sales.filter(s=>s.payment_method==='CASH').reduce((a,s)=>a+s.grand_total,0);
-    const mpesaTotal = sales.filter(s=>s.payment_method==='MPESA').reduce((a,s)=>a+s.grand_total,0);
-
-    const itemTotals = {};
-    lines.forEach(l => { itemTotals[l.product_name] = (itemTotals[l.product_name]||0)+l.qty; });
-    const topItems = Object.entries(itemTotals).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([n,q])=>`${n}(${q})`).join(', ');
-
-    this._aiContext = `You are an AI business analyst for a Kenyan bar and restaurant. Analyse the following POS data and give actionable insights.
-Period: ${fmtDate(this.rangeStart)} to ${fmtDate(this.rangeEnd)}.
-Total Revenue: KES ${totalRev.toFixed(2)}.
-VAT collected: KES ${totalTax.toFixed(2)}.
-Cash payments: KES ${cashTotal.toFixed(2)}, M-Pesa: KES ${mpesaTotal.toFixed(2)}.
-Total transactions: ${sales.length}.
-Top items sold: ${topItems || 'No sales yet'}.
-Respond in plain English with bullet points. Be concise and specific to the bar/restaurant context.`;
-
-    await this._aiAsk('Give me a full business performance summary and 3 actionable recommendations based on this data.');
+    this._aiContext = null;
+    try {
+      const report = await loadFinancialSnapshot(this.rangeStart.getTime(), this.rangeEnd.getTime());
+      this._aiContext = { ...report, startStr: isoDate(this.rangeStart), endStr: isoDate(this.rangeEnd) };
+      document.getElementById('ai-output').textContent = '';
+      await this._aiAsk('Give me a business performance summary.');
+    } catch (error) {
+      document.getElementById('ai-output').textContent = 'Financial data could not be loaded: ' + error.message;
+    }
   }
 
   async _aiAsk(question) {
     const out = document.getElementById('ai-output');
+    if (!this._aiContext) return;
     // Append user question
-    out.innerHTML += `<div class="ai-msg user"><b>You:</b> ${question}</div>`;
+    const userMessage = document.createElement('div');
+    userMessage.className = 'ai-msg user';
+    userMessage.textContent = 'You: ' + question;
+    out.appendChild(userMessage);
 
     // Loading indicator
     const loadId = 'ai-load-' + Date.now();
     out.innerHTML += `<div class="ai-msg assistant" id="${loadId}"><span style="display:inline-block;width:14px;height:14px;border:2px solid #6366f1;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></span> Thinking...</div>`;
     out.scrollTop = out.scrollHeight;
 
-    try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${window.GEMINI_API_KEY || 'AIzaSyDKPlaceholderInsertYourKeyHere'}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{ text: this._aiContext + '\n\nUser question: ' + question }]
-          }]
-        })
-      });
-
-      if (!res.ok) throw new Error(`API error ${res.status}`);
-      const data = await res.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response received.';
-
-      document.getElementById(loadId).innerHTML = `<b>✨ AI Assistant:</b><br>${text.replace(/\n/g,'<br>')}`;
-    } catch (err) {
-      document.getElementById(loadId).innerHTML = `
-        <b>✨ AI Assistant:</b><br>
-        <span style="color:var(--accent-rose);">Could not reach Gemini API. To enable AI Assist, add your Gemini API key to <code>window.GEMINI_API_KEY</code> in your environment or index.html.</span>
-        <br><br><b>Sample insight (offline):</b><br>
-        • Your bar is currently in demo mode — once sales data accumulates, AI Assist will provide real revenue trends, top-selling drink analysis, and peak hour recommendations.<br>
-        • Consider tracking table numbers per sale to unlock table-level profitability analysis.<br>
-        • Enable M-Pesa payments to reduce cash handling risk and improve reconciliation accuracy.
-      `;
-    }
+    const reply = document.getElementById(loadId);
+    reply.textContent = financialAnswer(this._aiContext, question);
+    reply.style.whiteSpace = 'pre-line';
     out.scrollTop = out.scrollHeight;
   }
 }

@@ -1,9 +1,10 @@
 import { HttpsError } from 'firebase-functions/v2/https';
+import { SELLING_ROLES } from '../sales/constants';
 import { asRecord, documentId, minorUnits, optionalText } from '../../shared/validation';
 
 /** Staff who may see and act on a table's order. */
 export function serviceStaff(token: Record<string, unknown> | undefined) {
-  if (!token?.tenant_id || !token.staff_id || !['owner', 'store_manager', 'supervisor', 'bar_staff', 'cashier'].includes(String(token.staff_role))) {
+  if (!token?.tenant_id || !token.staff_id || !SELLING_ROLES.has(String(token.staff_role))) {
     throw new HttpsError('permission-denied', 'Sign in as service staff.');
   }
   return { tenantId: String(token.tenant_id), staffId: String(token.staff_id) };

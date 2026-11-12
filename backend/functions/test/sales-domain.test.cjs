@@ -116,6 +116,20 @@ test("frontline staff cannot submit client-selected discounts", () => {
   assert.doesNotThrow(() => assertDiscountPermission(lines, "owner"));
 });
 
+test('the fixed 20 percent staff preset can be registered before a payment exists', () => {
+  const parsed = parseSaleInput(request({
+    lines: [{ productId: 'product-1', qty: 1, discountMinor: 34000 }],
+    payments: [{ method: 'credit', amountMinor: 136000 }],
+  }));
+  const lines = prepareSaleLines(parsed.lines, [productDocument({ sellPriceMinor: 170000 })], parsed.tenantId);
+  assert.equal(calculateSaleTotals(lines, parsed.payments).totalMinor, 136000);
+  for (const role of ['cashier', 'bar_staff', 'supervisor']) {
+    assert.doesNotThrow(() => assertDiscountPermission(lines, role));
+  }
+  assert.throws(() => assertDiscountPermission(lines, 'customer'));
+  assert.throws(() => assertDiscountPermission([{ ...lines[0], discountMinor: 35000 }], 'cashier'));
+});
+
 test("idempotency fingerprints bind a key to the complete normalized request", () => {
   const original = parseSaleInput(request());
   const changed = parseSaleInput(request({ tableNumber: "B7" }));
@@ -172,4 +186,75 @@ test("a verified M-Pesa membership discount is bound to the exact sale scope", (
     intent,
     mpesaPayment,
   ), false);
+});
+
+const { assertAcceptedPayments } = require("../lib/modules/sales/domain");
+
+test("an unpaid order is never gated on the tenant's accepted tenders", () => {
+  // Provisioning seeds ["cash"], and the settings rules have no 'credit' key,
+  // so credit can never appear in this list. Gating it here refused every Pay
+  // Now proforma with failed-precondition - permanent, to the till - and left
+  // the orders queued on the device, invisible to every other till and to
+  // every financial report. Credit is a receivable, not a tender.
+  const cashOnly = { acceptedPaymentMethods: ["cash"], cashEnabled: true };
+  assert.doesNotThrow(() => assertAcceptedPayments([{ method: "credit", amountMinor: 800000 }], cashOnly));
+
+  // Everything that really is a tender is still gated.
+  assert.throws(
+    () => assertAcceptedPayments([{ method: "bank_transfer", amountMinor: 100 }], cashOnly),
+    /bank_transfer is not enabled/,
+  );
+  assert.throws(
+    () => assertAcceptedPayments([{ method: "cash", amountMinor: 100 }], { acceptedPaymentMethods: ["cash"], cashEnabled: false }),
+    /cash is not enabled/,
+  );
+  // A mixed cart is still refused on the tender it actually contains.
+  assert.throws(
+    () => assertAcceptedPayments([{ method: "credit", amountMinor: 100 }, { method: "mpesa", amountMinor: 100 }], cashOnly),
+    /mpesa is not enabled/,
+  );
+});
+
+const { needsProviderIntent } = require("../lib/modules/sales/constants");
+
+test("only a tender with a real provider integration must prove itself", () => {
+  // M-Pesa is the only one: the mpesa module is the sole writer of
+  // payment_intents, so it is the only reference this system can check.
+  assert.equal(needsProviderIntent("mpesa"), true);
+  // A code typed when settling a tab is recorded unverified, never refused.
+  assert.equal(needsProviderIntent("mpesa", true), false);
+
+  // Everything else is a person recording money taken elsewhere. A bank
+  // reference comes off a statement and a card slip off the terminal, and
+  // nothing here can verify either. Demanding provider proof for them made
+  // createSale refuse every one - "not verified or was already consumed" -
+  // so the takings stayed on the till that accepted them.
+  for (const method of ["bank_transfer", "card", "airtel_money", "cash", "credit"]) {
+    assert.equal(needsProviderIntent(method), false, `${method} has no provider to verify against`);
+  }
+});
+
+const { loadSaleDependencies } = require("../lib/modules/sales/dependencies");
+const { db: salesDb } = require("../lib/lib/firebase");
+
+test("a sale the till already took is never refused over stock", async () => {
+  const docs = new Map([
+    // Counted, and already at zero: deducted past it rather than refused.
+    ["stock_balances/b1_tusker_HOUSE", { tenantId: "t1", branchId: "b1", productId: "tusker", location: "HOUSE", qty: 0 }],
+  ]);
+  const original = salesDb.collection;
+  salesDb.collection = (name) => ({ doc: (id) => ({ id, path: `${name}/${id}` }) });
+  try {
+    const tx = { getAll: async (...refs) => refs.map((ref) => ({ id: ref.id, exists: docs.has(ref.path), data: () => docs.get(ref.path) })) };
+    const lines = [
+      { productId: "tusker", productName: "Tusker", qty: 2, isService: false },
+      // No balance at all: sold, and moves no stock.
+      { productId: "chicken", productName: "Chicken Quarter", qty: 1, isService: false },
+      { productId: "corkage", productName: "Corkage", qty: 1, isService: true },
+    ];
+    const deps = await loadSaleDependencies(tx, { tenantId: "t1", branchId: "b1", payments: [{ method: "card", amountMinor: 100 }] }, lines, "now");
+    assert.deepEqual(deps.physicalLines.map((line) => line.productId), ["tusker"]);
+    assert.equal(deps.balanceRefs.length, 1);
+    assert.equal(deps.updatedBalances[0].qty, -2);
+  } finally { salesDb.collection = original; }
 });

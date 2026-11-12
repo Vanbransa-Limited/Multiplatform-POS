@@ -95,7 +95,7 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
       .catch((error: unknown) => {
         if (cancelled) return;
         const message = error instanceof Error ? error.message : String(error);
-        setBootError(`${message}. Try refreshing or clearing site data.`);
+        setBootError(`${message}. Keep this browser's data intact and contact support; unsynced orders may be stored here.`);
       });
     return () => {
       cancelled = true;

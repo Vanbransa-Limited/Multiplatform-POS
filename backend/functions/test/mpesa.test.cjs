@@ -16,6 +16,30 @@ const {
   applyMembershipDiscount,
   membershipBasisPoints,
 } = require("../lib/modules/mpesa/membership.js");
+const { withinChargeCeiling } = require("../lib/modules/mpesa/index.js");
+
+test("a till may charge under catalogue but never over it", () => {
+  // 1,000/= of catalogue, no service charge.
+  assert.equal(withinChargeCeiling(100_000, 100_000, 0), true);
+  // The cases that used to be refused outright, so no STK prompt was raised:
+  // a staff discount, a line discount, redeemed points, wholesale pricing.
+  assert.equal(withinChargeCeiling(80_000, 100_000, 0), true);
+  assert.equal(withinChargeCeiling(1, 100_000, 0), true);
+  // A VIP charge is declared and is allowed on top.
+  assert.equal(withinChargeCeiling(130_000, 100_000, 30_000), true);
+  assert.equal(withinChargeCeiling(200_000, 100_000, 100_000), true);
+
+  // Overcharging is still refused, declared or not.
+  assert.equal(withinChargeCeiling(100_001, 100_000, 0), false);
+  assert.equal(withinChargeCeiling(130_001, 100_000, 30_000), false);
+  // A service charge cannot exceed the cart it is levied on.
+  assert.equal(withinChargeCeiling(150_000, 100_000, 100_001), false);
+  // Nothing is charged for nothing, and no negatives or non-integers.
+  assert.equal(withinChargeCeiling(0, 100_000, 0), false);
+  assert.equal(withinChargeCeiling(-100, 100_000, 0), false);
+  assert.equal(withinChargeCeiling(100_000, 100_000, -1), false);
+  assert.equal(withinChargeCeiling(1.5, 100_000, 0), false);
+});
 
 function callback(overrides = {}) {
   return {
@@ -183,4 +207,24 @@ test("legacy membership discounts floor to a whole shilling and allocate exactly
   ], 400);
   assert.equal(allocated.reduce((sum, line) => sum + line.discountMinor, 0), 400);
   assert.deepEqual(allocated.map((line) => line.productId), ["food", "drink"]);
+});
+
+test("a prompt that never reached Safaricom fails cleanly instead of locking the order", async () => {
+  Object.assign(process.env, {
+    MPESA_BASE_URL: "https://sandbox.safaricom.co.ke", MPESA_CONSUMER_KEY: "k", MPESA_CONSUMER_SECRET: "s",
+    MPESA_SHORTCODE: "174379", MPESA_PASSKEY: "p", MPESA_CALLBACK_URL: "https://example.test/cb",
+  });
+  const { stkPush } = require("../lib/modules/mpesa/daraja.js");
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new TypeError("fetch failed"); };
+  try {
+    await assert.rejects(
+      stkPush({ lifecycle: "live", environment: "sandbox", transactionType: "CustomerPayBillOnline",
+        partyB: "174379", phone: "254712345678", amountKes: 500, accountReference: "T1", description: "POS T1" }),
+      (error) => error.code === "failed-precondition" && /no prompt was sent/.test(error.message),
+    );
+    // One retry for a blip, and the push endpoint itself is never called.
+    assert.equal(calls, 2);
+  } finally { globalThis.fetch = realFetch; }
 });

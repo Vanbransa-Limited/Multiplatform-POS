@@ -33,13 +33,17 @@ export const receivingLocation = (settings: Record<string, unknown>): 'STORE' | 
  *
  * Pulling stock from the Store into the House happens mid-service, so bar staff
  * can do it without hunting for a keeper. Booking a delivery in is a goods-received
- * decision and stays with stock staff; correcting a count rewrites history and
- * stays with the owner.
+ * decision and stays with stock staff. Correcting a count rewrites history, so
+ * it stays with the two roles that answer for both rooms.
  */
 const STOCK_ROLES = {
   receive: ['owner', 'store_manager', 'store_keeper'],
   request: ['owner', 'store_manager', 'store_keeper', 'bar_staff'],
-  adjust: ['owner'],
+  adjust: ['owner', 'store_manager'],
+  // Switching the Store off folds the whole room into the House. That is a
+  // decision about the shape of the business rather than a stock operation,
+  // and it is the one thing here the owner keeps to themselves.
+  configure: ['owner'],
 } as const;
 
 export function stockActor(
@@ -51,9 +55,10 @@ export function stockActor(
   if (!token?.tenant_id || !token.staff_id || !allowed.includes(String(token.staff_role))) {
     throw new HttpsError(
       'permission-denied',
-      job === 'adjust' ? 'Only the owner can correct a count.'
-        : job === 'request' ? 'Sign in as service or stock staff.'
-          : 'Sign in as stock management staff.',
+      job === 'configure' ? 'Only the owner can change the stock locations.'
+        : job === 'adjust' ? 'Sign in as the owner or a store manager to correct a count.'
+          : job === 'request' ? 'Sign in as service or stock staff.'
+            : 'Sign in as stock management staff.',
     );
   }
   return { tenantId: String(token.tenant_id), staffId: String(token.staff_id) };
@@ -181,7 +186,7 @@ export const setProductTracking = onCall({ region: FUNCTION_REGION }, async (req
  * it, because the House is the only place service can reach.
  */
 export const configureStock = onCall({ region: FUNCTION_REGION }, async (request) => {
-  const actor = stockActor(request.auth, 'adjust');
+  const actor = stockActor(request.auth, 'configure');
   const input = asRecord(request.data);
   if (typeof input.storeEnabled !== 'boolean') throw new HttpsError('invalid-argument', 'Choose whether this business has a Store.');
   const wanted = input.storeEnabled;
@@ -216,7 +221,7 @@ export const configureStock = onCall({ region: FUNCTION_REGION }, async (request
  *
  * `receive` adds to what is there. `count` sets the absolute figure, which is a
  * rewrite of history, so it carries the same rules as a single correction: the
- * owner only, and never without a reason.
+ * owner or a store manager, and never without a reason.
  */
 export const importStock = onCall({ region: FUNCTION_REGION, timeoutSeconds: 300 }, async (request) => {
   const input = asRecord(request.data);
@@ -227,86 +232,103 @@ export const importStock = onCall({ region: FUNCTION_REGION, timeoutSeconds: 300
   const batchId = documentId(input.batchId, 'batchId');
   const reason = optionalText(input.reason, 'reason', 300);
   if (mode === 'count' && !reason) throw new HttpsError('invalid-argument', 'Give the reason for this count.');
-  if (!Array.isArray(input.rows) || input.rows.length === 0 || input.rows.length > 500) {
-    throw new HttpsError('invalid-argument', 'Send between 1 and 500 rows.');
+  // At most 3 writes per item (new record, balance, movement), plus the audit.
+  if (!Array.isArray(input.rows) || input.rows.length === 0 || input.rows.length > 150) {
+    throw new HttpsError('invalid-argument', 'Send between 1 and 150 rows.');
   }
+  const rows = input.rows.map((raw) => asRecord(raw, 'row'));
+  // Catalogue creation belongs exclusively to Menu Admin, including requests
+  // from older clients that still send createMissing=true.
+  const createMissing = false;
+  const auditRef = db.collection('audit_logs').doc(deterministicId('stock-import-audit', `${actor.tenantId}:${batchId}`));
+  const fingerprint = JSON.stringify({ mode, branchId, location: input.location || null, reason, createMissing, rows });
+  const key = (value: unknown) => String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 
-  const [settingsDoc, branch] = await Promise.all([
-    db.collection('tenant_settings').doc(actor.tenantId).get(),
-    db.collection('branches').doc(branchId).get(),
-  ]);
-  if (branch.data()?.tenantId !== actor.tenantId || branch.data()?.status !== 'active') {
-    throw new HttpsError('failed-precondition', 'Choose an active branch.');
-  }
-  const settings = settingsDoc.data() || {};
-  // A delivery lands wherever deliveries land; a count names its own room.
-  const location = mode === 'receive' ? receivingLocation(settings) : String(input.location || sellingLocation());
-  if (!locationsFor(settings).includes(location)) throw new HttpsError('failed-precondition', 'This location is disabled by the stock policy.');
-
-  const rejected: { sku: string; message: string }[] = [];
-  const wanted = new Map<string, number>();
-  input.rows.forEach((raw, index) => {
-    const row = asRecord(raw, 'row');
-    const sku = String(row.sku ?? row.name ?? '').trim();
-    const qty = Number(row.qty);
-    if (!sku) { rejected.push({ sku: `row ${index + 2}`, message: 'No SKU or item name.' }); return; }
-    if (!Number.isSafeInteger(qty) || qty < (mode === 'count' ? 0 : 1) || qty > 100000000) {
-      rejected.push({ sku, message: `"${row.qty}" is not a whole quantity.` });
-      return;
+  return db.runTransaction(async (tx) => {
+    const [audit, settingsDoc, branch] = await tx.getAll(auditRef,
+      db.collection('tenant_settings').doc(actor.tenantId), db.collection('branches').doc(branchId));
+    if (audit.exists) {
+      if (audit.data()?.fingerprint !== fingerprint) throw new HttpsError('already-exists', 'This import reference has already been used.');
+      return audit.data()?.result;
     }
-    // A sheet listing the same item twice is one delivery of the sum, but two
-    // conflicting counts of one shelf cannot both be true.
-    if (wanted.has(sku) && mode === 'count') { rejected.push({ sku, message: 'Counted twice in this sheet.' }); return; }
-    wanted.set(sku, mode === 'count' ? qty : (wanted.get(sku) || 0) + qty);
-  });
-  if (wanted.size === 0) return { imported: 0, rejected, location };
-
-  // Products are stored under an id derived from the SKU, so a sheet resolves
-  // without a query per row.
-  const skus = [...wanted.keys()];
-  const productRefs = skus.map((sku) => db.collection('products').doc(deterministicId('product', `${actor.tenantId}:${sku}`)));
-  const products = await db.getAll(...productRefs);
-
-  const applied: { sku: string; productId: string; qty: number }[] = [];
-  products.forEach((doc, index) => {
-    const sku = skus[index];
-    const data = doc.data();
-    if (!doc.exists || data?.tenantId !== actor.tenantId) { rejected.push({ sku, message: 'No such item in this catalogue.' }); return; }
-    if (data?.isService) { rejected.push({ sku, message: 'A service holds no stock.' }); return; }
-    applied.push({ sku, productId: doc.id, qty: wanted.get(sku)! });
-  });
-  if (applied.length === 0) return { imported: 0, rejected, location };
-
-  const now = Timestamp.now();
-  const batch = db.batch();
-  const balanceRefs = applied.map((entry) => db.collection('stock_balances').doc(`${branchId}_${entry.productId}_${location}`));
-  const balances = await db.getAll(...balanceRefs);
-
-  applied.forEach((entry, index) => {
-    const before = Number(balances[index].data()?.qty || 0);
-    const after = mode === 'count' ? entry.qty : before + entry.qty;
-    if (after < Number(balances[index].data()?.reservedQty || 0)) {
-      rejected.push({ sku: entry.sku, message: 'Below stock already reserved.' });
-      return;
+    if (branch.data()?.tenantId !== actor.tenantId || branch.data()?.status !== 'active') {
+      throw new HttpsError('failed-precondition', 'Choose an active branch.');
     }
-    batch.set(balanceRefs[index], { id: balanceRefs[index].id, tenantId: actor.tenantId, branchId, productId: entry.productId, location, qty: after, updatedAt: now }, { merge: true });
-    // One movement per row, keyed on the batch, so re-sending the same sheet
-    // replays the same documents instead of doubling the delivery.
-    batch.set(db.collection('stock_movements').doc(deterministicId('stock-import', `${actor.tenantId}:${batchId}:${entry.productId}`)), {
-      tenantId: actor.tenantId, branchId, productId: entry.productId, location,
-      qty: after - before, type: mode === 'count' ? 'adjust' : 'receive',
-      referenceId: batchId, createdByStaffId: actor.staffId, createdAt: now,
+    const settings = settingsDoc.data() || {};
+    const location = mode === 'receive' ? receivingLocation(settings) : String(input.location || sellingLocation());
+    if (!locationsFor(settings).includes(location)) throw new HttpsError('failed-precondition', 'This location is disabled by the stock policy.');
+    const catalogue = await tx.get(db.collection('products').where('tenantId', '==', actor.tenantId));
+    type Item = { id: string; data: FirebaseFirestore.DocumentData };
+    const bySku = new Map<string, Item[]>();
+    const byName = new Map<string, Item[]>();
+    const byId = new Map<string, Item>();
+    const add = (map: Map<string, Item[]>, value: unknown, item: Item) => {
+      const normalized = key(value);
+      if (normalized) map.set(normalized, [...(map.get(normalized) || []), item]);
+    };
+    catalogue.docs.forEach((doc) => {
+      const item = { id: doc.id, data: doc.data() };
+      byId.set(item.id, item);
+      add(bySku, item.data.sku, item);
+      add(byName, item.data.name, item);
     });
+    const rejected: { sku: string; message: string }[] = [];
+    const wanted = new Map<string, { item: Item; sku: string; qty: number }>();
+    rows.forEach((row, index) => {
+      const sku = String(row.sku ?? '').trim();
+      const name = String(row.name ?? '').trim();
+      const label = sku || name || `row ${index + 2}`;
+      const qty = Number(row.qty);
+      if ((!sku && !name) || sku.length > 200 || name.length > 300) {
+        rejected.push({ sku: label, message: 'Enter an item name or SKU (up to 300 / 200 characters).' }); return;
+      }
+      if (!Number.isSafeInteger(qty) || qty < (mode === 'count' ? 0 : 1) || qty > 100000000) {
+        rejected.push({ sku: label, message: `"${row.qty}" is not a whole quantity.` }); return;
+      }
+      // Older clients sent the name through the SKU field; support both forms.
+      const matches = bySku.get(key(sku)) || byName.get(key(name || sku)) || [];
+      if (matches.length > 1 && typeof row.productId !== 'string') {
+        rejected.push({ sku: label, message: 'More than one item matches. Use a unique SKU.' }); return;
+      }
+      const item = typeof row.productId === 'string' ? byId.get(row.productId)
+        : matches[0] || byId.get(deterministicId('product', `${actor.tenantId}:${sku || name}`));
+      if (!item) {
+        rejected.push({ sku: label, message: 'Create this item in Menu Admin first, then receive its stock.' }); return;
+      }
+      if (item.data.retiredAt) { rejected.push({ sku: label, message: 'This item has been removed. Restore it in Menu Admin first.' }); return; }
+      if (item.data.isService) { rejected.push({ sku: label, message: 'A service holds no stock.' }); return; }
+      const previous = wanted.get(item.id);
+      if (previous && mode === 'count') { rejected.push({ sku: label, message: 'Counted twice in this sheet.' }); return; }
+      const total = (previous?.qty || 0) + qty;
+      if (!Number.isSafeInteger(total) || total > 100000000) { rejected.push({ sku: label, message: 'Combined quantity is too large.' }); return; }
+      wanted.set(item.id, { item, sku: label, qty: total });
+    });
+    const entries = [...wanted.values()];
+    const refs = entries.map(({ item }) => db.collection('stock_balances').doc(`${branchId}_${item.id}_${location}`));
+    const balances = refs.length ? await tx.getAll(...refs) : [];
+    const now = Timestamp.now();
+    let imported = 0;
+    const created = 0;
+    entries.forEach(({ item, sku, qty }, index) => {
+      const before = Number(balances[index].data()?.qty || 0);
+      const after = mode === 'count' ? qty : before + qty;
+      if (!Number.isSafeInteger(after) || after > 100000000 || after < Number(balances[index].data()?.reservedQty || 0)) {
+        rejected.push({ sku, message: 'Quantity exceeds the limit or is below stock already reserved.' }); return;
+      }
+      tx.set(refs[index], { id: refs[index].id, tenantId: actor.tenantId, branchId, productId: item.id, location, qty: after, updatedAt: now }, { merge: true });
+      tx.create(db.collection('stock_movements').doc(deterministicId('stock-import', `${actor.tenantId}:${batchId}:${item.id}`)), {
+        tenantId: actor.tenantId, branchId, productId: item.id, location,
+        qty: after - before, type: mode === 'count' ? 'adjust' : 'receive',
+        referenceId: batchId, createdByStaffId: actor.staffId, createdAt: now,
+      });
+      imported += 1;
+    });
+    const result = { imported, created, rejected, location };
+    tx.create(auditRef, {
+      tenantId: actor.tenantId, actorStaffId: actor.staffId,
+      action: mode === 'count' ? 'stock.imported_count' : 'stock.imported_delivery', entityId: batchId,
+      fingerprint, result, metadata: { branchId, location, rows: imported, created, rejected: rejected.length, reason: reason || mode }, createdAt: now,
+    });
+    return result;
   });
-
-  batch.set(db.collection('audit_logs').doc(deterministicId('stock-import-audit', `${actor.tenantId}:${batchId}`)), {
-    tenantId: actor.tenantId, actorStaffId: actor.staffId,
-    action: mode === 'count' ? 'stock.imported_count' : 'stock.imported_delivery',
-    entityId: batchId,
-    metadata: { branchId, location, rows: applied.length, rejected: rejected.length, reason: reason || mode },
-    createdAt: now,
-  });
-  await batch.commit();
-
-  return { imported: applied.length, rejected, location };
 });

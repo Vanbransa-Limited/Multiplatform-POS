@@ -69,6 +69,7 @@ type RequestLine = {
 
 type Pricing = {
   cartGrossMinor: number;
+  serviceChargeMinor: number;
   baseAmountMinor: number;
   cashAmountMinor: number;
   membershipDiscountMinor: number;
@@ -160,11 +161,18 @@ function parseInitiateInput(value: unknown): InitiateInput {
   const cashAmountMinor = input.cashAmountMinor === undefined
     ? 0
     : minorUnits(input.cashAmountMinor, "cashAmountMinor");
+  // The VIP charge is a percentage of the cart, not a product with a price, so
+  // the till carries it as a pseudo-item the server has no document for. It is
+  // declared here instead and bounded against the cart below.
+  const serviceChargeMinor = input.serviceChargeMinor === undefined
+    ? 0
+    : minorUnits(input.serviceChargeMinor, "serviceChargeMinor");
   // Membership authorization replaces these identity values before the
   // attempt is reserved. Persisting the complete pricing decision here keeps
   // retries deterministic and gives createSale an auditable authorization.
   const pricing: Pricing = {
     cartGrossMinor: safeSum([baseAmountMinor, cashAmountMinor], "cart total"),
+    serviceChargeMinor,
     baseAmountMinor,
     cashAmountMinor,
     membershipDiscountMinor: 0,
@@ -194,6 +202,30 @@ function parseInitiateInput(value: unknown): InitiateInput {
     lines: parseLines(input.lines),
     pricing,
   };
+}
+
+/**
+ * What a till is allowed to ask M-Pesa for.
+ *
+ * A till charges less than catalogue all the time - a staff discount, a line
+ * discount, redeemed loyalty points, wholesale pricing - and the only charge
+ * it adds is the VIP service charge, which it must declare. Requiring the
+ * tender to equal catalogue exactly refused every one of those carts, so no
+ * STK prompt was raised at all. What still must never happen is a till
+ * charging a customer more than its catalogue and declared charge justify.
+ */
+export function withinChargeCeiling(
+  tenderedMinor: number,
+  cartGrossMinor: number,
+  serviceChargeMinor: number,
+): boolean {
+  if (![tenderedMinor, cartGrossMinor, serviceChargeMinor].every(Number.isSafeInteger)) {
+    return false;
+  }
+  // A service charge is capped at the cart it is levied on, so the ceiling can
+  // never exceed twice what the catalogue justifies.
+  if (serviceChargeMinor < 0 || serviceChargeMinor > cartGrossMinor) return false;
+  return tenderedMinor > 0 && tenderedMinor <= cartGrossMinor + serviceChargeMinor;
 }
 
 function requestFingerprint(caller: Caller, input: InitiateInput): string {
@@ -240,6 +272,10 @@ function pricingFromRecord(record: DocumentData): Pricing & { discountMinor: num
     cartGrossMinor: Number.isSafeInteger(record.cartGrossMinor)
       ? Number(record.cartGrossMinor)
       : amountMinor,
+    // Attempts raised before service charges were declared carry none.
+    serviceChargeMinor: Number.isSafeInteger(record.serviceChargeMinor)
+      ? Number(record.serviceChargeMinor)
+      : 0,
     baseAmountMinor: Number.isSafeInteger(record.baseAmountMinor)
       ? Number(record.baseAmountMinor)
       : amountMinor,
@@ -550,15 +586,17 @@ async function reserveAttempt(caller: Caller, input: InitiateInput): Promise<Res
       lineGrosses.map((line) => line.grossMinor),
       "M-Pesa cart total",
     );
-    if (
+    if (!withinChargeCeiling(
       safeSum(
         [input.pricing.baseAmountMinor, input.pricing.cashAmountMinor],
         "tender total",
-      ) !== cartGrossMinor
-    ) {
+      ),
+      cartGrossMinor,
+      input.pricing.serviceChargeMinor,
+    )) {
       throw new HttpsError(
         "failed-precondition",
-        "The till total no longer matches the server catalogue. Refresh the cart before payment.",
+        "The till is charging more than the server catalogue allows. Refresh the cart before payment.",
       );
     }
 
@@ -590,6 +628,7 @@ async function reserveAttempt(caller: Caller, input: InitiateInput): Promise<Res
     }
     const pricing: Pricing = {
       cartGrossMinor,
+      serviceChargeMinor: input.pricing.serviceChargeMinor,
       baseAmountMinor: input.pricing.baseAmountMinor,
       cashAmountMinor: input.pricing.cashAmountMinor,
       membershipDiscountMinor: orderDiscount.membershipDiscountMinor,
@@ -707,6 +746,10 @@ export async function startReservedMpesa(reservation: Reservation) {
       logger.error("M-Pesa initiation did not complete", {
         attemptId: reservation.attemptId,
         status,
+        // Without this the only record of why a prompt failed was the word
+        // "ambiguous", which is not enough to tell a Safaricom outage from a
+        // rejected credential from a request that never left the building.
+        cause: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
       });
       const record = await markInitiationOutcome(reservation, status, message);
       return attemptResponse(reservation.attemptId, record);
@@ -1137,6 +1180,7 @@ export async function verifyAttempt(
         method: "mpesa",
         amountMinor: current.amountMinor,
         cartGrossMinor: current.cartGrossMinor,
+        serviceChargeMinor: current.serviceChargeMinor ?? 0,
         baseAmountMinor: current.baseAmountMinor,
         cashAmountMinor: current.cashAmountMinor,
         membershipDiscountMinor: current.membershipDiscountMinor,

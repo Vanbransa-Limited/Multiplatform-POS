@@ -1225,6 +1225,9 @@ body.dark-mode {
   gap: 10px;
 }
 
+/* Its display: flex outranks the user agent's [hidden] rule. */
+.payment-method-card[hidden] { display: none; }
+
 .payment-method-card {
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border-color);
@@ -1537,6 +1540,53 @@ body.dark-mode {
   line-height: 1.4;
 }
 
+/*
+ * Receipt type on screen, at the size it prints.
+ *
+ * The paper sizes are restated in print media because the renderers set some
+ * sizes inline. The preview did not get them, so a receipt was read and
+ * approved on screen at one size and came off the roll at another. Same
+ * numbers here, so what is checked is what is printed - for the tax receipt,
+ * the proforma and the kitchen ticket alike.
+ */
+#receipt-paper-view,
+#orders-receipt-paper,
+#station-receipt-paper {
+  font-size: 13px;
+  line-height: 1.45;
+  /* The preview is a proportional stand-in for the roll, not a millimetre
+     ruler: at 48mm on screen the type had nowhere to go and every second
+     value wrapped. Wide enough that a line wraps here only if it wraps on
+     paper. */
+  width: 100%;
+  max-width: 320px;
+  margin-inline: auto;
+}
+
+#receipt-paper-view *,
+#orders-receipt-paper *,
+#station-receipt-paper * {
+  /* Nothing on a receipt may be smaller than this and stay legible. */
+  font-size: 13px !important;
+}
+
+#receipt-paper-view h2,
+#orders-receipt-paper h2,
+#station-receipt-paper h2 {
+  font-size: 17px !important;
+  font-weight: 700 !important;
+}
+
+#receipt-paper-view .receipt-totals-row,
+#receipt-paper-view .receipt-totals-row *,
+#orders-receipt-paper .receipt-totals-row,
+#orders-receipt-paper .receipt-totals-row *,
+#station-receipt-paper .receipt-totals-row,
+#station-receipt-paper .receipt-totals-row * {
+  font-size: 15px !important;
+  font-weight: 700 !important;
+}
+
 /* An 80mm roll prints 72mm wide, by the same reasoning. */
 .receipt-paper-80 {
   background: #fff;
@@ -1715,9 +1765,21 @@ body.dark-mode {
    * plain rule, and those inline sizes were tuned when the paper was 74mm wide.
    * At the true 48mm they are unreadable, so print media restates them.
    */
-  /* The printable band inside each roll: 58mm prints 48mm, 80mm prints 72mm. */
-  .receipt-paper-58 { width: 48mm !important; }
-  .receipt-paper-80 { width: 72mm !important; }
+  /*
+   * Fill the roll.
+   *
+   * These were pinned to 48mm and 72mm - the printable band assumed for each
+   * roll. But the driver's page is already that band, so pinning a narrower
+   * width printed the receipt down about three quarters of the paper and wrapped
+   * values like an invoice number that would otherwise have fitted. The page is
+   * the paper: take all of it.
+   */
+  .receipt-paper-58,
+  .receipt-paper-80 {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+  }
 
   #receipt-paper-view, #orders-receipt-paper, #station-receipt-paper {
     font-size: 13px !important;
@@ -2581,6 +2643,15 @@ textarea:focus {
 .stk-wrap { width: 100%; max-width: 1400px; margin: 0 auto; padding: 24px; }
 
 .stk-head { margin-bottom: 18px; }
+.stk-flow { margin: 0 0 18px; padding: 14px 16px; border-left: 3px solid var(--accent-amber); background: rgba(200,130,42,.06); font-size: 13px; line-height: 1.6; }
+.stk-flow span { display: block; color: var(--text-secondary); font-size: 12px; }
+.stk-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.stk-action { padding: 11px 16px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-card); color: var(--text-primary); font: inherit; font-size: 13px; cursor: pointer; }
+.stk-action::after { content: ' +'; margin-left: 12px; }
+.stk-action[aria-expanded="true"] { border-color: var(--accent-amber); color: var(--accent-amber); }
+.stk-action[aria-expanded="true"]::after { content: ' −'; }
+.stk-action:focus-visible { outline: 2px solid var(--accent-amber); outline-offset: 3px; }
+.stk-card[hidden] { display: none; }
 .stk-head h2 { font-family: var(--font-display); font-size: 24px; font-weight: 800; margin: 0; }
 .stk-head p { font-size: 13px; color: var(--text-secondary); margin: 6px 0 0; max-width: 70ch; }
 
@@ -3014,4 +3085,68 @@ textarea:focus {
 
 @media (prefers-reduced-motion: reduce) {
   .pos-boot-bar span { animation: none; width: 100%; opacity: .6; }
+}
+
+/* ═══════════════════════════════════════════
+   Open tabs — the table a round is being added to
+   ═══════════════════════════════════════════ */
+
+.till-tab-bar {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.01);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Goes amber the moment the cart belongs to a table, so a waiter can see
+     at a glance that the next Pay Now joins a tab rather than opening one. */
+  box-shadow: inset 3px 0 0 transparent;
+  transition: box-shadow 0.18s, background 0.18s;
+}
+
+.till-tab-bar.on-tab {
+  background: rgba(200, 130, 42, 0.06);
+  box-shadow: inset 3px 0 0 var(--accent-amber);
+}
+
+.till-tab-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.till-tab-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: var(--font-main);
+  outline: none;
+}
+
+.till-tab-row input[type="text"]::placeholder {
+  color: var(--text-muted);
+}
+
+.till-tab-row .sec-btn {
+  padding: 8px 14px;
+  font-size: 12px;
+}
+
+/* One quiet line pointing at Tab Management, instead of a chip per table. */
+.till-tab-label {
+  display: block;
+  margin-top: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--accent-amber);
+}
+
+/* The cart heading names the tab it is filling. */
+.cart-header h3 .on-tab-note {
+  color: var(--accent-amber);
 }

@@ -1,3 +1,4 @@
+import { CACHE_TENANT_ID, selectCacheTenant, deviceForTenant, walkInForTenant } from './tenant-cache.js';
 /**
  * Firebase client for the till.
  *
@@ -8,6 +9,7 @@
  */
 
 import { roleLabel } from './roles.js';
+import { staffCredential } from './staff-credential.js';
 
 const cfg = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -56,7 +58,7 @@ async function boot() {
     import('firebase/functions')
   ]);
 
-  const app = getApps().length ? getApps()[0] : initializeApp(cfg);
+  const app = getApps().find((candidate) => candidate.name === '[DEFAULT]') || initializeApp(cfg);
   const authInstance = auth.getAuth(app);
   const dbInstance = firestore.getFirestore(app);
   const fnInstance = functions.getFunctions(app, REGION);
@@ -67,6 +69,25 @@ async function boot() {
     functions.connectFunctionsEmulator(fnInstance, '127.0.0.1', 5001);
   }
 
+  // Firebase identity can change in another tab. Tear down the old page rather
+  // than let its in-flight requests populate a different business's cache.
+  let hadIdentity = false;
+  auth.onIdTokenChanged(authInstance, async (user) => {
+    if (!user) {
+      if (hadIdentity && typeof window !== 'undefined') window.location.reload();
+      return;
+    }
+    hadIdentity = true;
+    const token = await user.getIdTokenResult();
+    if (token.claims.platform_admin === true && typeof window !== 'undefined') {
+      window.location.replace('/platform/');
+      return;
+    }
+    if (token.claims.tenant_id && selectCacheTenant(String(token.claims.tenant_id)) && typeof window !== 'undefined') {
+      window.location.reload();
+    }
+  });
+
   return { app, auth, authInstance, firestore, dbInstance, functions, fnInstance };
 }
 
@@ -76,7 +97,8 @@ export function getFirebase() {
   return bootPromise;
 }
 
-export const DEVICE_ID = process.env.NEXT_PUBLIC_DEVICE_ID || 'device-till-01';
+export const DEVICE_ID = deviceForTenant(CACHE_TENANT_ID, process.env.NEXT_PUBLIC_DEVICE_ID || 'device-till-01');
+export const WALK_IN_CUSTOMER_ID = walkInForTenant(CACHE_TENANT_ID);
 
 /**
  * Signs a staff member in with the password they own.
@@ -92,11 +114,14 @@ export async function signIn(email, password) {
   const credential = await fb.auth.signInWithEmailAndPassword(
     fb.authInstance,
     String(email || '').trim(),
-    String(password || ''),
+    staffCredential(password),
   );
 
   const token = await credential.user.getIdTokenResult();
   const claims = token.claims || {};
+  if (claims.platform_admin === true) {
+    return { platformAdmin: true, authUid: credential.user.uid, tenantId: null };
+  }
   if (!claims.tenant_id || !claims.staff_id) {
     // An account with no claims can see nothing, so fail here with something
     // the cashier can act on rather than at the first empty screen.
@@ -129,6 +154,10 @@ export async function restoreSession() {
 
   const token = await user.getIdTokenResult();
   const claims = token.claims || {};
+  if (claims.platform_admin === true) {
+    window.location.replace('/platform/');
+    return new Promise(() => {});
+  }
   if (!claims.tenant_id || !claims.staff_id) return null;
 
   return {
@@ -154,6 +183,9 @@ export async function currentClaims() {
   const fb = await getFirebase();
   if (!fb || !fb.authInstance.currentUser) return null;
   const token = await fb.authInstance.currentUser.getIdTokenResult();
+  if (token.claims.tenant_id && token.claims.tenant_id !== CACHE_TENANT_ID) {
+    throw new Error('Your business session changed. Reload this tab before continuing.');
+  }
   return token.claims;
 }
 
@@ -162,8 +194,10 @@ export async function currentClaims() {
  * Sync uses this to decide whether draining the outbox is worth attempting.
  */
 export async function hasTenantSession() {
-  const claims = await currentClaims();
-  return Boolean(claims && claims.tenant_id);
+  try {
+    const claims = await currentClaims();
+    return Boolean(claims && claims.tenant_id);
+  } catch { return false; }
 }
 
 export async function signOutTill() {

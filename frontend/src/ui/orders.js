@@ -632,7 +632,9 @@ export class OrdersView {
   /** A Finance Reconcile link opens the matching unpaid order in one step. */
   openLinkedReconciliation() {
     if (!this.reconcileReference || this.reconciliationOpened) return;
-    const order = this.allOrders().find((entry) => entry.ref === this.reconcileReference);
+    // Tab Management links a tab by one round's invoice; the card may carry the tab's name.
+    const order = this.allOrders().find((entry) => entry.ref === this.reconcileReference
+      || entry.roundRefs?.includes(this.reconcileReference));
     if (!order) return;
     this.reconciliationOpened = true;
     if (order.paymentStatus === 'paid') {

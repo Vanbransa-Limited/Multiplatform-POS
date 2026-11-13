@@ -55,7 +55,10 @@ export function saleAsOrder(sale, { payment, payments, cashierName, customerName
   const settlement = ledger.find((row) => !isReceivable(row?.method));
   // A pending round need not have a receivable row yet. Its header still
   // represents an unpaid bill; absence of a payment is not proof of payment.
-  const owed = sale.status === 'PENDING_PAYMENT' && !ledger.some(row => isReceivable(row?.method))
+  // A voided sale was taken back. Its receivable row may still read unsettled
+  // (pulled rows carry no void stamp), but nothing on it is owed.
+  const owed = sale.status === 'VOIDED' ? 0
+    : sale.status === 'PENDING_PAYMENT' && !ledger.some(row => isReceivable(row?.method))
     ? Math.max(receivableOwed, (Number(sale.grand_total) || 0) - ledger
       .filter((row) => !isReceivable(row?.method))
       .reduce((sum, row) => sum + (Number(row.amount) || 0), 0))
@@ -128,7 +131,10 @@ export function mergeTabRounds(orders, tabs) {
   const groups = new Map();
 
   for (const order of orders || []) {
-    const tab = order.tabId ? open.get(order.tabId) : null;
+    // Edit items voids a round and re-sends what is left as a new one, so a
+    // voided round is history, never part of the bill: merging it put every
+    // removed item, and its price, back on the table.
+    const tab = order.tabId && order.paymentStatus !== 'void' ? open.get(order.tabId) : null;
     if (!tab) {
       merged.push(order);
       continue;
@@ -145,6 +151,8 @@ export function mergeTabRounds(orders, tabs) {
         // The rounds behind the card, so settling can clear all of them.
         roundIds: [order.id],
         roundUuids: order.saleUuid ? [order.saleUuid] : [],
+        // Each round's own invoice, so a link or search by any of them finds the card.
+        roundRefs: [order.ref],
         lines: [...(order.lines || [])],
       };
       groups.set(tab.id, seed);
@@ -154,6 +162,7 @@ export function mergeTabRounds(orders, tabs) {
 
     group.roundIds.push(order.id);
     if (order.saleUuid) group.roundUuids.push(order.saleUuid);
+    group.roundRefs.push(order.ref);
     group.lines.push(...(order.lines || []));
     group.totalMinor += order.totalMinor;
     group.dueMinor += order.dueMinor;
@@ -278,7 +287,7 @@ export function visibleOrders(orders, branchId, { tab = 'all', search = '', allB
     if (wanted && !wanted.includes(String(order.status))) return false;
     if (!needle) return true;
     const haystack = [
-      order.ref, order.customerName, order.tableNumber, servingLabel(order),
+      order.ref, ...(order.roundRefs || []), order.customerName, order.tableNumber, servingLabel(order),
       // Both the name and the raw staff id: an owner tracing an order may have
       // either, and statusLabel puts the state itself within reach too.
       order.cashierName, order.staffId, order.settledByStaffId, statusLabel(order),

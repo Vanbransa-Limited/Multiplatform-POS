@@ -123,6 +123,7 @@ async function replaceServerRound(round, line) {
   const remaining = (await db.sale_lines.where('sale_id').equals(round.id).toArray())
     .filter((row) => row.id !== line.id);
   const product = await db.products.get(line.product_id);
+  const tab = round.tab_id ? await db.tabs.get(round.tab_id) : null;
 
   const { voidSale } = await import('./customer-orders');
   await voidSale({
@@ -144,6 +145,13 @@ async function replaceServerRound(round, line) {
       ...totals,
       id: replacementId,
       sale_uuid: crypto.randomUUID(),
+      // A new fiscal document: the server mints its invoice number. Copying the
+      // voided one gave two rows the same number, and the upload then named the
+      // tab after it, so the tab's reference drifted with every edit.
+      invoice_no: null,
+      server_sale_id: null,
+      server_invoice_no: null,
+      order_reference: round.order_reference || tab?.order_no || round.invoice_no || null,
       // Same seller as the voided round, so the board and finance still name them.
       created_by: round.created_by || round.staff_id,
       staff_id: round.staff_id || round.created_by,

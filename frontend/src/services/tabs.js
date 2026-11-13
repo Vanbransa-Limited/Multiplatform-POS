@@ -88,7 +88,8 @@ export function tabsWithTotals(tabs, rounds) {
   return (tabs || [])
     .filter((tab) => tab.status === OPEN)
     .map((tab) => {
-      const owned = byTab.get(tab.id) || [];
+      // A voided round (an Edit items correction) is no longer on the table.
+      const owned = (byTab.get(tab.id) || []).filter((round) => round.paymentStatus !== 'void');
       const unpaid = owned.filter((round) => round.paymentStatus === 'unpaid');
       return {
         ...tab,

@@ -152,7 +152,7 @@ export class SyncManager {
       customerId,
       idempotencyKey: sale.sale_uuid,
       tableNumber: sale.table_no || undefined,
-      ...(sale.tab_id ? { tabId: sale.tab_id, orderReference: tab?.order_no || sale.invoice_no } : {}),
+      ...(sale.tab_id ? { tabId: sale.tab_id, orderReference: tab?.order_no || sale.order_reference || sale.invoice_no } : {}),
       buyerKraPin: sale.buyer_pin || undefined,
       lines: sellable,
       payments: mappedPayments

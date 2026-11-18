@@ -76,14 +76,12 @@ export class SyncManager {
    * the row stays queued rather than being rejected in a loop.
    */
   async buildSalePayload(sale) {
-    this.skipTransmissionReason = null;
     // Why a payload could not be built, so the till can say more than "incomplete".
     const incomplete = (reason) => { this.incompleteReason = reason; return null; };
     const lines = await db.sale_lines.where('sale_id').equals(sale.id).toArray();
     let payments = await db.payments.where('sale_id').equals(sale.id).toArray();
     if (lines.length === 0) return incomplete('it has no items');
     if (isNonBillableAdjustment(sale, lines, payments)) {
-      this.skipTransmissionReason = 'adjustment_only';
       return null;
     }
     const receivable = missingReceivable(sale, payments);
@@ -262,7 +260,13 @@ export class SyncManager {
     }
     const payload = await this.buildSalePayload(sale);
     if (!payload) {
-      if (this.skipTransmissionReason === 'adjustment_only') {
+      // Publishing a round and draining the queue can overlap. Classify this
+      // sale's own rows instead of using mutable state shared by both calls.
+      const [lines, payments] = await Promise.all([
+        db.sale_lines.where('sale_id').equals(sale.id).toArray(),
+        db.payments.where('sale_id').equals(sale.id).toArray(),
+      ]);
+      if (isNonBillableAdjustment(sale, lines, payments)) {
         await db.sales.update(sale.id, { sync_pending: 0, sync_omitted: 'adjustment_only',
           sharing_pending: 0, sync_error_msg: null, fiscal_status: 'NOT_APPLICABLE' });
         return false;

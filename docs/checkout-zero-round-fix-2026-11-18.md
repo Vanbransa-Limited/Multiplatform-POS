@@ -12,7 +12,7 @@ The reported KES 2,100 bill is ORD-78-849214. Read-only production inspection fo
 
 ## Verification
 
-238 frontend tests, 176 backend tests and 33 browser checks pass; the frontend production build passes. Real IndexedDB browser reproductions exercise the three KES 2,100 rounds plus the empty marker through card, typed M-Pesa code and STK. Each claims exactly KES 2,100, makes three settlements, skips uploading the marker and preserves its unpaid zero record. STK carries the saved bill binding; new discount-only registration is refused. A separate table-close test preserves the marker while releasing a paid table.
+239 frontend tests, 176 backend tests and 33 browser checks pass; the frontend production build passes. Real IndexedDB browser reproductions exercise the three KES 2,100 rounds plus the empty marker through card, typed M-Pesa code and STK. Each claims exactly KES 2,100, makes three settlements, skips uploading the marker and preserves its unpaid zero record. STK carries the saved bill binding; new discount-only registration is refused. A separate table-close test preserves the marker while releasing a paid table. Concurrent upload classification reads each sale's own rows and does not use a mutable omission flag shared between uploads; a regression test prevents a real bill from being omitted by another round's state.
 
 Claude review was attempted using explicitly anonymized source after user approval. The CLI returned its five-hour account limit (reset shown as 11:50 p.m. Africa/Nairobi); no Claude approval of this additional batch is claimed. No real STK prompt, card charge or payment settlement was sent during tests.
 

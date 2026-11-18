@@ -199,3 +199,19 @@ test('an empty discount round is never uploaded as a zero-value sale', async () 
   assert.equal(payload,null);
   assert.equal(awaitingTransmission({sync_omitted:'adjustment_only',sync_pending:1,server_pending:true}),false);
 });
+
+test('overlapping uploads cannot use another round’s omission state to drop a real bill', async () => {
+  const start=source.indexOf('  async transmitSale(');
+  const body=source.slice(start,source.indexOf('\n  startSyncScheduler()',start)).replace('async transmitSale(','async function transmitSale(');
+  for(const marker of [true,false]) {
+    const sale={id:'bill',status:'PENDING_PAYMENT',grand_total:marker?0:2100,sync_pending:1};
+    const lines=[{product_id:marker?'prod-staff-discount':'real-food',unit_price:marker?0:2100,line_total:marker?0:2100}];
+    const updates=[];
+    const table=rows=>({where:()=>({equals:()=>({toArray:async()=>rows})})});
+    const db={sales:{update:async(id,patch)=>updates.push(patch)},sale_lines:table(lines),payments:table([{method:'CREDIT',amount:0}])};
+    const run=new Function('db','firebaseConfigured','isNonBillableAdjustment',`return ${body}`)(db,true,isNonBillableAdjustment);
+    assert.equal(await run.call({buildSalePayload:async()=>null,skipTransmissionReason:'adjustment_only',incompleteReason:'its payments are all zero'},sale),false);
+    if(marker)assert.equal(updates[0].sync_omitted,'adjustment_only');
+    else {assert.equal(updates[0].fiscal_status,'NEEDS_REVIEW');assert.equal(updates[0].sync_omitted,undefined);assert.equal(updates[0].sync_pending,undefined);}
+  }
+});

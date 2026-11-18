@@ -37,6 +37,10 @@ test('only signed-in selling staff may settle', () => {
 
 /** In-memory Firestore, matching the substitute the stock tests use. */
 function harness(docs) {
+  const validWrite = value => {
+    assert.notEqual(value, undefined, 'Firestore rejects undefined write fields');
+    if (value && typeof value === 'object') for (const item of Object.values(value)) validWrite(item);
+  };
   const snapshot = (ref) => ({ id: ref.id, ref, exists: docs.has(ref.path), data: () => docs.get(ref.path) });
   const original = { collection: db.collection, runTransaction: db.runTransaction };
   db.collection = (name) => ({
@@ -46,17 +50,17 @@ function harness(docs) {
   db.runTransaction = async (fn) => {
     const writes = [];
     const result = await fn({
-      getAll: async (...refs) => refs.map(snapshot),
-      get: async (target) => (target.__where
+      getAll: async (...refs) => { assert.equal(writes.length, 0, 'Firestore reads must precede writes'); return refs.map(snapshot); },
+      get: async (target) => { assert.equal(writes.length, 0, 'Firestore reads must precede writes'); return (target.__where
         ? {
           docs: [...docs]
             .filter(([path, data]) => path.startsWith(`${target.__where[0]}/`) && data[target.__where[1]] === target.__where[2])
             .map(([path]) => snapshot({ id: path.split('/')[1], path })),
         }
-        : snapshot(target)),
-      create: (ref, data) => writes.push([ref.path, data]),
-      set: (ref, data) => writes.push([ref.path, data]),
-      update: (ref, data) => writes.push([ref.path, { ...docs.get(ref.path), ...data }]),
+        : snapshot(target)); },
+      create: (ref, data) => { validWrite(data); writes.push([ref.path, data]); },
+      set: (ref, data) => { validWrite(data); writes.push([ref.path, data]); },
+      update: (ref, data) => { validWrite(data); writes.push([ref.path, { ...docs.get(ref.path), ...data }]); },
     });
     writes.forEach(([path, data]) => docs.set(path, data));
     return result;
@@ -162,6 +166,28 @@ test('one confirmed STK can clear two rounds only within the received total', as
   } finally { restore(); }
 });
 
+test('one typed receipt can clear reserved table rounds, but cannot pay another checkout', async () => {
+  for (const confirmed of [false, true]) {
+    const docs = base(), second = deterministicId('sale', 't1:uuid-2'), third = deterministicId('sale', 't1:uuid-3');
+    for (const id of [second, third]) {
+      docs.set(`sales/${id}`, { tenantId: 't1', branchId: 'b1', totalMinor: 20000 });
+      docs.set(`payments/${id}_payment_01`, { tenantId: 't1', saleId: id, method: 'credit', amountMinor: 20000 });
+    }
+    if (confirmed) docs.set(`mpesa_c2b_events/${deterministicId('c2b', 'confirmation:TABLECODE')}`, { tenantId: 't1', payload: { amountMinor: 70000 } });
+    const restore = harness(docs);
+    try {
+      await claimSalePayment.run({ auth, data: { saleUuids: ['uuid-1', 'uuid-2'], checkoutId: 'one-table', method: 'mpesa' } });
+      for (const uuid of ['uuid-1', 'uuid-2']) {
+        const result = await settleSale.run({ auth, data: { saleUuid: uuid, checkoutId: 'one-table', requestId: uuid, method: 'mpesa', reference: 'TABLECODE' } });
+        assert.equal(result.verified, confirmed);
+      }
+      assert.equal([...docs.values()].filter(row => row.source === 'sale_settlement').reduce((sum,row) => sum + row.amountMinor,0), 70000);
+      await claimSalePayment.run({ auth, data: { saleUuids: ['uuid-3'], checkoutId: 'other-table', method: 'mpesa' } });
+      await assert.rejects(settleSale.run({ auth, data: { saleUuid: 'uuid-3', checkoutId: 'other-table', requestId: 'third', method: 'mpesa', reference: 'TABLECODE' } }));
+    } finally { restore(); }
+  }
+});
+
 test('a proforma settles in cash, and the receivable stops being outstanding', async () => {
   const docs = base();
   const restore = harness(docs);
@@ -221,7 +247,7 @@ test('a bank reference is taken on trust as typed, and an unknown method is refu
   } finally { restoreFresh(); }
 });
 
-test('an M-Pesa code always settles, and is verified only when the provider confirmed that money', async () => {
+test('an unused M-Pesa code can be recorded, while a consumed confirmation is refused', async () => {
   const code = 'QGH4T21XZ9';
   const eventPath = `mpesa_c2b_events/${deterministicId('c2b', `confirmation:${code}`)}`;
   const settleWith = async (event) => {
@@ -236,17 +262,66 @@ test('an M-Pesa code always settles, and is verified only when the provider conf
 
   // Nothing from the provider, a short payment, or a used code: recorded on
   // the cashier's word, and never consuming the confirmation.
-  for (const event of [null, { tenantId: 't1', payload: { amountMinor: 40000 } }, { tenantId: 't1', settledSaleId: 'other', payload: { amountMinor: 50000 } }]) {
+  for (const event of [null, { tenantId: 't1', payload: { amountMinor: 40000 } }]) {
     const { result, docs } = await settleWith(event);
     assert.equal(result.verified, false);
     assert.equal(result.reference, code);
     assert.equal(docs.get(eventPath)?.settledSaleId ?? null, event?.settledSaleId ?? null);
   }
+  await assert.rejects(settleWith({ tenantId: 't1', settledSaleId: 'other', payload: { amountMinor: 50000 } }), /already settled/);
 
   const { result, docs } = await settleWith({ tenantId: 't1', payload: { amountMinor: 50000 } });
   assert.equal(result.verified, true);
   // Consumed, so the same confirmation cannot verify a second invoice.
   assert.equal(docs.get(eventPath).settledSaleId, SALE_ID);
+});
+
+test('typing an STK receipt consumes its confirmed proof and keeps the original receipt date', async () => {
+  const docs = base(); confirmedAttempt(docs);
+  const paidAt = { toMillis: () => 1000 };
+  docs.get('mpesa_payments/stk1').completedAt = paidAt;
+  const restore = harness(docs);
+  try {
+    const result = await settleSale.run({ auth, data: { saleUuid: 'uuid-1', requestId: 'sms-stk', method: 'mpesa', reference: 'testreceipt' } });
+    assert.equal(result.verified, true);
+    assert.equal(docs.get(`payment_intents/${deterministicId('intent', 't1:TESTRECEIPT')}`).status, 'consumed');
+    assert.equal(docs.get('mpesa_payments/stk1').settledSaleId, SALE_ID);
+    const payment = [...docs.values()].find(row => row.source === 'sale_settlement');
+    assert.equal(payment.paidAt, paidAt);
+  } finally { restore(); }
+});
+
+test('a manually recorded receipt cannot clear a second bill, including legacy rows without a receipt claim', async () => {
+  for (const legacy of [false, true]) {
+    const docs = base();
+    if (legacy) docs.set('payments/legacy', { tenantId: 't1', saleId: 'another-sale', method: 'mpesa', reference: 'SAMECODE', amountMinor: 50000, status: 'completed' });
+    const restore = harness(docs);
+    try {
+      if (!legacy) {
+        await settleSale.run({ auth, data: { saleUuid: 'uuid-1', requestId: 'first', method: 'mpesa', reference: 'SAMECODE' } });
+        docs.set(`sales/${deterministicId('sale', 't1:uuid-2')}`, { tenantId: 't1', branchId: 'b1' });
+        docs.set('payments/credit2', { tenantId: 't1', saleId: deterministicId('sale', 't1:uuid-2'), method: 'credit', amountMinor: 50000 });
+      }
+      await assert.rejects(settleSale.run({ auth, data: { saleUuid: legacy ? 'uuid-1' : 'uuid-2', requestId: 'second', method: 'mpesa', reference: 'SAMECODE' } }), /already recorded/);
+    } finally { restore(); }
+  }
+});
+
+test('a confirmed failed STK can retry from the same staff/device, while a non-M-Pesa claim preserves an unresolved prompt', async () => {
+  const docs = base();
+  docs.set('devices/d1', { tenantId: 't1', branchId: 'b1', status: 'active' });
+  const restore = harness(docs);
+  try {
+    await claimSalePayment.run({ auth, data: { saleUuids: ['uuid-1'], checkoutId: 'first', stkKey: 'old-key', deviceId: 'd1', method: 'stk' } });
+    const attemptId = deterministicId('mpesa-attempt', 't1:old-key');
+    docs.set(`mpesa_payments/${attemptId}`, { tenantId: 't1', status: 'ambiguous' });
+    await assert.rejects(claimSalePayment.run({ auth, data: { saleUuids: ['uuid-1'], checkoutId: 'first', deviceId: 'd1', method: 'cash' } }), /unconfirmed/);
+    await claimSalePayment.run({ auth, data: { saleUuids: ['uuid-1'], checkoutId: 'first', deviceId: 'd1', method: 'mpesa' } });
+    assert.equal(docs.get(`sales/${SALE_ID}`).checkoutStkKey, 'old-key');
+    docs.get(`mpesa_payments/${attemptId}`).status = 'failed';
+    await claimSalePayment.run({ auth, data: { saleUuids: ['uuid-1'], checkoutId: 'reopened', stkKey: 'new-key', deviceId: 'd1', method: 'stk' } });
+    assert.equal(docs.get(`sales/${SALE_ID}`).checkoutStkKey, 'new-key');
+  } finally { restore(); }
 });
 
 test('a retry after a lost response returns the first settlement, not a second one', async () => {

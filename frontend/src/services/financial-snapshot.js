@@ -14,7 +14,7 @@ const isBank = value => methodOf(value).includes('BANK');
 const credit = value => ['CREDIT', 'PROFORMA'].includes(methodOf(value));
 const refKey = value => String(value || '').trim().toUpperCase();
 
-export function financialSnapshot({ tenantId, from, to, localSales = [], localPayments = [], serverSales = [], serverPayments = [], attempts = [], customerOrders = [], heldOrders = [], staffScope = null, session = 'full', dayStartHour = 6, nightStartHour = 17 }) {
+export function financialSnapshot({ tenantId, from, to, localSales = [], localPayments = [], serverSales = [], serverPayments = [], attempts = [], customerOrders = [], heldOrders = [], proformas = [], staffScope = null, session = 'full', dayStartHour = 6, nightStartHour = 17, nowMs = Date.now() }) {
   if (!tenantId) throw new Error('Sign in to load financial records.');
   if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) throw new Error('Choose a valid period.');
   // The outer window spans whole trading days; this picks one session out of
@@ -41,10 +41,13 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
   // that names an order is married back to the reference the customer was
   // given and the kitchen ticket carries, rather than showing a document id.
   const orders = new Map(customerOrders.filter(o => o.tenantId === tenantId).map(o => [o.id, o]));
+  const invoices = new Map(proformas.filter(p => p.tenantId === tenantId).map(p => [p.id, p]));
+  const representedSales = new Set([...invoices.values()].map(invoice => invoice.linkedSaleId).filter(Boolean));
   const orderStaff = order => String(order?.settledByStaffId || order?.updatedByStaffId || '');
   const remote = serverSales.filter(s => s.tenantId === tenantId).map(s => ({
     id: s.id, tenant_id: s.tenantId, sale_uuid: s.idempotencyKey || s.saleUuid,
     invoice_no: s.invoiceNumber || s.id, staff_id: s.staffId, shift_id: s.shiftId,
+    checkout_stk_key: s.checkoutStkKey,
     sold_at: s.soldAt || s.createdAt, status: methodOf(s.status),
     subtotal: (s.subtotalMinor || 0) / 100, discount: (s.discountMinor || 0) / 100,
     grand_total: (s.totalMinor || 0) / 100, tax_total: (s.taxMinor || 0) / 100,
@@ -74,6 +77,7 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
   // attempt never knew the invoice number. Without this the viewer showed the
   // raw "mpesa_<uuid>" as the order, which names nothing anybody can act on.
   const saleByUuid = new Map(allSales.filter(s => s.sale_uuid).map(s => [String(s.sale_uuid), s]));
+  const saleByAttemptKey = new Map(allSales.filter(s => s.checkout_stk_key).map(s => [s.checkout_stk_key, s]));
   // Orders other tills are still holding, published for observation. They are
   // the only way to name the order behind a payment whose sale has not reached
   // the server yet - which is most of them while a device is queued.
@@ -114,9 +118,11 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
   const sales = allSales.filter(s => methodOf(s.status) === 'COMPLETED' && inRange(s.sold_at || s.created_at)).filter(mine);
   const selectedSales = new Set(sales.map(s => s.id));
   const ledger = serverPayments.filter(p => p.tenantId === tenantId).map(p => ({
-    id: p.id, sale_id: p.saleId, customer_order_id: p.customerOrderId,
+    id: p.id, sale_id: p.saleId, customer_order_id: p.customerOrderId, proforma_id: p.proformaId,
     method: methodOf(p.method), amount: (p.amountMinor || 0) / 100,
     reference: p.providerTransactionId || p.reference || '',
+    receipt_allocation_id: p.receiptAllocationId,
+    receipt_limit_minor: p.receiptLimitMinor,
     received_at: p.paidAt || p.createdAt, settled_at: p.settledAt,
     status: methodOf(p.status || 'completed'), source: p.source || 'payments',
     // Every server writer stamps whoever took the money as receivedByStaffId;
@@ -126,8 +132,8 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
     // belongs to does - and a menu order is answerable to whoever settled it.
     staff_id: p.staffId || p.receivedByStaffId
       || saleMap.get(p.saleId)?.staff_id || orderStaff(orders.get(p.customerOrderId)) || '',
-    order_reference: orders.get(p.customerOrderId)?.ref || '',
-    customer_name: orders.get(p.customerOrderId)?.customerName || '',
+    order_reference: invoices.get(p.proformaId)?.invoice?.number || orders.get(p.customerOrderId)?.ref || '',
+    customer_name: invoices.get(p.proformaId)?.invoice?.client?.name || orders.get(p.customerOrderId)?.customerName || '',
     // Only a provider confirmation proves money arrived. A typed bank or card
     // reference is a member of staff asserting it did, and says so.
     verified: p.verified !== false,
@@ -211,48 +217,72 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
     }
     const reference = refKey(payment.reference || payment.provider_txn_id);
     const key = isMpesa(payment.method) && reference ? `mpesa:${reference}` : `payment:${payment.id}`;
-    if (seen.has(key)) continue;
+    if (seen.has(key)) {
+      const previous = seen.get(key);
+      // Only the server's shared allocation proves several ledger rows are
+      // portions of one receipt. Legacy repeated codes stay deduplicated.
+      if (payment.receipt_allocation_id && previous.receipt_allocation_id === payment.receipt_allocation_id
+        && !previous.allocated_sale_ids?.includes(payment.sale_id) && mine(payment)) {
+        previous.amount = Math.min(previous.amount + payment.amount, Number(payment.receipt_limit_minor) / 100);
+        previous.allocated_sale_ids.push(payment.sale_id);
+        previous.invoice_no = [...new Set([...String(previous.invoice_no || '').split(' / '), saleMap.get(payment.sale_id)?.invoice_no].filter(Boolean))].join(' / ');
+        previous.verified = previous.verified && payment.verified;
+      }
+      continue;
+    }
     const sale = saleMap.get(payment.sale_id);
     const order = orders.get(payment.customer_order_id);
-    const row = { ...payment, received_at: payment.received_at || payment.created_at || sale?.sold_at,
+    const row = { ...payment, allocated_sale_ids: [payment.sale_id], received_at: payment.received_at || payment.created_at || sale?.sold_at,
       staff_id: payment.staff_id || sale?.staff_id || orderStaff(order), invoice_no: sale?.invoice_no,
       // What this money actually paid for: the invoice the till printed, or the
       // reference the customer was handed at the table.
       order_reference: payment.order_reference || order?.ref || '',
       customer_name: payment.customer_name || order?.customerName || '',
-      linked: Boolean(sale || payment.customer_order_id), status: 'SUCCESS' };
+      linked: Boolean(sale || payment.customer_order_id || invoices.has(payment.proforma_id)), status: 'SUCCESS' };
     if (!mine(row)) continue;
     receipts.push(row);
     seen.set(key, row);
   }
-  const otherAttempts = [];
+  const otherAttempts = ledger.filter(payment => payment.status === 'RECEIPT_CONFLICT' && inRange(payment.received_at) && mine(payment))
+    .map(payment => ({ ...payment, invoice_no: saleMap.get(payment.sale_id)?.invoice_no,
+      linked: Boolean(saleMap.has(payment.sale_id)), status: 'REVIEW', receiptConflict: true, verified: false }));
+  const outstandingSaleIds = new Set(ledger.filter(row => credit(row.method) && !row.settled_at && row.amount > 0).map(row => row.sale_id));
   for (const attempt of attempts.filter(a => a.tenantId === tenantId)) {
     const status = methodOf(attempt.status);
     const date = attempt.completedAt || attempt.requestedAt || attempt.createdAt;
+    const bills = [...new Map([
+      ...(attempt.settlementSaleIds || []), ...(attempt.settledSaleIds || []), attempt.settledSaleId,
+    ].filter(Boolean).map(id => saleMap.get(id)).concat([
+      saleByAttemptKey.get(attempt.idempotencyKey), byKey(saleByUuid, attempt.orderReference),
+    ]).filter(Boolean).map(sale => [sale.id, sale])).values()];
+    const hasHeldOrder = Boolean(byKey(heldByUuid, attempt.orderReference));
+    const unconfirmed = ['AMBIGUOUS', 'VERIFICATION_PENDING'].includes(status)
+      || (['PENDING', 'INITIATING'].includes(status) && nowMs - timestamp(attempt.requestedAt || attempt.createdAt) > 3 * 60_000);
     const row = { id: attempt.id, method: 'MPESA', amount: (attempt.amountMinor || 0) / 100,
       reference: attempt.receipt || attempt.orderReference || attempt.id, received_at: date,
       staff_id: attempt.staffId, phone: attempt.phone, source: 'M-Pesa confirmation',
       // The attempt stays visible in the payment audit, but it does not become
       // an unpaid order merely because a prompt was sent. Pending totals below
       // come only from records the organization's order viewers also show.
-      linked: Boolean(attempt.customerOrderId) || Boolean(byKey(saleByUuid, attempt.orderReference))
-        || Boolean(byKey(heldByUuid, attempt.orderReference)),
+      linked: Boolean(attempt.customerOrderId) || bills.length > 0 || hasHeldOrder,
       customer_order_id: attempt.customerOrderId,
       // The invoice first, then the table-menu reference, then the order number
       // the till that is holding it gave the customer. The internal key is a
       // last resort, and names nothing anybody can act on.
-      invoice_no: byKey(saleByUuid, attempt.orderReference)?.invoice_no,
+      invoice_no: bills.map(sale => sale.invoice_no).join(' / ') || undefined,
       order_reference: orders.get(attempt.customerOrderId)?.ref
-        || byKey(saleByUuid, attempt.orderReference)?.invoice_no
+        || bills.map(sale => sale.invoice_no).join(' / ')
         || byKey(heldByUuid, attempt.orderReference)?.ref
         || attempt.orderReference,
       // Said plainly: the money is here and the sale it paid for is not. That
       // is a till holding an unsent order, not a payment without a cause.
-      unsynced: !attempt.customerOrderId && !byKey(saleByUuid, attempt.orderReference),
-      held_on_till: Boolean(byKey(heldByUuid, attempt.orderReference)),
+      unsynced: !attempt.customerOrderId && !bills.length && hasHeldOrder,
+      unapplied: status === 'PAID' && (bills.some(sale => outstandingSaleIds.has(sale.id))
+        || (Boolean(attempt.customerOrderId) && methodOf(orders.get(attempt.customerOrderId)?.paymentStatus) !== 'PAID')),
+      held_on_till: hasHeldOrder,
       customer_name: orders.get(attempt.customerOrderId)?.customerName || '',
       verified: true,
-      status: status === 'PAID' ? 'SUCCESS' : ['FAILED', 'CANCELLED', 'EXPIRED'].includes(status) ? 'FAILED' : 'PENDING' };
+      status: status === 'PAID' ? 'SUCCESS' : ['FAILED', 'CANCELLED', 'EXPIRED'].includes(status) ? 'FAILED' : unconfirmed ? 'UNCONFIRMED' : 'PENDING' };
     if (status === 'PAID') {
       const key = attempt.receipt ? `mpesa:${refKey(attempt.receipt)}` : `attempt:${attempt.id}`;
       const existing = seen.get(key);
@@ -262,6 +292,8 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
         existing.amount = row.amount;
         existing.staff_id ||= row.staff_id;
         existing.phone = row.phone;
+        existing.verified = true;
+        existing.unapplied = (existing.allocated_sale_ids || [existing.sale_id]).some(id => outstandingSaleIds.has(id));
         continue;
       }
       if (!mine(row)) continue;
@@ -298,6 +330,7 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
   // unreceived-cash position.
   const unpaidOrders = [];
   for (const [saleId, amountMinor] of receivableBySale) {
+    if (representedSales.has(saleId)) continue;
     const sale = saleMap.get(saleId);
     if (!sale || amountMinor <= 0) continue;
     unpaidOrders.push({
@@ -334,7 +367,17 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
     };
     if (mine(row)) unpaidOrders.push(row);
   }
-  unpaidOrders.sort((a, b) => timestamp(b.placed_at) - timestamp(a.placed_at));
+  // The standalone register carries every unpaid invoice, including older prepared
+  // documents. It is an outstanding balance, never a sale or a received payment.
+  for (const invoice of invoices.values()) {
+    if (methodOf(invoice.paymentStatus) === 'PAID') continue;
+    const amount = Number(invoice.invoice?.dueMinor || 0) / 100;
+    const row = { id: invoice.id, source: 'proforma', branch_id: invoice.branchId,
+      reference: invoice.invoice?.number || invoice.id, customer_name: invoice.invoice?.client?.name || '',
+      amount, placed_at: invoice.createdAt, invoice_date: invoice.invoice?.date || '', staff_id: invoice.createdByStaffId || '', status: 'UNPAID' };
+    if (amount > 0 && mine(row)) unpaidOrders.push(row);
+  }
+  unpaidOrders.sort((a, b) => timestamp(b.invoice_date || b.placed_at) - timestamp(a.invoice_date || a.placed_at));
   const unpaidMinor = unpaidOrders.reduce((sum, order) => sum + minor(order.amount), 0);
   const pendingAttempts = otherAttempts.filter(p => p.status === 'PENDING');
 
@@ -390,6 +433,8 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
     // every consumer sees it on the report rather than bolted on afterwards.
     dataSource: '',
     receivable: receivableMinor / 100,
+    proformaOutstanding: unpaidOrders.filter(row => row.source === 'proforma').reduce((sum, row) => sum + minor(row.amount), 0) / 100,
+    proformaReceived: payments.filter(row => row.proforma_id).reduce((sum, row) => sum + minor(row.amount), 0) / 100,
     // Unpaid means an actual order exists in one of the business's order
     // viewers and no received payment has been married to it yet.
     unpaid: unpaidMinor / 100,
@@ -397,11 +442,20 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
     count: sales.length, paymentCount: payments.length,
     pendingCount: unpaidOrders.length,
     pendingAttemptCount: pendingAttempts.length,
+    unconfirmedAttemptCount: otherAttempts.filter(row => row.status === 'UNCONFIRMED').length,
+    receiptReviewCount: otherAttempts.filter(row => row.receiptConflict).length,
     unmatched: payments.filter(p => !p.linked).reduce((sum, p) => sum + minor(p.amount), 0) / 100,
     failed: otherAttempts.filter(p => p.status === 'FAILED').reduce((sum, p) => sum + minor(p.amount), 0) / 100,
     pending: unpaidMinor / 100,
     pendingAttempts: pendingAttempts.reduce((sum, p) => sum + minor(p.amount), 0) / 100,
   };
+}
+
+export function paymentAttemptLabel(row) {
+  if (row.receiptConflict) return 'RECEIPT ALREADY RECORDED — REVIEW';
+  if (row.status === 'UNCONFIRMED') return 'NO CONFIRMATION — PROMPT ONLY';
+  if (row.status === 'PENDING') return 'PROMPT PENDING';
+  return row.status || 'SUCCESS';
 }
 
 export function financialAnswer(m, question = 'summary') {
@@ -421,8 +475,10 @@ export function financialAnswer(m, question = 'summary') {
   const held = m.heldCount
     ? ` NOT COUNTED BELOW: ${m.heldCount} settlement(s) worth ${fmt(m.heldTotal)} are still held on a till and have not reached the business. Every figure here is what the server holds.`
     : '';
-  const coverage = `${m.dataSource || ''} Period: ${m.startStr} to ${m.endStr}.${when}${who}${held}${stray}${missed}`;
+  const review = m.receiptReviewCount ? ` ${m.receiptReviewCount} receipt conflict(s) require review and are excluded from money received.` : '';
+  const coverage = `${m.dataSource || ''} Period: ${m.startStr} to ${m.endStr}.${when}${who}${held}${stray}${missed}${review}`;
   const summary = `${m.paymentCount} confirmed payments received: ${fmt(m.collected)}. Cash: ${fmt(m.cash)}; M-Pesa: ${fmt(m.mpesa)}; bank transfer: ${fmt(m.bank ?? 0)}; card/other: ${fmt(m.other)}. ${m.count} completed sales: ${fmt(m.net)}. Payments received and sales booked are different totals.`;
+  if (/proforma|profoma/i.test(question)) return `${coverage}\nProforma invoices are kept in their standalone register and locked on issue. Outstanding across all invoice dates: ${fmt(m.proformaOutstanding || 0)}. Proforma payments received in this period: ${fmt(m.proformaReceived || 0)}, already included in total received and the relevant payment method. Issuing an invoice does not add to sales or money received.\n${summary}`;
   const reconciliation = `${fmt(m.unmatched)} received without a matching sale/order record. Failed/cancelled attempts: ${fmt(m.failed)}; ${m.pendingCount || 0} unpaid order(s): ${fmt(m.pending)} unreceived. Neither failed attempts nor unpaid orders are counted as collected money.`;
   if (/discount/i.test(question)) return `${coverage}\nRecorded sales discounts: ${fmt(m.discounts)} on gross sales of ${fmt(m.gross)}.`;
   if (/staff|who|team|cashier|waiter|server/i.test(question)) {

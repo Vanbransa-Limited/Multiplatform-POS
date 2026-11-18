@@ -27,14 +27,21 @@ export class InventoryView {
   async load() {
     this.render();
     this.bindEvents();
+    await this.loadSubTab();
+    void this.refreshMenu();
+  }
+
+  async refreshMenu() {
     // The ledger reads this device's cache while the customer menu is served
     // from the server, so without pulling first this screen can show one price
     // and the QR menu another - and this is the screen people trust.
     const reads = await Promise.allSettled([pullCatalogue(), pullStock(), pullIdentity()]);
+    if (this.disposed) return;
     if (reads.some(result => result.status === 'rejected')) {
       showNotification('Showing this till\'s cached menu - the server catalogue could not be read.', 'warning');
     }
-    if (!this.disposed) await this.loadSubTab();
+    // Do not replace a count/import form or search the operator has started editing.
+    if (!this.menuEdited) await this.loadSubTab();
   }
 
   dispose() { this.disposed = true; this.actionSheet?.dispose(); }
@@ -62,6 +69,8 @@ export class InventoryView {
   }
 
   bindEvents() {
+    this.container.addEventListener('input', () => { this.menuEdited = true; }, { once: true });
+    this.container.addEventListener('change', () => { this.menuEdited = true; }, { once: true });
     this.container.querySelectorAll('.pane-nav-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         this.container.querySelectorAll('.pane-nav-btn').forEach(b => b.classList.remove('active'));
@@ -354,9 +363,11 @@ export class InventoryView {
     });
   }
 
-  async renderLedger(pane) {
-    const all = await db.products.toArray();
-    if (this.disposed || !pane?.isConnected) return;
+  async renderLedger(pane, { preserveSearch = false } = {}) {
+    const generation = this.ledgerRenderGeneration = (this.ledgerRenderGeneration || 0) + 1;
+    const all = preserveSearch && this.ledgerProducts ? this.ledgerProducts : await db.products.toArray();
+    if (this.disposed || !pane?.isConnected || generation !== this.ledgerRenderGeneration) return;
+    this.ledgerProducts = all;
     // Retired products keep their row for history but leave the ledger.
     const live = all.filter((product) => !product.retired_at);
     const needle = this.ledgerSearch.trim().toLowerCase();
@@ -368,6 +379,7 @@ export class InventoryView {
     const view = paginate(products, this.ledgerPage);
     this.ledgerPage = view.page;
 
+    if (!preserveSearch || !pane.querySelector('#ledg-search')) {
     this.actionSheet?.dispose(); this.actionSheet = null;
     pane.innerHTML = `
       <div class="control-bar inventory-search-toolbar phone-sticky-toolbar">
@@ -405,14 +417,18 @@ export class InventoryView {
       </div>
       <div id="ledg-pager"></div>
     `;
+    }
 
     const tbody = document.getElementById('ledg-table-body');
-    const categories = new Map((await db.categories.toArray()).map(c => [c.id, c.name]));
-    if (this.disposed || !pane.isConnected || !tbody?.isConnected) return;
-
-    for (const prod of view.rows) {
-      const stock = state.currentBranch?.id ? await getHouseStock(prod.id, state.currentBranch.id) : 0;
-      if (this.disposed || !pane.isConnected || !tbody.isConnected) return;
+    const [categoryRows, stocks] = await Promise.all([
+      db.categories.toArray(),
+      Promise.all(view.rows.map(prod => state.currentBranch?.id ? getHouseStock(prod.id, state.currentBranch.id) : 0)),
+    ]);
+    const categories = new Map(categoryRows.map(c => [c.id, c.name]));
+    if (this.disposed || !pane.isConnected || !tbody?.isConnected || generation !== this.ledgerRenderGeneration) return;
+    const fragment = document.createDocumentFragment();
+    for (const [index, prod] of view.rows.entries()) {
+      const stock = stocks[index];
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td style="font-family:monospace;font-weight:600;">${prod.sku}</td>
@@ -456,8 +472,9 @@ export class InventoryView {
           <button class="stk-edit delete-prod-btn" data-id="${prod.id}" data-name="${escapeHtml(prod.name)}" style="padding:4px 8px;font-size:10px;margin-left:6px;">Delete entirely</button>` : ''}
         </td>
       `;
-      tbody.appendChild(tr);
+      fragment.appendChild(tr);
     }
+    tbody.replaceChildren(fragment);
 
     const pager = document.getElementById('ledg-pager');
     if (pager) {
@@ -468,20 +485,14 @@ export class InventoryView {
       });
     }
 
-    // The box existed but nothing listened to it. Re-rendering on every
-    // keystroke would take the focus with it, so the caret is put back.
+    // Keep the input mounted: typed characters and the caret never wait for stock reads.
     const search = document.getElementById('ledg-search');
     if (search) {
-      search.addEventListener('input', async (event) => {
+      search.oninput = (event) => {
         this.ledgerSearch = event.target.value;
         this.ledgerPage = 1;
-        await this.renderLedger(pane);
-        const again = document.getElementById('ledg-search');
-        if (again) {
-          again.focus();
-          again.setSelectionRange(again.value.length, again.value.length);
-        }
-      });
+        void this.renderLedger(pane, { preserveSearch: true });
+      };
     }
 
     // Removing keeps the row and marks it retired: sale lines and stock

@@ -102,6 +102,17 @@ test("unknown product tax codes fail closed", () => {
   );
 });
 
+test('table service is30% of goods before discounts, independent of its placeholder catalogue price or row order', () => {
+  const requestLines = [{ productId: 'prod-table-service', qty: 1, discountMinor: 0 }, { productId: 'food', qty: 1, discountMinor: 0 }];
+  const service = productDocument({ sellPriceMinor: 10000, isService: true });
+  const food = productDocument({ sellPriceMinor: 75000 });
+  const lines = prepareSaleLines(requestLines, [service, food], 'tenant-1');
+  assert.equal(lines[0].unitPriceMinor, 22500);
+  assert.equal(calculateSaleTotals(lines, [{ amountMinor: 97500 }]).totalMinor, 97500);
+  assert.throws(() => prepareSaleLines([{ ...requestLines[0], qty: 2 }, requestLines[1]], [service, food], 'tenant-1'), /single service line/);
+  assert.throws(() => prepareSaleLines(requestLines, [productDocument({ isService: false }), food], 'tenant-1'), /single service line/);
+});
+
 test("frontline staff cannot submit client-selected discounts", () => {
   const parsed = parseSaleInput(request({
     lines: [{ productId: "product-1", qty: 2, discountMinor: 100 }],

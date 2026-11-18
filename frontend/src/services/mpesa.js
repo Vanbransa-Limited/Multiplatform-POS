@@ -53,7 +53,9 @@ export class MpesaService {
     orderReference,
     customerId,
     lines,
-    serviceChargeMinor = 0
+    serviceChargeMinor = 0,
+    settlementSaleUuids,
+    checkoutId
   }) {
     const amountMinor = toMinor(amountKes);
     if (amountMinor <= 0) {
@@ -84,7 +86,8 @@ export class MpesaService {
         orderReference,
         customerId: customerId || null,
         lines: Array.isArray(lines) ? lines : [],
-        serviceChargeMinor
+        serviceChargeMinor,
+        ...(settlementSaleUuids ? { settlementSaleUuids, checkoutId } : {})
       });
       const status = typeof data?.status === 'string' ? data.status.toLowerCase() : 'unavailable';
       const attemptId = typeof data?.attemptId === 'string' && data.attemptId

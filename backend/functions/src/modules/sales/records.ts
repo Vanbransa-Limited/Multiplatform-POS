@@ -54,6 +54,7 @@ export function buildSaleRecords({
     invoiceNumber: `INV-${String(context.branch.code)}-${String(nextSequence).padStart(6, "0")}`,
     saleUuid: randomUUID(),
     status: "completed",
+    ...(dependencies.receiptConflicts?.length ? { paymentReviewRequired: true } : {}),
     tableNumber: input.tableNumber,
     ...(input.tabId ? { tabId: input.tabId, orderReference: input.orderReference || null } : {}),
     buyerKraPin: input.buyerKraPin,
@@ -106,6 +107,8 @@ export function buildSaleRecords({
         : null,
       status: "completed",
       ...(payment.unverified ? { verified: false } : {}),
+      ...(dependencies.receiptConflicts?.includes(String(payment.reference || '').trim().toUpperCase())
+        ? { verified: false, receiptConflict: true, status: 'receipt_conflict' } : {}),
       paidAt: timestamp,
       createdAt: timestamp,
     };

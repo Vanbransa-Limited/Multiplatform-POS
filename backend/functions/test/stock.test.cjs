@@ -78,8 +78,9 @@ test('a House request is fulfilled in the same step and cannot overdraw the Stor
   docs.set('stock_balances/b1_p1_STORE', { qty: 40 });
   const restore = harness(docs);
   try {
-    await assert.rejects(call(keeper, { action: 'request', qty: 41, requestId: 'r2' }), /holds only 40/);
-    const result = await call(keeper, { action: 'request', qty: 15, requestId: 'r3' });
+    // The store manager's own request needs no approval, so it moves at once.
+    await assert.rejects(call(manager, { action: 'request', qty: 41, requestId: 'r2' }), /holds only 40/);
+    const result = await call(manager, { action: 'request', qty: 15, requestId: 'r3' });
     assert.equal(result.location, 'HOUSE');
     // Both sides move together: no pending state for stock to sit in.
     assert.equal(docs.get('stock_balances/b1_p1_HOUSE').qty, 15);
@@ -118,6 +119,36 @@ test('correcting a count stays above the keeper and never happens without a reas
     assert.equal(audit.metadata.before, 10);
     assert.equal(audit.metadata.after, 8);
     assert.equal(audit.actorStaffId, 's9');
+  } finally { restore(); }
+});
+
+test('a House oversold below zero can still be refilled and corrected', async () => {
+  // Offline sales may drive the House negative; that must not lock the item.
+  const docs = base();
+  docs.set('stock_balances/b1_p1_STORE', { qty: 150 });
+  docs.set('stock_balances/b1_p1_HOUSE', { qty: -85 });
+  const restore = harness(docs);
+  try {
+    const moved = await call(manager, { action: 'request', qty: 80, requestId: 'n1' });
+    assert.deepEqual(moved, { qty: -5, location: 'HOUSE', storeQty: 70 });
+    const fixed = await call(manager, { action: 'adjust', qty: 12, location: 'HOUSE', expectedQty: -5, reason: 'Shelf count', requestId: 'n2' });
+    assert.equal(fixed.qty, 12);
+  } finally { restore(); }
+});
+
+test('a negative Store is never debited, and a corrupt balance is still refused', async () => {
+  const docs = base();
+  docs.set('stock_balances/b1_p1_STORE', { qty: -3 });
+  const restore = harness(docs);
+  try {
+    await assert.rejects(call(manager, { action: 'request', qty: 1, requestId: 'n3' }), /holds only -3/);
+    docs.set('stock_balances/b1_p1_STORE', { qty: 1.5 });
+    await assert.rejects(call(manager, { action: 'request', qty: 1, requestId: 'n4' }), /whole-number/);
+    // Typed quantities stay strict.
+    docs.set('stock_balances/b1_p1_STORE', { qty: 50 });
+    for (const [i, qty] of [-1, 1.5, '80'].entries()) {
+      await assert.rejects(call(manager, { action: 'request', qty, requestId: `n5-${i}` }), /whole-number/);
+    }
   } finally { restore(); }
 });
 
@@ -263,13 +294,13 @@ test('bar staff may pull stock into the House but never book a delivery', async 
   const bar = { token: { tenant_id: 't1', staff_id: 's4', staff_role: 'bar_staff' } };
   const restore = harness(docs);
   try {
-    const moved = await call(bar, { action: 'request', qty: 4, requestId: 'bar1' });
-    assert.equal(moved.qty, 4);
+    const asked = await call(bar, { action: 'request', qty: 4, requestId: 'bar1' });
+    assert.equal(asked.status, 'pending');
     await assert.rejects(call(bar, { action: 'receive', qty: 4, requestId: 'bar2' }), /stock management staff/);
-    await assert.rejects(call(bar, { action: 'adjust', qty: 1, location: 'HOUSE', expectedQty: 4, reason: 'x', requestId: 'bar3' }), /owner or a store manager/);
+    await assert.rejects(call(bar, { action: 'adjust', qty: 1, location: 'HOUSE', expectedQty: 0, reason: 'x', requestId: 'bar3' }), /owner or a store manager/);
     // The store manager corrects either room; the keeper still cannot.
-    await assert.rejects(call(keeper, { action: 'adjust', qty: 1, location: 'HOUSE', expectedQty: 4, reason: 'x', requestId: 'keep3' }), /owner or a store manager/);
-    const corrected = await call(manager, { action: 'adjust', qty: 9, location: 'HOUSE', expectedQty: 4, reason: 'Stock take', requestId: 'mgr3' });
+    await assert.rejects(call(keeper, { action: 'adjust', qty: 1, location: 'HOUSE', expectedQty: 0, reason: 'x', requestId: 'keep3' }), /owner or a store manager/);
+    const corrected = await call(manager, { action: 'adjust', qty: 9, location: 'HOUSE', expectedQty: 0, reason: 'Stock take', requestId: 'mgr3' });
     assert.equal(corrected.qty, 9);
   } finally { restore(); }
 });
@@ -320,5 +351,76 @@ test('removing a product retires it rather than deleting what history points at'
     assert.equal(after.showOnMenu, false);
     // Off the menu for the same reason it is off the till.
     assert.equal(publicProduct('p9', after), null);
+  } finally { restore(); }
+});
+
+const { decideStockRequest } = require('../lib/modules/stock');
+const cashier = { token: { tenant_id: 't1', staff_id: 's3', staff_role: 'cashier' } };
+const decide = (auth, data) => decideStockRequest.run({ auth, data });
+
+test('supervisor and store keeper request approval; foreign managers and retired items cannot approve', async () => {
+  for (const role of ['supervisor', 'store_keeper']) {
+    const docs = base(); docs.set('stock_balances/b1_p1_STORE', { qty: 30 });
+    const restore = harness(docs);
+    try {
+      const requester = { token: { tenant_id: 't1', staff_id: 'requester', staff_role: role } };
+      const asked = await call(requester, { action: 'request', qty: 4, requestId: 'role-check' });
+      assert.equal(asked.status, 'pending');
+      assert.equal(docs.get('stock_balances/b1_p1_STORE').qty, 30);
+      await assert.rejects(decide(requester, { requestId: asked.requestId, decision: 'approve' }));
+      await assert.rejects(decide({ token: { ...manager.token, tenant_id: 'other' } }, { requestId: asked.requestId, decision: 'approve' }));
+      await assert.rejects(call(requester, { action: 'request', qty: 5, requestId: 'role-check' }), /already used/);
+      docs.get('products/p1').isActive = false;
+      await assert.rejects(decide(manager, { requestId: asked.requestId, decision: 'approve' }), /active|available|retired/i);
+      await assert.rejects(call(requester, { action: 'request', qty: 4, requestId: 'inactive-item' }), /Restore/);
+      assert.equal(docs.get('stock_balances/b1_p1_STORE').qty, 30);
+    } finally { restore(); }
+  }
+});
+
+test('a waiter asks, nothing moves, and the store manager approves the move', async () => {
+  const docs = base();
+  docs.set('stock_balances/b1_p1_STORE', { qty: 30 });
+  const restore = harness(docs);
+  try {
+    const asked = await call(cashier, { action: 'request', qty: 24, reason: 'Bar', requestId: 'w1' });
+    assert.equal(asked.status, 'pending');
+    // Replaying the same request returns it rather than queueing a second one.
+    assert.deepEqual(await call(cashier, { action: 'request', qty: 24, reason: 'Bar', requestId: 'w1' }), asked);
+    assert.equal(docs.get('stock_balances/b1_p1_STORE').qty, 30);
+    assert.equal(docs.has('stock_balances/b1_p1_HOUSE'), false);
+    const pending = docs.get(`stock_requests/${asked.requestId}`);
+    assert.deepEqual([pending.status, pending.qty, pending.requestedByStaffId, pending.productName], ['pending', 24, 's3', 'Tusker']);
+
+    await assert.rejects(decide(cashier, { requestId: asked.requestId, decision: 'approve' }), /owner or a store manager/);
+    const done = await decide(manager, { requestId: asked.requestId, decision: 'approve' });
+    assert.deepEqual(done, { status: 'approved', qty: 24, storeQty: 6 });
+    assert.equal(docs.get('stock_balances/b1_p1_HOUSE').qty, 24);
+    assert.equal(docs.get('stock_balances/b1_p1_STORE').qty, 6);
+    assert.equal(docs.get(`stock_requests/${asked.requestId}`).decidedByStaffId, 's7');
+    const moves = [...docs].filter(([path]) => path.startsWith('stock_movements/')).map(([, m]) => [m.location, m.qty]).sort();
+    assert.deepEqual(moves, [['HOUSE', 24], ['STORE', -24]]);
+    const retry = await decide(owner, { requestId: asked.requestId, decision: 'approve' });
+    assert.equal(retry.alreadyDecided, true);
+    assert.equal(docs.get('stock_balances/b1_p1_HOUSE').qty, 24);
+    assert.equal([...docs.keys()].filter(path => path.startsWith('stock_movements/')).length, 2);
+  } finally { restore(); }
+});
+
+test('an approval the Store cannot cover stays pending, and a request can be turned down', async () => {
+  const docs = base();
+  docs.set('stock_balances/b1_p1_STORE', { qty: 10 });
+  const restore = harness(docs);
+  try {
+    const asked = await call(cashier, { action: 'request', qty: 24, requestId: 'w2' });
+    await assert.rejects(decide(owner, { requestId: asked.requestId, decision: 'approve' }), /holds only 10/);
+    assert.equal(docs.get(`stock_requests/${asked.requestId}`).status, 'pending');
+    const no = await decide(owner, { requestId: asked.requestId, decision: 'reject', reason: 'Ask for 10' });
+    assert.equal(no.status, 'rejected');
+    assert.equal(docs.get(`stock_requests/${asked.requestId}`).reason, 'Ask for 10');
+    assert.equal(docs.get('stock_balances/b1_p1_STORE').qty, 10);
+    assert.equal((await decide(owner, { requestId: asked.requestId, decision: 'reject' })).alreadyDecided, true);
+    await assert.rejects(decide(owner, { requestId: asked.requestId, decision: 'approve' }), /already rejected/);
+    await assert.rejects(decide(owner, { requestId: 'missing', decision: 'approve' }), /No such request/);
   } finally { restore(); }
 });

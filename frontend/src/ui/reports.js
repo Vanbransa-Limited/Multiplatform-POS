@@ -393,18 +393,19 @@ export class ReportsView {
 
   // ─── eTIMS Log ────────────────────────────────────────────────
   async renderEtimsLog(pane) {
-    const fiscalRecords = await db.fiscal_records.toArray();
+    // Only KRA-signed ETRs are fiscal records.
+    const fiscalRecords = (await db.fiscal_records.toArray()).filter((rec) => rec.result_code === 'ETR');
     const sales = await db.sales.toArray();
     const salesMap = new Map(sales.map(s => [s.id, s]));
     pane.innerHTML = `
       ${this._periodBar()}
-      <h3>eTIMS Device Outbox Transmission Log</h3>
-      <p style="font-size:11px;color:var(--text-secondary);margin-bottom:20px;">Live synchronisation status of invoices sent to eTIMS.</p>
+      <h3>ETR Receipts</h3>
+      <p style="font-size:11px;color:var(--text-secondary);margin-bottom:20px;">Bills KRA has signed from this till.</p>
       <div class="table-wrapper">
         <table class="pos-table">
           <thead><tr><th>Date / Time</th><th>Invoice No</th><th>eTIMS Reference</th><th>Code</th><th>Status</th></tr></thead>
           <tbody>
-            ${fiscalRecords.length===0 ? '<tr><td colspan="5" style="text-align:center;">No fiscal records yet.</td></tr>' : ''}
+            ${fiscalRecords.length===0 ? '<tr><td colspan="5" style="text-align:center;">No ETRs generated yet.</td></tr>' : ''}
             ${fiscalRecords.map(rec => {
               const s = salesMap.get(rec.sale_id);
               return `<tr>
@@ -412,7 +413,7 @@ export class ReportsView {
                 <td>${s ? s.invoice_no : '—'}</td>
                 <td style="font-family:monospace;font-size:11px;">${rec.cu_invoice_no}</td>
                 <td>${rec.result_code}</td>
-                <td><span class="badge success">FISCALIZED</span></td>
+                <td><span class="badge success">SIGNED</span></td>
               </tr>`;
             }).join('')}
           </tbody>

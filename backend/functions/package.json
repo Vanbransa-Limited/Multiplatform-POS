@@ -9,7 +9,7 @@
   "scripts": {
     "build": "npm run clean && tsc -p tsconfig.json",
     "clean": "node scripts/clean.cjs",
-    "test": "npm run build && node --test test/sales-domain.test.cjs test/roles.test.cjs test/provisioning.test.cjs test/mpesa.test.cjs test/mpesa-c2b.test.cjs test/customer-orders.test.cjs test/stock.test.cjs test/catalogue.test.cjs test/catalogue-delete.test.cjs test/customers.test.cjs test/sale-settlement.test.cjs test/discounted-checkout.test.cjs test/open-orders.test.cjs test/staff-rehire.test.cjs test/staff-credential.test.cjs test/platform.test.cjs",
+    "test": "npm run build && node --test test/sales-domain.test.cjs test/roles.test.cjs test/provisioning.test.cjs test/mpesa.test.cjs test/mpesa-settlement.test.cjs test/mpesa-c2b.test.cjs test/customer-orders.test.cjs test/stock.test.cjs test/catalogue.test.cjs test/catalogue-delete.test.cjs test/customers.test.cjs test/sale-settlement.test.cjs test/discounted-checkout.test.cjs test/open-orders.test.cjs test/staff-rehire.test.cjs test/staff-credential.test.cjs test/platform.test.cjs test/etims.test.cjs test/proformas.test.cjs",
     "mpesa:lifecycle": "node scripts/mpesa-lifecycle.cjs",
     "mpesa:configure": "node scripts/configure-mpesa.cjs",
     "watch": "tsc -p tsconfig.json --watch",

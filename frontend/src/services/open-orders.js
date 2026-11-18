@@ -3,6 +3,7 @@ import { callFunction, getFirebase, currentClaims } from './firebase';
 import { activeTenantId } from './catalogue';
 import { openOrderPublisherId, createSnapshotPublisher } from './open-order-publisher';
 import { saleAsOrder } from './customer-orders';
+import { billableCheckoutRounds } from './checkout-rounds';
 
 const publishSnapshot = createSnapshotPublisher(payload => callFunction('publishOpenOrders', payload));
 
@@ -34,10 +35,10 @@ export async function localHeldOrders({ branchId, tenantId } = {}) {
 
 async function heldOrdersSnapshot({ branchId, tenantId }) {
   // Held means: this till has it, the server does not, and it still stands.
-  const held = await db.sales.where('sync_pending').equals(1)
+  const held = await billableCheckoutRounds(await db.sales.where('sync_pending').equals(1)
     .filter(sale => sale.status !== 'VOIDED' && !sale.synced_at
       && (!branchId || sale.branch_id === branchId)
-      && (!tenantId || sale.tenant_id === tenantId)).toArray();
+      && (!tenantId || sale.tenant_id === tenantId)).toArray(), db);
   if (!held.length) return [];
 
   const ids = held.map(sale => sale.id);

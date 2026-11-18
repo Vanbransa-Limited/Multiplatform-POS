@@ -80,6 +80,8 @@ export type UpdatedStockBalance = {
 };
 
 export type SaleDependencies = {
+  receiptConflicts?: string[];
+  receiptClaims?: { ref: DocumentReference; data: DocumentData }[];
   physicalLines: PreparedLine[];
   digitalPayments: InputPayment[];
   balanceRefs: DocumentReference[];

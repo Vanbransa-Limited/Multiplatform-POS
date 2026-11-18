@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { mergeTabRounds, saleAsOrder, handledBy } from './customer-orders.js';
+import { isNonBillableAdjustment } from './checkout-rounds.js';
 
 const source = (await readFile(new URL('../ui/orders.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const start = source.indexOf('  async loadPosOrders(');
 const body = source.slice(start, source.indexOf('\n  /** Everything the board', start))
   .replace('async loadPosOrders(', 'async function loadPosOrders(');
-const make = (db, network = {}) => new Function('db', 'mergeTabRounds', 'saleAsOrder', 'handledBy', 'pullOpenOrders', 'pullSales', 'pullStaff', 'DEVICE_ID', `${body};return loadPosOrders;`)(db, mergeTabRounds, saleAsOrder, handledBy, network.pullOpenOrders, network.pullSales, async () => {}, 'device');
+const make = (db, network = {}) => new Function('db', 'mergeTabRounds', 'saleAsOrder', 'handledBy', 'pullOpenOrders', 'pullSales', 'pullStaff', 'DEVICE_ID', 'isNonBillableAdjustment', `${body};return loadPosOrders;`)(db, mergeTabRounds, saleAsOrder, handledBy, network.pullOpenOrders, network.pullSales, async () => {}, 'device', isNonBillableAdjustment);
 
 test('a shared snapshot handed over to sales cannot fall between the two cloud reads', async () => {
   const calls = [];

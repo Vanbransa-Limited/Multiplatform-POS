@@ -13,14 +13,18 @@ import { quickFinancialPeriod, tradingRange } from '../services/financial-period
 import { pullTradingHours, cachedTradingHours } from '../services/trading-hours';
 import { pullStaff } from '../services/staff';
 import { isReceivable } from '../services/takings';
+import { mergeTabLines } from '../services/tabs';
 import { removeTabLine, freeSettledTab } from '../services/tab-edit';
 import { MpesaService } from '../services/mpesa';
 import { DEVICE_ID } from '../services/firebase';
 import { enqueuePrintJob, isStationOnline } from '../services/print-queue';
-import { escapeHtml } from '../services/print-receipt';
+import { escapeHtml, renderEtrBlock } from '../services/print-receipt';
+import { etrFor, generateEtr } from '../services/etr';
 import { cashIsEnabled } from '../services/payment-settings';
 import { createMobileFilters } from './mobile-filters';
 import { catalogueCartLines } from '../services/service-charges';
+import { ProformaRegister } from './proformas';
+import { billableCheckoutRounds, isNonBillableAdjustment } from '../services/checkout-rounds';
 
 /** Cards are large, so a page holds fewer of them than a table row list. */
 const ORDER_CARDS_PER_PAGE = 8;
@@ -30,11 +34,15 @@ export class OrdersView {
     this.container = container;
     this.customerOrders = [];
     this.posOrders = [];
-    this.customerTab = 'running';
+    this.proformaId = new URLSearchParams(window.location.search).get('proforma') || '';
+    this.customerTab = this.proformaId ? 'proformas' : 'running';
     this.orderSort = 'table';
     // Financials can deep-link an exact unpaid order into this organization
     // viewer, where its existing payment controls perform the reconciliation.
     this.reconcileReference = new URLSearchParams(window.location.search).get('order') || '';
+    // Tab Management's Edit tab: open the item editor rather than payment.
+    this.invoiceLinked = new URLSearchParams(window.location.search).get('invoice') === '1';
+    this.editLinked = new URLSearchParams(window.location.search).get('edit') === '1';
     this.customerSearch = this.reconcileReference;
     this.customerPage = 1;
     this.productImages = new Map();
@@ -47,14 +55,23 @@ export class OrdersView {
   }
 
   async load() {
+    this.hours = cachedTradingHours();
     this.render();
     await this.loadProductImages();
     await this.loadPosOrders({ refresh: false });
+    if (this.disposed) return;
     this.bindEvents();
     this.refreshTimer = setInterval(() => { void this.refreshBoard(); }, 60_000);
     this.renderCustomerBoard();
+    this.proformaRegister = new ProformaRegister(this.container.querySelector('#orders-proformas'), { selectedId: this.proformaId });
+    void this.proformaRegister.load();
     this.openLinkedReconciliation();
     this.container.querySelector('#customer-orders-status').textContent = this.syncWarning;
+    void pullTradingHours().then(hours => {
+      if (this.disposed) return;
+      this.hours = hours;
+      this.renderCustomerBoard();
+    }).catch(() => {});
     // Cached rows make the board usable immediately. Refreshing history must
     // not hold up the floor or the live menu-order subscription.
     void this.loadPosOrders().then(() => {
@@ -88,7 +105,7 @@ export class OrdersView {
     }
   }
 
-  dispose() { this.disposed = true; clearInterval(this.refreshTimer); this.stopOrders?.(); this.filterSheet?.dispose(); }
+  dispose() { this.disposed = true; clearInterval(this.refreshTimer); this.stopOrders?.(); this.proformaRegister?.dispose(); this.filterSheet?.dispose(); }
 
   async refreshBoard() {
     if (this.refreshing || this.disposed) return;
@@ -367,6 +384,11 @@ export class OrdersView {
             </div>
           </div>
 
+          <div id="orders-etr-row" style="display: none; gap: 8px; padding: 12px 20px 0;">
+            <input type="text" id="orders-etr-pin" placeholder="Buyer KRA PIN (optional)" maxlength="11" autocomplete="off" aria-label="Buyer KRA PIN" style="flex: 1; text-transform: uppercase; padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); color: #fff;">
+            <button id="orders-etr-btn" style="background: var(--color-primary, #e8a535); color: #000; border: none; padding: 8px 16px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer;">Generate ETR</button>
+          </div>
+
           <!-- Actions Footer -->
           <div style="padding: 16px 20px; border-top: 1px solid var(--border-color); display: flex; gap: 10px; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.02);">
             <div style="display: flex; gap: 6px;">
@@ -418,11 +440,20 @@ export class OrdersView {
     try {
       const [sales, saleLines, payments, shifts, users, customers, products, tabs] = await db.transaction(
         'r', [db.sales, db.sale_lines, db.payments, db.shifts, db.users, db.customers, db.products, db.tabs],
-        () => Promise.all([
-        db.sales.toArray(), db.sale_lines.toArray(), db.payments.toArray(),
-        db.shifts.toArray(), db.users.toArray(), db.customers.toArray(), db.products.toArray(),
-        db.tabs.toArray(),
-      ]));
+        async () => {
+          const sales = this.allBranches ? await db.sales.toArray()
+            : await db.sales.where('branch_id').equals(state.currentBranch?.id || '').toArray();
+          const ids = sales.map(sale => sale.id);
+          const [lines, payments, shifts, users, customers, tabs] = await Promise.all([
+            ids.length ? db.sale_lines.where('sale_id').anyOf(ids).toArray() : [],
+            ids.length ? db.payments.where('sale_id').anyOf(ids).toArray() : [],
+            db.shifts.toArray(), db.users.toArray(),
+            db.customers.bulkGet([...new Set(sales.map(sale => sale.customer_id).filter(Boolean))]),
+            db.tabs.toArray(),
+          ]);
+          const products = await db.products.bulkGet([...new Set(lines.map(line => line.product_id).filter(Boolean))]);
+          return [sales, lines, payments, shifts, users, customers.filter(Boolean), products.filter(Boolean), tabs];
+        });
       if (this.disposed || generation !== this.posReadGeneration) return;
       const paymentBySale = new Map(payments.map((entry) => [entry.sale_id, entry]));
       // Every row, not just one: a settled proforma has the receivable and the
@@ -462,6 +493,8 @@ export class OrdersView {
       this.localOnlyNote = stuck.length
         ? `${stuck.length} sale(s) failed to reach the server: ${reasons.join(' | ')}`
         : '';
+      const queued = sales.filter(sale => !sale.synced_at && sale.status !== 'VOIDED');
+      if (queued.length) this.localOnlyNote = `${queued.length} order(s) are still held on this device and are not yet included in server sales totals. ${this.localOnlyNote}`.trim();
 
       // Every other till's open tables. They are published for watching only,
       // so they arrive flagged read-only and carry no settle or edit controls:
@@ -469,7 +502,8 @@ export class OrdersView {
       if (remote?.status === 'fulfilled') this.remoteOpenOrders = remote.value;
       if (remote?.status === 'rejected') this.syncWarning += ' Running tables from other tills could not refresh; showing the last available list.';
 
-      this.posOrders = mergeTabRounds(sales.map((sale) => {
+      this.posOrders = mergeTabRounds(sales.filter(sale => !sale.proforma_id
+        && !isNonBillableAdjustment(sale, saleLines.filter(line => line.sale_id === sale.id), ledgerBySale.get(sale.id) || [])).map((sale) => {
         const order = saleAsOrder(sale, {
           payment: paymentBySale.get(sale.id),
           payments: ledgerBySale.get(sale.id),
@@ -575,7 +609,7 @@ export class OrdersView {
         <div class="co-stat-label">${tile.label}</div>
       </div>`).join('');
 
-    tabs.innerHTML = ORDER_TABS.map((tab) => `
+    tabs.innerHTML = [...ORDER_TABS, { id: 'proformas', label: 'Proforma invoices' }].map((tab) => `
       <button type="button" class="co-tab" role="tab" data-order-tab="${tab.id}"
         aria-selected="${tab.id === this.customerTab}">${tab.label}</button>`).join('');
 
@@ -599,6 +633,22 @@ export class OrdersView {
       this.customerPage = next;
       this.renderCustomerBoard();
     });
+    let proformas = this.container.querySelector('#orders-proformas');
+    if (!proformas) {
+      proformas = document.createElement('div');
+      proformas.id = 'orders-proformas';
+      list.after(proformas);
+    }
+    const standalone = this.customerTab === 'proformas';
+    proformas.hidden = !standalone;
+    list.hidden = standalone;
+    pager.hidden = standalone;
+    stats.hidden = standalone;
+    stats.style.display = standalone ? 'none' : '';
+    // On phones the status tabs live in the filter sheet. Keep its trigger
+    // reachable so opening this register cannot strand someone outside Running.
+    this.container.querySelector('#orders-search-toolbar').classList.toggle('proforma-view', standalone);
+    this.container.querySelector('#orders-date-bar').style.display = standalone ? 'none' : '';
   }
 
   /**
@@ -637,11 +687,16 @@ export class OrdersView {
       || entry.roundRefs?.includes(this.reconcileReference));
     if (!order) return;
     this.reconciliationOpened = true;
+    if (order.source === 'pos' && this.invoiceLinked) {
+      void this.openInvoiceModal(order.id);
+      return;
+    }
     if (order.paymentStatus === 'paid') {
       this.container.querySelector('#customer-orders-status').textContent = `${order.ref} has already been reconciled.`;
       return;
     }
-    if (order.source === 'pos') this.openSettleModal(order.id);
+    if (order.source === 'pos' && this.editLinked) void this.openTabEditor(order.id);
+    else if (order.source === 'pos') this.openSettleModal(order.id);
     else this.openPayModal(order.id);
   }
 
@@ -904,6 +959,9 @@ export class OrdersView {
     if (closeBtn) closeBtn.addEventListener('click', closeModal);
     if (doneBtn) doneBtn.addEventListener('click', closeModal);
 
+    const etrBtn = document.getElementById('orders-etr-btn');
+    if (etrBtn) etrBtn.addEventListener('click', () => { void this.generateInvoiceEtr(); });
+
     const printBtn = document.getElementById('orders-modal-print');
     if (printBtn) {
       printBtn.addEventListener('click', () => {
@@ -943,9 +1001,17 @@ export class OrdersView {
 
   openSettleModal(saleId) {
     this.settlingSaleId = saleId;
-    this.settleRequestId = crypto.randomUUID();
     const order = this.settleTarget();
     if (!order) return;
+    // Keep the checkout reference through a partial settlement and reopening.
+    // Tenant, staff and branch scope prevents another account inheriting it.
+    const key = `pos_bill_checkout:${JSON.stringify([state.currentTenant?.id, state.currentUser?.id, order.branchId || state.currentBranch?.id, saleId])}`;
+    this.settleRequestIds ||= new Map();
+    this.settleRequestId = this.settleRequestIds.get(saleId);
+    try { this.settleRequestId ||= globalThis.localStorage?.getItem(key); } catch {}
+    this.settleRequestId ||= crypto.randomUUID();
+    this.settleRequestIds.set(saleId, this.settleRequestId);
+    try { globalThis.localStorage?.setItem(key, this.settleRequestId); } catch {}
 
     this.container.querySelector('#settle-due').textContent = `KES ${((order.dueMinor || order.totalMinor) / 100).toFixed(2)}`;
     this.container.querySelector('#settle-summary').textContent =
@@ -1032,13 +1098,14 @@ export class OrdersView {
     const lines = catalogueCartLines(
       await db.sale_lines.where('sale_id').anyOf(rounds.map((round) => round.id)).toArray(),
     );
-    if (lines.length === 0) {
+    const savedBill = rounds.every(round => round.synced_at);
+    if (lines.length === 0 && !savedBill) {
       message.textContent = 'This order has no items the catalogue can price, so M-Pesa cannot be charged for it. Record the payment under another method.';
       return;
     }
     // The prompt is raised against a customer, so a walk-in proforma is refused
     // by the server with a validation message no cashier can act on.
-    if (!order.customerId) {
+    if (!order.customerId && !savedBill) {
       message.textContent = 'This order is not on a customer, and an M-Pesa prompt is raised against one. Put it on a customer, or record the payment under another method.';
       return;
     }
@@ -1064,11 +1131,13 @@ export class OrdersView {
         idempotencyKey: this.settleStkKey,
         orderReference: this.settleStkKey.slice(0, 40),
         customerId: order.customerId || null,
-        lines
+        lines: savedBill ? [] : lines,
+        ...(savedBill ? { settlementSaleUuids: rounds.map(round => round.sale_uuid), checkoutId: this.settleRequestId } : {})
       });
 
       if (!push.success) {
         say(push.message || 'M-Pesa did not accept this payment.', 'danger');
+        if (['failed', 'cancelled', 'expired'].includes(push.status)) this.settleStkKey = `mpesa_${crypto.randomUUID()}`;
         return;
       }
 
@@ -1076,6 +1145,7 @@ export class OrdersView {
       const result = await this.mpesa.awaitResult(push.attemptId, (text) => say(text, 'warning'));
 
       if (result.status !== 'paid') {
+        if (['failed', 'cancelled', 'expired'].includes(result.status)) this.settleStkKey = `mpesa_${crypto.randomUUID()}`;
         say(result.resultDesc || 'M-Pesa did not confirm this payment. Do not release goods.', 'danger');
         return;
       }
@@ -1107,7 +1177,7 @@ export class OrdersView {
       const freedTable = await freeSettledTab(rounds.map((round) => round.tab_id).find(Boolean));
       await this.loadPosOrders();
       this.renderCustomerBoard();
-      message.textContent = `Paid. M-Pesa confirmed KES ${(settled.receivedMinor / 100).toFixed(2)}.`
+      message.textContent = (settled ? `Paid. M-Pesa confirmed KES ${(settled.receivedMinor / 100).toFixed(2)}.` : 'This bill was already settled on another device; no second settlement was recorded.')
         + (reached.ok ? '' : ` Not on the server yet: ${reached.reason}`)
         + (freedTable ? ` Table ${freedTable} is now free.` : '');
       say('Settled.', 'success');
@@ -1186,13 +1256,13 @@ export class OrdersView {
       return rounds;
     }
     const ids = order.roundIds?.length ? order.roundIds : [order.id];
-    const rounds = (await Promise.all(ids.map((id) => db.sales.get(id)))).filter(Boolean);
+    const rounds = await billableCheckoutRounds((await Promise.all(ids.map((id) => db.sales.get(id)))).filter(Boolean), db);
     if (!forPayment) return rounds;
     const { firebaseConfigured } = await import('../services/firebase');
     if (firebaseConfigured) {
       for (const round of rounds) if (!round.synced_at) await state.syncManager.publishSale(round.id);
       await pullSales(undefined, rounds.map(round => round.sale_uuid));
-      return (await Promise.all(ids.map(id => db.sales.get(id)))).filter(Boolean);
+      return (await Promise.all(rounds.map(round => db.sales.get(round.id)))).filter(Boolean);
     }
     return rounds;
   }
@@ -1219,6 +1289,10 @@ export class OrdersView {
 
     const method = this.settleMethod;
     if (!method) return;
+    if (['mpesa', 'stk'].includes(method) && rounds.some(round => !round.synced_at)) {
+      this.container.querySelector('#settle-message').textContent = 'Reconnect and save every round to the server before taking M-Pesa payment.';
+      return;
+    }
     const reference = this.container.querySelector('#settle-reference').value.trim();
     const message = this.container.querySelector('#settle-message');
     if (method === 'mpesa' && !reference) {
@@ -1233,6 +1307,8 @@ export class OrdersView {
       try {
         const claim = await claimSalePayment({
           saleUuids: rounds.map(round => round.sale_uuid), checkoutId: this.settleRequestId,
+          deviceId: DEVICE_ID,
+          method: method === 'stk' ? 'stk' : method,
           expectedMinor: (await Promise.all(rounds.map(round => this.roundOutstandingMinor(round)))).reduce((sum, amount) => sum + amount, 0),
           ...(method === 'stk' ? { stkKey: this.settleStkKey } : {}),
         });
@@ -1413,21 +1489,46 @@ export class OrdersView {
     // as a sale found nothing and the button silently did nothing. The invoice
     // is every round on the tab.
     const order = this.allOrders().find((entry) => entry.id === saleId);
-    const rounds = order ? await this.settleRounds(order) : [];
+    const isTab = Boolean(order && (order.roundIds?.length || order.kind === 'tab' || order.tabId));
+    let rounds = order ? await this.settleRounds(order) : [];
+    if (isTab && rounds.length) {
+      const ledger = await db.payments.where('sale_id').anyOf(rounds.map(round => round.id)).toArray();
+      rounds = rounds.filter(round => saleAsOrder(round, {
+        payments: ledger.filter(payment => payment.sale_id === round.id),
+      }).paymentStatus === 'unpaid');
+    }
     const sum = (field) => rounds.reduce((total, round) => total + (Number(round[field]) || 0), 0);
     const sale = rounds.length > 1
       ? { ...rounds[0], subtotal: sum('subtotal'), tax_total: sum('tax_total'), grand_total: sum('grand_total') }
       : rounds[0];
     if (!sale) {
+      if (isTab) {
+        showNotification('This tab has no unpaid rounds to invoice.', 'warning');
+        return;
+      }
       showNotification('This order is on another till. Open the invoice on the till running it.', 'warning');
       return;
     }
 
-    const lines = await db.sale_lines.where('sale_id').anyOf(rounds.map((round) => round.id)).toArray();
+    let lines = await db.sale_lines.where('sale_id').anyOf(rounds.map((round) => round.id)).toArray();
     const payment = await db.payments.where('sale_id').equals(sale.id).first();
-    const fiscal = await db.fiscal_records.where('sale_id').equals(sale.id).first();
+    const etr = await etrFor(sale.id);
+    this.invoiceOrderId = saleId;
+    this.invoiceSaleIds = rounds.map((round) => round.id);
+    const paid = rounds.every((round) => round.status !== 'PENDING_PAYMENT' && round.status !== 'VOIDED');
     const productsList = await db.products.toArray();
     const prodMap = new Map(productsList.map(p => [p.id, p]));
+
+    if (isTab) {
+      const combined = mergeTabLines(rounds.map(round => ({
+        ...round, paymentStatus: 'unpaid',
+        lines: lines.filter(line => line.sale_id === round.id).map(line => ({
+          ...line, name: line.product_name || line.name || prodMap.get(line.product_id)?.name || 'Item',
+        })),
+      })));
+      lines = combined.lines;
+      Object.assign(sale, { subtotal: combined.subtotal, tax_total: combined.tax_total, grand_total: combined.grand_total });
+    }
 
     // No invented identity: a placeholder here prints on a customer's receipt.
     const tenant = state.currentTenant || (await db.tenants.first()) || {};
@@ -1451,7 +1552,6 @@ export class OrdersView {
     const paper = document.getElementById('orders-receipt-paper');
     if (!paper) return;
 
-    const hasFiscal = !!fiscal;
     const invNo = sale.invoice_no || `INV-${sale.id.substring(0, 8).toUpperCase()}`;
     const pmtMethod = payment ? payment.method : 'CASH';
 
@@ -1467,7 +1567,8 @@ export class OrdersView {
       <div style="border-top: 1px dashed #666; margin: 8px 0;"></div>
       
       <div style="font-size: 13px; line-height: 1.5;">
-        <div><b>Invoice No:</b> ${invNo}</div>
+        ${isTab ? `<div><b>Tab invoice:</b> ${escapeHtml(order.ref)} &middot; Table ${escapeHtml(order.tableNumber || sale.table_no || '')}</div>
+        <div><b>Round invoices:</b> ${rounds.map(round => escapeHtml(round.invoice_no || `INV-${round.id.substring(0, 8).toUpperCase()}`)).join(', ')}</div>` : `<div><b>Invoice No:</b> ${invNo}</div>`}
         <div><b>Date:</b> ${new Date(sale.sold_at).toLocaleString()}</div>
         <div><b>Cashier:</b> ${cashierName}</div>
         <div><b>Customer:</b> ${customerName}</div>
@@ -1483,7 +1584,7 @@ export class OrdersView {
         </div>
         ${lines.map(line => {
           const prod = prodMap.get(line.product_id);
-          const pName = prod ? prod.name : 'Item';
+          const pName = isTab ? escapeHtml(line.name) : prod ? prod.name : 'Item';
           return `
             <div style="margin-bottom: 4px;">
               <div style="display: flex; justify-content: space-between; font-weight: 600;">
@@ -1491,7 +1592,7 @@ export class OrdersView {
                 <span>${(Number(line.line_total) || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span>
               </div>
               <div style="font-size: 12px; color: #555;">
-                ${line.qty} x ${(Number(line.unit_price) || 0).toFixed(2)} (Tax Code: ${line.tax_code || 'A'})
+                ${isTab ? `${escapeHtml(line.qty)} items` : `${line.qty} x ${(Number(line.unit_price) || 0).toFixed(2)} (Tax Code: ${line.tax_code || 'A'})`}
               </div>
             </div>
           `;
@@ -1503,43 +1604,29 @@ export class OrdersView {
       <div style="font-size: 13px; line-height: 1.6;">
         <div style="display: flex; justify-content: space-between;">
           <span>Subtotal:</span>
-          <span>KES ${sale.subtotal ? sale.subtotal.toFixed(2) : (sale.grand_total * 0.84).toFixed(2)}</span>
+          <span>KES ${isTab ? Number(sale.subtotal).toFixed(2) : sale.subtotal ? sale.subtotal.toFixed(2) : (sale.grand_total * 0.84).toFixed(2)}</span>
         </div>
         <div style="display: flex; justify-content: space-between;">
           <span>VAT (16%):</span>
-          <span>KES ${sale.tax_total ? sale.tax_total.toFixed(2) : (sale.grand_total * 0.16).toFixed(2)}</span>
+          <span>KES ${isTab ? Number(sale.tax_total).toFixed(2) : sale.tax_total ? sale.tax_total.toFixed(2) : (sale.grand_total * 0.16).toFixed(2)}</span>
         </div>
         <div style="display: flex; justify-content: space-between; font-weight: 800; font-size: 15px; margin-top: 4px; padding-top: 4px; border-top: 1px solid #000;">
-          <span>TOTAL PAID:</span>
-          <span>KES ${(Number(rounds.length === 1 && payment ? payment.amount : sale.grand_total) || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+          <span>${isTab ? 'TOTAL DUE:' : 'TOTAL PAID:'}</span>
+          <span>KES ${(Number(!isTab && rounds.length === 1 && payment ? payment.amount : sale.grand_total) || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
         </div>
       </div>
 
       <div style="border-top: 1px dashed #666; margin: 8px 0;"></div>
 
       <div style="font-size: 13px;">
-        <div><b>Payment Mode:</b> ${pmtMethod}</div>
-        ${payment && payment.reference ? `<div><b>Ref:</b> ${payment.reference}</div>` : ''}
-        <div><b>Status:</b> PAID &amp; CONFIRMED</div>
+        <div><b>Payment Mode:</b> ${isTab ? 'UNPAID' : pmtMethod}</div>
+        ${!isTab && payment && payment.reference ? `<div><b>Ref:</b> ${payment.reference}</div>` : ''}
+        <div><b>Status:</b> ${isTab ? 'UNPAID' : 'PAID &amp; CONFIRMED'}</div>
       </div>
 
       <div style="border-top: 1px dashed #666; margin: 8px 0;"></div>
 
-      <!-- KRA eTIMS Fiscal Block -->
-      <div style="text-align: center; font-size: 12px;">
-        <p style="font-weight: 800; margin: 0 0 4px 0;">*** KRA eTIMS FISCAL RECORD ***</p>
-        ${hasFiscal ? `
-          <p style="margin: 1px 0;">CU Serial: ${fiscal.cu_serial}</p>
-          <p style="margin: 1px 0; word-break: break-all;">Signature: ${fiscal.receipt_signature}</p>
-          <p style="margin: 1px 0;">Invoice No: ${fiscal.cu_invoice_no}</p>
-          <div style="margin-top: 6px; padding: 6px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 4px; display: inline-block;">
-            <div style="font-weight: 800; font-size: 12px; letter-spacing: 1px;">[ SCAN TO VERIFY KRA ]</div>
-          </div>
-        ` : `
-          <p style="color: #10b981; font-weight: 800; margin: 2px 0;">FISCALIZED &amp; VERIFIED</p>
-          <p style="margin: 0; color: #555;">KRA eTIMS Digital Signature Attached</p>
-        `}
-      </div>
+      ${isTab ? '' : renderEtrBlock(etr)}
 
       <div style="border-top: 1px dashed #666; margin: 8px 0;"></div>
       <div style="text-align: center; font-size: 12px; color: #444; margin-top: 6px;">
@@ -1548,7 +1635,29 @@ export class OrdersView {
       </div>
     `;
 
+    // An ETR is KRA's record of money received, so it is offered once the bill is paid.
+    document.getElementById('orders-etr-row').style.display = paid && !etr ? 'flex' : 'none';
+    document.getElementById('orders-etr-pin').value = sale.buyer_pin || '';
+
     this.showModal('#orders-invoice-modal');
+  }
+
+  /** Has KRA sign the open invoice, then redraws it as the ETR receipt. */
+  async generateInvoiceEtr() {
+    const button = document.getElementById('orders-etr-btn');
+    if (!this.invoiceSaleIds || button.disabled) return;
+    button.disabled = true;
+    button.textContent = 'Generating…';
+    try {
+      await generateEtr(this.invoiceSaleIds, document.getElementById('orders-etr-pin').value);
+      await this.openInvoiceModal(this.invoiceOrderId);
+      showNotification('ETR generated. Print it for the customer.', 'success');
+    } catch (error) {
+      showNotification(error?.message || 'The ETR could not be generated.', 'error');
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Generate ETR';
+    }
   }
 
   async exportOrders() {

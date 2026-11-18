@@ -30,6 +30,9 @@ backend/functions/coverage/
 *-firebase-adminsdk-*.json
 sa-key.json
 
+# Local import documents, review tooling and release diagnostics
+/tmp/
+
 # Playwright visual harness output (baselines ARE committed)
 frontend/visual/report/
 frontend/test-results/

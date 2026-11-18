@@ -3,6 +3,13 @@ import { getFirebase, currentClaims } from './firebase';
 
 export const cashIsEnabled = () => tenantStorage.getItem('pos_cash_enabled') !== 'false';
 
+export function cachedAcceptedMethods() {
+  try {
+    const methods = JSON.parse(tenantStorage.getItem('pos_accepted_methods') || '[]');
+    return Array.isArray(methods) ? methods : [];
+  } catch { return []; }
+}
+
 export async function pullPaymentSettings() {
   const fb = await getFirebase();
   const claims = await currentClaims();
@@ -36,9 +43,11 @@ export async function pullAcceptedMethods() {
   const claims = await currentClaims();
   if (!fb || !claims?.tenant_id) return [];
   const doc = await fb.firestore.getDoc(fb.firestore.doc(fb.dbInstance, 'tenant_settings', String(claims.tenant_id)));
-  return doc.exists() && Array.isArray(doc.data().acceptedPaymentMethods)
+  const methods = doc.exists() && Array.isArray(doc.data().acceptedPaymentMethods)
     ? doc.data().acceptedPaymentMethods
     : [];
+  tenantStorage.setItem('pos_accepted_methods', JSON.stringify(methods));
+  return methods;
 }
 
 /** Cash keeps its own switch, so it is never changed from here. */
@@ -62,6 +71,7 @@ export async function saveAcceptedMethods(methods) {
       updatedAt: fb.firestore.serverTimestamp(), updatedByStaffId: claims.staff_id,
     });
   });
+  tenantStorage.setItem('pos_accepted_methods', JSON.stringify([...wanted]));
   return [...wanted];
 }
 

@@ -194,6 +194,7 @@ export async function pullSales(sinceIso, saleUuids) {
         staff_id: doc.staffId || null,
         device_id: doc.deviceId || null,
         invoice_no: doc.invoiceNumber || entry.id,
+        proforma_id: doc.proformaId || null,
         // The till's own id for this sale. The server mints its own document
         // id but stores the till's as the idempotency key, so this is the only
         // thread back to the row the selling device already holds.
@@ -261,6 +262,7 @@ export async function pullSales(sinceIso, saleUuids) {
     // does not, such as the kitchen status this device is driving.
     const updates = {
       invoice_no: row.invoice_no,
+      proforma_id: row.proforma_id,
       fiscal_status: row.fiscal_status,
       synced_at: row.synced_at,
       staff_id: row.staff_id,
@@ -276,7 +278,7 @@ export async function pullSales(sinceIso, saleUuids) {
     const doc = entry.data();
     const saleId = doc.saleId || doc.customerOrderId || entry.id;
     const known = localIdFor.get(saleId);
-    const settlement = doc.source === 'sale_settlement';
+    const settlement = doc.source === 'sale_settlement' || (doc.source === 'proforma' && Boolean(doc.saleId));
     // The device wrote its own row for a tender it took. Pulling the server's
     // copy of it would double the money; a settlement recorded elsewhere is
     // the one payment it cannot already have.

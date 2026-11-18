@@ -3,9 +3,10 @@ import { createMobileFilters } from './mobile-filters.js';
 import { showNotification } from '../context.js';
 import { loadFinancialSnapshot } from '../services/financial-data.js';
 import { pullStaff } from '../services/staff.js';
-import { financialAnswer, timestamp } from '../services/financial-snapshot.js';
+import { financialAnswer, timestamp, paymentAttemptLabel } from '../services/financial-snapshot.js';
 import { quickFinancialPeriod, tradingRange } from '../services/financial-period.js';
 import { pullTradingHours, cachedTradingHours } from '../services/trading-hours.js';
+import { ProformaRegister } from './proformas.js';
 
 export class FinanceView {
   constructor(container) {
@@ -18,16 +19,21 @@ export class FinanceView {
     // It was computed from the fallback while the snapshot filtered sessions
     // on the tenant's setting, so a business that moved its opening hour got
     // two different days out of one screen.
-    this.hours = await pullTradingHours().catch(() => cachedTradingHours());
+    this.hours = cachedTradingHours();
     this.render();
     this.bindEvents();
+    this.proformaRegister = new ProformaRegister(this.container.querySelector('#fin-proformas'), { onPaid: () => this.loadMetrics() });
+    void this.proformaRegister.load();
+    this.hoursReady = pullTradingHours().then(hours => {
+      if (!this.disposed) this.hours = hours;
+    }).catch(() => {});
     this.filterSheet = createMobileFilters({
       container: this.container, toolbar: this.container.querySelector('.fin-card'),
       controls: [this.container.querySelector('.fin-date-bar')], title: 'Report filters',
       count: () => Number(this.container.querySelector('[data-fin-range].active')?.dataset.finRange !== 'today') + Number((this.session || 'full') !== 'full'),
       reset: () => { this.container.querySelector('[data-fin-session="full"]').click(); this.container.querySelector('[data-fin-range="today"]').click(); },
     });
-    await this.loadMetrics();
+    void this.loadMetrics();
   }
 
   render() {
@@ -114,7 +120,7 @@ export class FinanceView {
       '      <div class="m-card"><h5>Failed / Cancelled Attempts</h5><p class="m-val" id="fin-failed">KES 0</p></div>',
       '      <div class="m-card orange"><h5>Received Without A Date</h5><p class="m-val" id="fin-undated">KES 0</p><small id="fin-undated-count">Not counted in any period</small></div>',
       '      <div class="m-card orange"><h5>Held On A Till</h5><p class="m-val" id="fin-held">KES 0</p><small id="fin-held-count">Settled but not yet reached the business — not counted above</small></div>',
-      '      <div class="m-card"><h5>Pending / Unpaid Orders</h5><p class="m-val" id="fin-pending">KES 0</p><small id="fin-pending-count">0 orders · unreceived</small></div>',
+      '      <div class="m-card"><h5>Unpaid Orders / Proformas</h5><p class="m-val" id="fin-pending">KES 0</p><small id="fin-pending-count">0 orders · unreceived</small></div>',
       '      <div class="m-card"><h5>Gross Recorded Sales</h5><p class="m-val" id="fin-gross">KES 0</p></div>',
       '      <div class="m-card"><h5>Total Discounts</h5><p class="m-val" id="fin-disc">KES 0</p></div>',
       '      <div class="m-card green"><h5>Recorded Sales After Discounts</h5><p class="m-val" id="fin-net">KES 0</p></div>',
@@ -122,8 +128,8 @@ export class FinanceView {
       '      <div class="m-card orange"><h5>Completed Sales</h5><p class="m-val" id="fin-count">0</p></div>',
       '    </div>',
       '    <div class="fin-card">',
-      '      <h3 style="margin:0 0 6px;font-size:15px;color:#fff;">Pending orders to reconcile</h3>',
-      '      <p style="margin:0 0 12px;color:var(--text-secondary);font-size:12px;">Every unpaid order in this organization for the selected period. Match one to a received M-Pesa code, bank reference, card reference, or cash where this organization accepts cash.</p>',
+      '      <h3 style="margin:0 0 6px;font-size:15px;color:#fff;">Unpaid orders and proforma invoices</h3>',
+      '      <p style="margin:0 0 12px;color:var(--text-secondary);font-size:12px;">Unpaid orders for the selected period, plus currently outstanding proforma invoices across all invoice dates. Reconcile each when payment arrives. Proforma payments count in Total Received on the day recorded.</p>',
       '      <div id="fin-unpaid-orders" style="overflow:auto"></div>',
       '    </div>',
       '    <div class="fin-card">',
@@ -149,6 +155,7 @@ export class FinanceView {
       '        </table>',
       '      </div>',
       '    </div>',
+      '    <div class="fin-card" id="fin-proformas"></div>',
       '    <div class="fin-card"><h3>Transactions in selected period</h3><p>Payments are filtered by receipt date. Sales are filtered by sale date. Failed and pending attempts are excluded from money received. Unmatched payments are received money awaiting a sale/order record.</p><div id="fin-transactions" style="overflow:auto"></div></div>',
       '  </div>',
 
@@ -165,6 +172,7 @@ export class FinanceView {
       '      <div class="chip" data-q="cash vs mpesa">Cash vs M-Pesa</div>',
       '      <div class="chip" data-q="discount">Discounts</div>',
       '      <div class="chip" data-q="unpaid and pending">Unpaid</div>',
+      '      <div class="chip" data-q="proforma invoices">Proformas</div>',
       '      <div class="chip" data-q="staff rundown">Staff</div>',
       '      <div class="chip" data-q="bank transfers">Bank</div>',
       '      <div class="chip" data-q="insight">Insights</div>',
@@ -186,7 +194,7 @@ export class FinanceView {
     if (finEnd) finEnd.value = today.end;
   }
 
-  dispose() { this.filterSheet?.dispose(); }
+  dispose() { this.disposed = true; this.loadRequest = (this.loadRequest || 0) + 1; this.proformaRegister?.dispose(); this.filterSheet?.dispose(); }
 
   bindEvents() {
     const loadBtn = document.getElementById('fin-load-btn');
@@ -242,14 +250,23 @@ export class FinanceView {
   }
 
   async loadMetrics() {
+    const request = this.loadRequest = (this.loadRequest || 0) + 1;
+    // Paint the filters immediately, but price the report's day on trusted hours.
+    await this.hoursReady;
+    if (this.disposed || request !== this.loadRequest) return;
     const startEl = document.getElementById('fin-start');
     const endEl = document.getElementById('fin-end');
     if (!startEl || !endEl) return;
+    const preset = this.container.querySelector('[data-fin-range].active')?.dataset.finRange;
+    if (preset) {
+      const period = quickFinancialPeriod(preset, new Date(), this.hours);
+      startEl.value = period.start;
+      endEl.value = period.end;
+    }
 
     const startStr = startEl.value;
     const endStr = endEl.value;
     this.currentMetrics = null;
-    const request = this.loadRequest = (this.loadRequest || 0) + 1;
     if (!startStr || !endStr || startStr > endStr) {
       showNotification('Choose a valid start and end date.', 'warning');
       return;
@@ -263,10 +280,8 @@ export class FinanceView {
     try {
       // The roster is only pulled by Orders/Users, so a phone that opens
       // Finance directly printed staff ids instead of names.
-      const [report] = await Promise.all([
-        loadFinancialSnapshot(startTs, endTs, session),
-        pullStaff().catch(() => null),
-      ]);
+      void pullStaff().catch(() => null);
+      const report = await loadFinancialSnapshot(startTs, endTs, session);
       const { sales, transactions, gross, discounts, net, cash, mpesa, other, collected } = report;
       const [users, shifts] = await Promise.all([db.users.toArray(), db.shifts.toArray()]);
       const userMap = new Map(users.map(u => [u.id, u]));
@@ -307,10 +322,13 @@ export class FinanceView {
       // A till's internal key is not an order number. Where the sale behind a
       // payment has not reached the server, name that rather than print the key.
       const marriedTo = (p) => {
+        if (p.receiptConflict) return `${p.invoice_no || 'Saved sale'} — receipt needs review`;
+        if (p.unapplied) return `Received — not applied to ${p.invoice_no || p.order_reference || 'the order'}`;
         // The order number comes first even when the sale is still on a till:
         // that is the thing somebody can actually go and look at.
         if (p.held_on_till && p.order_reference) return `${p.order_reference} · ⚠ still on the till`;
         if (p.unsynced && p.status === 'SUCCESS') return '⚠ Sale still on the till — not synced';
+        if (p.status === 'SUCCESS' && !p.linked) return 'Received — invoice not matched';
         const named = p.invoice_no || p.order_reference || p.customer_order_id
           || (p.status === 'SUCCESS' ? 'No matching sale / order' : '-');
         return p.localOnly ? `${named} · ⚠ on this till only` : named;
@@ -319,7 +337,7 @@ export class FinanceView {
       const when = p => (Number.isFinite(timestamp(p.received_at))
         ? new Date(timestamp(p.received_at)).toLocaleString()
         : '⚠ No date recorded');
-      if (details) details.innerHTML = '<table class="fin-table"><thead><tr><th>Received / attempted</th><th>Reference</th><th>Staff</th><th>Method</th><th>Amount</th><th>Payment status</th><th>Sale / order</th></tr></thead><tbody>' + transactions.map(p => '<tr><td>' + escape(when(p)) + '</td><td>' + escape(p.reference || p.id) + (p.verified === false ? '<br><small style="color:var(--text-secondary)">unverified</small>' : '') + '</td><td>' + escape(staffName(p)) + '</td><td>' + escape(p.method) + '</td><td>' + fmt(p.amount) + '</td><td>' + escape(p.status === 'PENDING' ? 'PENDING / UNPAID' : p.status) + '</td><td>' + escape(marriedTo(p)) + (p.customer_name ? '<br><small>' + escape(p.customer_name) + '</small>' : '') + '</td></tr>').join('') + (transactions.length ? '' : '<tr><td colspan="7">No payment records in this period.</td></tr>') + '</tbody></table>';
+      if (details) details.innerHTML = '<table class="fin-table"><thead><tr><th>Received / attempted</th><th>Reference</th><th>Staff</th><th>Method</th><th>Amount</th><th>Payment status</th><th>Sale / order</th></tr></thead><tbody>' + transactions.map(p => '<tr><td>' + escape(when(p)) + '</td><td>' + escape(p.reference || p.id) + (p.verified === false ? '<br><small style="color:var(--text-secondary)">unverified</small>' : '') + '</td><td>' + escape(staffName(p)) + '</td><td>' + escape(p.method) + '</td><td>' + fmt(p.amount) + '</td><td>' + escape(paymentAttemptLabel(p)) + '</td><td>' + escape(marriedTo(p)) + (p.customer_name ? '<br><small>' + escape(p.customer_name) + '</small>' : '') + '</td></tr>').join('') + (transactions.length ? '' : '<tr><td colspan="7">No payment records in this period.</td></tr>') + '</tbody></table>';
       set('fin-payment-count', report.paymentCount);
       set('fin-unmatched', fmt(report.unmatched));
       set('fin-failed', fmt(report.failed));
@@ -335,7 +353,7 @@ export class FinanceView {
       set('fin-other-held', heldOn('other'));
       set('fin-held', fmt(report.heldTotal));
       // Held is money already taken that the business has not received a
-      // record of. It is not an unpaid tab - that is Pending / Unpaid Orders.
+      // record of. It is not an unpaid tab - that is Unpaid Orders / Proformas.
       set('fin-held-count', report.heldCount
         ? `${report.heldCount} payment(s) already taken at a till whose sale has not reached the server. Not unpaid tabs — money in hand, not yet in the books.`
         : 'Money taken at a till whose sale has not reached the server yet');
@@ -358,7 +376,7 @@ export class FinanceView {
 
       const unpaidOrders = document.getElementById('fin-unpaid-orders');
       if (unpaidOrders) unpaidOrders.innerHTML = '<table class="fin-table"><thead><tr><th>Raised</th><th>Order / invoice</th><th>Source</th><th>Staff</th><th>Branch</th><th style="text-align:right">Unreceived</th><th></th></tr></thead><tbody>'
-        + report.unpaidOrders.map(order => '<tr><td>' + escape(new Date(timestamp(order.placed_at)).toLocaleString()) + '</td><td>' + escape(order.reference) + (order.customer_name ? '<br><small>' + escape(order.customer_name) + '</small>' : '') + '</td><td>' + escape(order.source === 'customer_order' ? 'Customer order' : 'Till invoice') + '</td><td>' + escape(order.staff_id ? staffName(order) : 'Unassigned') + '</td><td>' + escape(order.branch_id || '—') + '</td><td style="text-align:right">' + fmt(order.amount) + '</td><td><a class="fin-reconcile" href="/orders?order=' + encodeURIComponent(order.reference) + '">Reconcile</a></td></tr>').join('')
+        + report.unpaidOrders.map(order => '<tr><td>' + escape(order.invoice_date || new Date(timestamp(order.placed_at)).toLocaleString()) + '</td><td>' + escape(order.reference) + (order.customer_name ? '<br><small>' + escape(order.customer_name) + '</small>' : '') + '</td><td>' + escape(order.source === 'proforma' ? 'Proforma invoice' : order.source === 'customer_order' ? 'Customer order' : 'Till invoice') + '</td><td>' + escape(order.staff_id ? staffName(order) : 'Unassigned') + '</td><td>' + escape(order.branch_id || '—') + '</td><td style="text-align:right">' + fmt(order.amount) + '</td><td><a class="fin-reconcile" href="/orders?' + (order.source === 'proforma' ? 'proforma=' + encodeURIComponent(order.id) : 'order=' + encodeURIComponent(order.reference)) + '">Reconcile</a></td></tr>').join('')
         + (report.unpaidOrders.length ? '' : '<tr><td colspan="7">No unpaid orders in this period.</td></tr>') + '</tbody></table>';
 
       // Render the staff rundown

@@ -7,6 +7,7 @@ import { deterministicId } from '../../shared/identifiers';
 import { MPESA_SECRETS, normalizePhone, parseMpesaConfig, sanitizeAccountReference } from '../mpesa/daraja';
 import { startReservedMpesa, verifyAttempt, type Reservation } from '../mpesa';
 import { serviceStaff } from './domain';
+import { readReceiptUsage, receiptAllocation } from '../../shared/mpesa-receipt';
 
 /**
  * Payment for a table-menu order is driven from the counter, not the customer's
@@ -131,6 +132,9 @@ export const settleCustomerOrderByCode = onCall({ region: FUNCTION_REGION }, asy
     if (!eventDoc.exists || event?.tenantId !== actor.tenantId || event?.disposition === 'quarantined') {
       throw new HttpsError('not-found', 'No M-Pesa payment with that code has reached this business. Check the code, or take another payment method.');
     }
+    if (event.settledSaleId || event.settledProformaId) {
+      throw new HttpsError('failed-precondition', 'That code has already settled another invoice.');
+    }
     if (event.settledCustomerOrderId) {
       throw new HttpsError('failed-precondition', event.settledCustomerOrderId === orderId
         ? 'This order is already settled by that code.'
@@ -143,6 +147,10 @@ export const settleCustomerOrderByCode = onCall({ region: FUNCTION_REGION }, asy
     }
 
     const paidAt = Timestamp.now();
+    const usage = await readReceiptUsage(tx, actor.tenantId, code);
+    tx.set(usage.ref, receiptAllocation(usage, { tenantId: actor.tenantId, reference: code,
+      allocationId: `customer_order:${orderId}`, target: `customer_order:${orderId}`,
+      amountMinor: dueMinor, limitMinor: receivedMinor, verified: true, now: paidAt }));
     tx.update(orderRef, {
       paymentStatus: 'paid', paymentMethod: 'mpesa', paymentReference: code, paidAt,
       settledByStaffId: actor.staffId,

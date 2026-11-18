@@ -27,7 +27,7 @@ export async function loadFinancialSnapshot(from, to, session = 'full') {
   // open_orders is read too: it is what names the order behind a payment whose
   // sale is still queued on a till. Never counted as money - only read to
   // resolve a reference - so it cannot inflate a single figure.
-  const names = ['sales', 'payments', 'mpesa_payments', 'customer_orders', 'open_orders'];
+  const names = ['sales', 'payments', 'mpesa_payments', 'customer_orders', 'open_orders', 'proformas'];
   const results = await Promise.allSettled(names.map(name => {
     const constraints = [fb.firestore.where('tenantId', '==', tenantId)];
     if (name === 'mpesa_payments' && !manages) {
@@ -58,13 +58,13 @@ export async function loadFinancialSnapshot(from, to, session = 'full') {
   const { dayStartHour, nightStartHour } = tradingDayConfig(settings);
   const report = financialSnapshot({ tenantId, from, to, localSales, localPayments,
     serverSales: records[0], serverPayments: records[1], attempts: records[2],
-    customerOrders: records[3], heldOrders: records[4],
+    customerOrders: records[3], heldOrders: records[4], proformas: records[5],
     staffScope, session, dayStartHour, nightStartHour });
   report.session = session;
   report.dayStartHour = dayStartHour;
   report.nightStartHour = nightStartHour;
   const failed = names.filter((_, i) => results[i].status === 'rejected');
-  const labels = { sales: 'sales', payments: 'payment ledger', mpesa_payments: 'M-Pesa confirmations', customer_orders: 'customer orders', open_orders: 'orders held on tills' };
+  const labels = { sales: 'sales', payments: 'payment ledger', mpesa_payments: 'M-Pesa confirmations', customer_orders: 'customer orders', open_orders: 'orders held on tills', proformas: 'proforma invoices' };
   // Say which account the figures belong to, always. A report that is quietly
   // narrowed to one staff member looks exactly like a quiet night otherwise.
   const scope = manages

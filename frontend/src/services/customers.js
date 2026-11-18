@@ -49,12 +49,10 @@ export async function pullCustomers() {
     fb.firestore.where('tenantId', '==', claims.tenant_id),
   ));
 
-  const rows = [];
-  for (const doc of snapshot.docs) {
-    const data = doc.data();
-    if (data.isActive === false) continue;
-    rows.push(toLocalRow(doc.id, data, await db.customers.get(doc.id)));
-  }
+  const active = snapshot.docs.filter(doc => doc.data().isActive !== false);
+  // One IndexedDB request, rather than one transaction per customer.
+  const existing = await db.customers.bulkGet(active.map(doc => doc.id));
+  const rows = active.map((doc, index) => toLocalRow(doc.id, doc.data(), existing[index]));
 
   if (rows.length) await db.customers.bulkPut(rows);
   return rows.length;

@@ -1,4 +1,5 @@
 import { tenantStorage } from './services/tenant-cache.js';
+import { roleLabel } from './services/roles.js';
 /**
  * Sidebar modules and the roles allowed to reach them.
  *
@@ -95,7 +96,8 @@ export const RESTRICTED_TABS = {
   'settings': ['Owner', 'Store Manager'],
   'inventory': ['Owner', 'Store Manager', 'Supervisor', 'Store Keeper'],
   'store-stock': ['Owner', 'Store Manager', 'Supervisor', 'Store Keeper'],
-  'house-stock': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Store Keeper'],
+  // Waiters request stock in from here, so they need the screen too.
+  'house-stock': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Cashier', 'Store Keeper'],
   'orders': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Cashier', 'Store Keeper'],
   // The same people who settle a table in Orders; this screen hands off there.
   'tabs': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Cashier', 'Store Keeper'],
@@ -111,11 +113,32 @@ export const RESTRICTED_TABS = {
   'audit-logs': ['Owner', 'Store Manager']
 };
 
+/**
+ * The owner's per-role switches (tenant_settings.moduleAccess, cached by
+ * pullStock), keyed by module with backend role codes. A module the owner
+ * never touched is absent and RESTRICTED_TABS still decides.
+ */
+function ownerAccess(key) {
+  try {
+    const roles = JSON.parse(tenantStorage.getItem('pos_module_access') || '{}')?.[key];
+    return Array.isArray(roles) ? roles.map(roleLabel) : null;
+  } catch { return null; }
+}
+
 export function canViewTab(role, tab) {
   // The House always exists, so only the Store screen can be switched off.
   const storeEnabled = typeof localStorage === 'undefined' || tenantStorage.getItem('pos_store_enabled') !== 'false';
   if (tab === 'store-stock' && !storeEnabled) return false;
-  const allowed = RESTRICTED_TABS[tab];
+  // The owner can never be switched out of anything, so they cannot lock themselves out.
+  if (role === 'Owner') return true;
+  const allowed = ownerAccess(tab) || RESTRICTED_TABS[tab];
+  return !allowed || allowed.includes(role);
+}
+
+/** Whether this role may ring up a sale. Everyone may until the owner says otherwise. */
+export function canSell(role) {
+  if (role === 'Owner') return true;
+  const allowed = ownerAccess('sell');
   return !allowed || allowed.includes(role);
 }
 

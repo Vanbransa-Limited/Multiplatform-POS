@@ -39,5 +39,16 @@ for (const width of [1440, 390]) {
     await expect(page.locator('.co-card')).toContainText('Kester');
     await page.evaluate(`view.remoteOpenOrders=[{id:'stale',saleUuids:['settled-round'],paymentStatus:'unpaid'}];view.posOrders[0].saleUuid='settled-round';`);
     expect(await page.evaluate('view.allOrders().some(o=>o.id==="stale")')).toBe(false);
+    if (width < 600) await page.getByRole('button', { name: /^Order filters/ }).click();
+    await page.getByRole('tab', { name: 'Proforma invoices', exact: true }).click();
+    if (width < 600) await page.getByRole('button', { name: 'Show results', exact: true }).click();
+    await expect(page.locator('#customer-orders-list')).toBeHidden();
+    await expect(page.locator('#customer-orders-stats')).toBeHidden();
+    if (width >= 600) await expect(page.locator('#orders-search-toolbar')).toBeHidden();
+    await expect(page.locator('#orders-proformas')).toHaveJSProperty('hidden', false);
+    if (width < 600) await page.getByRole('button', { name: /^Order filters/ }).click();
+    await page.getByRole('tab', { name: 'Running', exact: true }).click();
+    if (width < 600) await page.getByRole('button', { name: 'Show results', exact: true }).click();
+    await expect(page.locator('#customer-orders-list')).toBeVisible();
   });
 }

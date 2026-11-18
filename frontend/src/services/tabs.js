@@ -59,15 +59,23 @@ export function newTab({ id, tenantId, branchId, tableNo, customerId, staffId, s
 }
 
 /**
+ * What makes two tab names the same tab: "VIP", "vip " and "Table VIP" are one
+ * table, so they must never open two tabs side by side.
+ */
+export function tabKey(name) {
+  return String(name ?? '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/^table\s*/, '');
+}
+
+/**
  * The open tab at a table, if there is one.
  *
  * Deliberately by table and not by customer: the floor identifies a tab by
  * where it is sitting, and nobody types a customer in to add a round.
  */
 export function openTabAt(tabs, branchId, tableNo) {
-  const table = String(tableNo || '').trim();
+  const table = tabKey(tableNo);
   return (tabs || []).find((tab) => tab.status === OPEN
-    && tab.table_no === table
+    && tabKey(tab.table_no) === table
     && (!branchId || tab.branch_id === branchId)) || null;
 }
 
@@ -161,4 +169,23 @@ export function closingUpdate({ dueMinor, reason, staffId, now }) {
 export function tabOwes(rounds, paymentsBySale, asOrder) {
   return (rounds || []).some((sale) => sale.status !== 'VOIDED'
     && asOrder(sale, { payments: paymentsBySale.get(sale.id) }).paymentStatus === 'unpaid');
+}
+
+/** One unpaid bill, preserving round totals even when product prices changed. */
+export function mergeTabLines(rounds) {
+  const lines = new Map();
+  const totals = { subtotal: 0, tax_total: 0, grand_total: 0, dueMinor: 0, totalMinor: 0 };
+  for (const round of rounds || []) {
+    if (round.paymentStatus !== 'unpaid' || round.status === 'VOIDED') continue;
+    for (const field of Object.keys(totals)) totals[field] += Number(round[field]) || 0;
+    for (const line of round.lines || []) {
+      const name = line.product_name || line.name || 'Item';
+      const key = line.product_id ? `id:${line.product_id}` : `name:${name}`;
+      const merged = lines.get(key) || { ...line, name, qty: 0, line_total: 0 };
+      merged.qty += Number(line.qty) || 0;
+      merged.line_total += Number(line.line_total) || 0;
+      lines.set(key, merged);
+    }
+  }
+  return { lines: [...lines.values()], ...totals };
 }

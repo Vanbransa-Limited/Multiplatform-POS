@@ -50,6 +50,61 @@ function harness() {
   return { docs, restore: () => { Object.assign(db, original); } };
 }
 
+test('a legacy offline sale with a conflicting typed receipt uploads for review and replays without another stock movement', async () => {
+  const { docs, restore } = harness();
+  try {
+    docs.set('payments/original', { tenantId: 'tenant', saleId: 'original-sale', method: 'mpesa', reference: 'REUSEDCODE', amountMinor: 136000, status: 'completed' });
+    const data = { ...input, payments: [{ method: 'mpesa', reference: 'REUSEDCODE', amountMinor: 136000, unverified: true }] };
+    const result = await createSale.run({ auth, data });
+    assert.equal(result.sale.paymentReviewRequired, true);
+    assert.equal(result.payments[0].status, 'receipt_conflict');
+    assert.equal(result.payments[0].verified, false);
+    assert.equal(result.payments[0].receiptConflict, true);
+    assert.equal(docs.get('stock_balances/branch_meal_HOUSE').qty, 4);
+    assert.equal((await createSale.run({ auth, data })).replayed, true);
+    assert.equal(docs.get('stock_balances/branch_meal_HOUSE').qty, 4);
+    assert.equal([...docs.keys()].filter(key => key.startsWith('payment_receipt_claims/')).length, 0);
+  } finally { restore(); }
+});
+
+test('a KES925 table publishes its 30% service and 20% staff round, then one typed code settles both rounds once', async () => {
+  const { docs, restore } = harness();
+  try {
+    for (const [id, price] of [['drink', 10000], ['potatoes', 25000], ['pork', 40000], ['prod-table-service', 10000]]) {
+      docs.set(`products/${id}`, { tenantId: 'tenant', isActive: true, sellPriceMinor: price, taxCode: 'A', name: id, isService: id === 'prod-table-service' });
+    }
+    const firstInput = { ...input, idempotencyKey: 'table925-first-round', lines: [{ productId: 'drink', qty: 1 }], payments: [{ method: 'credit', amountMinor: 10000 }] };
+    const first = await createSale.run({ auth, data: firstInput });
+    // Discounts are allocated over recorded lines by the till, including the
+    // computed service row: total discount150, goods750 + service225 =825.
+    const roundInput = { ...input, idempotencyKey: 'table925-service-round', lines: [
+      { productId: 'prod-table-service', qty: 1, discountMinor: 3461 },
+      { productId: 'potatoes', qty: 1, discountMinor: 3846 },
+      { productId: 'drink', qty: 1, discountMinor: 1538 },
+      { productId: 'pork', qty: 1, discountMinor: 6155 },
+    ], payments: [{ method: 'credit', amountMinor: 82500 }] };
+    const round = await createSale.run({ auth, data: roundInput });
+    assert.equal(round.sale.subtotalMinor, 97500);
+    assert.equal(round.sale.discountMinor, 15000);
+    assert.equal(round.sale.totalMinor, 82500);
+    assert.equal(round.lines.find(line => line.productId === 'prod-table-service').unitPriceMinor, 22500);
+    assert.equal((await createSale.run({ auth, data: roundInput })).replayed, true);
+    const checkoutId = 'table925-checkout';
+    const claim = await claimSalePayment.run({ auth, data: { saleUuids: [firstInput.idempotencyKey, roundInput.idempotencyKey], checkoutId, expectedMinor: 92500, method: 'mpesa' } });
+    assert.equal(claim.dueMinor, 92500);
+    for (const [index, sale] of [firstInput, roundInput].entries()) {
+      const data = { saleUuid: sale.idempotencyKey, checkoutId, requestId: `925-${index}`, method: 'mpesa', reference: 'TEST925CODE' };
+      const settled = await settleSale.run({ auth, data });
+      assert.equal(settled.verified, false);
+      assert.deepEqual(await settleSale.run({ auth, data }), settled);
+    }
+    const receipts = [...docs.values()].filter(row => row.source === 'sale_settlement');
+    assert.equal(receipts.reduce((sum,row) => sum + row.amountMinor, 0), 92500);
+    assert.equal(receipts.length, 2);
+    assert.equal(first.sale.totalMinor + round.sale.totalMinor, 92500);
+  } finally { restore(); }
+});
+
 for (const method of ['typed-code', 'stk']) {
   test(`cashier registers the KES 1,360 staff-discount order and settles by ${method}`, async () => {
     const { docs, restore } = harness();
@@ -99,5 +154,16 @@ test('a confirmed staff-discount receipt can upload without being mistaken for a
     } });
     assert.equal(saved.sale.totalMinor, 136000);
     assert.equal(docs.get(`payment_intents/${deterministicId('intent', 'tenant:STAFFPAIDRECEIPT')}`).consumedSaleId, saved.sale.id);
+  } finally { restore(); }
+});
+
+test('a role the owner has switched off selling for cannot register a sale', async () => {
+  const { docs, restore } = harness();
+  try {
+    docs.set('tenant_settings/tenant', { tenantId: 'tenant', acceptedPaymentMethods: ['mpesa'], moduleAccess: { sell: ['bar_staff'] } });
+    await assert.rejects(createSale.run({ auth, data: input }), /Selling is switched off/);
+    assert.equal([...docs.keys()].some(path => path.startsWith('sales/')), false);
+    docs.set('tenant_settings/tenant', { tenantId: 'tenant', acceptedPaymentMethods: ['mpesa'], moduleAccess: { sell: ['cashier'] } });
+    assert.equal((await createSale.run({ auth, data: input })).sale.totalMinor, 136000);
   } finally { restore(); }
 });

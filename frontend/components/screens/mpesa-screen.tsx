@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { db } from "@/db/schema";
 import { loadFinancialSnapshot } from "@/services/financial-data";
-import { timestamp } from "@/services/financial-snapshot";
+import { timestamp, paymentAttemptLabel } from "@/services/financial-snapshot";
 import { quickFinancialPeriod, tradingRange } from "@/services/financial-period";
 import { pullTradingHours, cachedTradingHours } from "@/services/trading-hours";
 import { PAGE_SIZE, paginate } from "@/services/paginate";
@@ -40,6 +40,8 @@ type Row = {
   localOnly?: boolean;
   /** The sale is queued on a till that has published the order for watching. */
   held_on_till?: boolean;
+  unapplied?: boolean;
+  receiptConflict?: boolean;
 };
 
 const CELL = { padding: "12px 16px", fontSize: 13 } as const;
@@ -68,11 +70,14 @@ function formatDate(value: unknown) {
 
 /** What this money paid for, in the form somebody can act on. */
 function paidFor(row: Row) {
+  if (row.receiptConflict) return `${row.invoice_no || row.order_reference || 'Saved sale'} — receipt needs review`;
+  if (row.unapplied) return `Received — not applied to ${row.invoice_no || row.order_reference || 'the order'}`;
   // A till's internal key is not an order number. When the sale behind a
   // payment has not reached the server, saying so is more use than printing
   // the key: it names the till holding it rather than looking like a stray.
   if (row.held_on_till && row.order_reference) return `${row.order_reference} · ⚠ still on the till`;
   if (row.unsynced && row.status === "SUCCESS") return "⚠ Sale still on the till — not synced";
+  if (row.status === 'SUCCESS' && !row.linked) return 'Received — invoice not matched';
   const named = row.invoice_no || row.order_reference || row.customer_order_id
     || (row.status === "SUCCESS" ? "No matching sale / order" : "-");
   // The money is recorded here and nowhere else, so nobody but this till can
@@ -279,7 +284,9 @@ export function MpesaScreen() {
               <option value="ALL">All Statuses</option>
               <option value="SUCCESS">Success</option>
               <option value="FAILED">Failed</option>
-              <option value="PENDING">Pending / review</option>
+              <option value="PENDING">Open prompts</option>
+              <option value="UNCONFIRMED">Unconfirmed attempts</option>
+              <option value="REVIEW">Receipt review</option>
             </select>
           </div>
         </div>
@@ -312,7 +319,7 @@ export function MpesaScreen() {
                 view.rows.map((row) => {
                   const status = row.status || "SUCCESS";
                   const isSuccess = status === "SUCCESS";
-                  const isPending = status === "PENDING";
+                  const isPending = status === "PENDING" || status === 'UNCONFIRMED' || status === 'REVIEW';
                   return (
                     <tr key={row.id} style={{ borderBottom: "1px solid var(--border-color)" }}>
                       <td style={{ ...CELL, color: "var(--text-muted)" }}>{formatDate(row.received_at)}</td>
@@ -337,7 +344,7 @@ export function MpesaScreen() {
                       </td>
                       <td style={{ padding: "12px 16px" }}>
                         <span style={{ background: isSuccess ? "rgba(16, 185, 129, 0.1)" : isPending ? "rgba(245, 158, 11, 0.1)" : "rgba(244, 63, 94, 0.1)", color: isSuccess ? "var(--accent-green)" : isPending ? "var(--accent-amber)" : "var(--accent-rose)", padding: "4px 8px", borderRadius: 4, fontSize: 10, fontWeight: 800 }}>
-                          {isPending ? "PENDING / UNPAID" : status}
+                          {paymentAttemptLabel(row)}
                         </span>
                       </td>
                     </tr>

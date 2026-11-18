@@ -25,6 +25,8 @@ export async function pullStock() {
   // three-way mode keeps whatever Store it already had.
   const enabled = typeof data.storeEnabled === 'boolean' ? data.storeEnabled : data.stockMode !== 'house_only';
   tenantStorage.setItem('pos_store_enabled', String(enabled));
+  // Rides along on the same settings read: the owner's per-role module switches.
+  tenantStorage.setItem('pos_module_access', JSON.stringify(data.moduleAccess || {}));
   await db.transaction('rw', db.stock_balances, async () => {
     await db.stock_balances.clear();
     await db.stock_balances.bulkPut(balances.docs.map((doc) => ({ ...doc.data(), id: doc.id })));
@@ -74,12 +76,38 @@ export async function pullStockMovements(branchId, max = 60) {
   return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 }
 
+/**
+ * House requests still waiting on the store manager, oldest first.
+ * Equality filters only, so no composite index is needed.
+ */
+export async function pullStockRequests(branchId) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id || !branchId) return [];
+  const snapshot = await fb.firestore.getDocs(fb.firestore.query(
+    fb.firestore.collection(fb.dbInstance, 'stock_requests'),
+    fb.firestore.where('tenantId', '==', claims.tenant_id),
+    fb.firestore.where('branchId', '==', branchId),
+    fb.firestore.where('status', '==', 'pending'),
+  ));
+  return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+    .sort((a, b) => (a.createdAt?.toMillis?.() || 0) - (b.createdAt?.toMillis?.() || 0));
+}
+
+export async function decideStockRequest(requestId, decision, reason) {
+  const result = await callFunction('decideStockRequest', { requestId, decision, reason });
+  return refreshAfterStockCommit(result);
+}
+
+async function refreshAfterStockCommit(result) {
+  try { await pullStock(); return result; }
+  catch (error) { return { ...result, refreshWarning: `Saved on the server. Stock could not refresh: ${error.message}` }; }
+}
+
 /** Books a whole delivery note or stock take from a spreadsheet. */
 export async function importStock(payload) {
   const result = await callFunction('importStock', payload);
-  await pullStock();
-  return result;
+  return refreshAfterStockCommit(result);
 }
 
-export async function changeStock(input) { const result = await callFunction('changeStock', input); await pullStock(); return result; }
-export async function configureStock(storeEnabled) { const result = await callFunction('configureStock', { storeEnabled }); await pullStock(); return result; }
+export async function changeStock(input) { return refreshAfterStockCommit(await callFunction('changeStock', input)); }
+export async function configureStock(storeEnabled) { return refreshAfterStockCommit(await callFunction('configureStock', { storeEnabled })); }

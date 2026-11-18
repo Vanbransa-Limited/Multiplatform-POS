@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { tabsWithTotals, tabOwes, closingUpdate, OPEN } from './tabs.js';
 import { saleAsOrder } from './customer-orders.js';
+import { billableCheckoutRounds } from './checkout-rounds.js';
 
 const source = (await readFile(new URL('./tab-edit.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const readBody = source.slice(source.indexOf('export async function readOpenTabs('), source.indexOf('/**\n * Frees a table'))
@@ -26,7 +27,8 @@ function setup() {
       { id: 'p2', sale_id: 's2', method: 'CASH', amount: 200 },
       { id: 'old', sale_id: 'old', method: 'CASH', amount: 1000 },
     ],
-    sale_lines: [{ id: 'l1', sale_id: 's1', qty: 2 }, { id: 'l2', sale_id: 's2', qty: 3 }],
+    products: [{ id: 'beer', name: 'Beer' }],
+    sale_lines: [{ id: 'l1', sale_id: 's1', product_id: 'beer', qty: 2 }, { id: 'l2', sale_id: 's2', qty: 3 }],
   };
   const calls = [];
   const db = Object.fromEntries(Object.entries(rows).map(([name, data]) => [name, {
@@ -50,7 +52,7 @@ function setup() {
   db.transaction = async (_mode, _tables, run) => run();
   return { rows, calls,
     read: new Function('db', 'saleAsOrder', 'tabsWithTotals', 'OPEN', `${readBody}; return readOpenTabs;`)(db, saleAsOrder, tabsWithTotals, OPEN),
-    free: new Function('db', 'saleAsOrder', 'tabOwes', 'closingUpdate', 'OPEN', 'state', `${freeBody}; return freeSettledTab;`)(db, saleAsOrder, tabOwes, closingUpdate, OPEN, { currentUser: { id: 'staff' } }),
+    free: new Function('db', 'saleAsOrder', 'tabOwes', 'closingUpdate', 'OPEN', 'state', 'billableCheckoutRounds', `${freeBody}; return freeSettledTab;`)(db, saleAsOrder, tabOwes, closingUpdate, OPEN, { currentUser: { id: 'staff' } }, billableCheckoutRounds),
   };
 }
 
@@ -60,6 +62,7 @@ test('open tabs follow indexes and retain unpaid totals, quantities and branch b
   assert.equal(tabs.length, 1);
   assert.equal(tabs[0].dueMinor, 10_000);
   assert.equal(tabs[0].items, 2);
+  assert.equal(tabs[0].unpaidRounds[0].lines[0].name, 'Beer');
   assert.equal(tabs[0].rounds.length, 2);
   assert.equal((await read()).length, 2);
 });
@@ -97,4 +100,14 @@ test('closing a tab queries only its rounds and does not close unpaid tables', a
   rows.payments[0].settled_at = '2026-11-07';
   assert.equal(await free('open'), '1');
   assert.equal(rows.tabs[0].status, 'SETTLED');
+});
+
+test('a preserved empty discount marker does not keep a fully paid table occupied', async () => {
+  const { rows, free } = setup();
+  rows.payments[0].settled_at = 'paid';
+  rows.sales.push({id:'marker',tab_id:'open',status:'PENDING_PAYMENT',grand_total:0});
+  rows.sale_lines.push({id:'marker-line',sale_id:'marker',product_id:'prod-staff-discount',unit_price:0,line_total:0,qty:1});
+  rows.payments.push({id:'marker-credit',sale_id:'marker',method:'PROFORMA',amount:0});
+  assert.equal(await free('open'),'1');
+  assert.equal(rows.sales.find(row=>row.id==='marker').status,'PENDING_PAYMENT','source is preserved, never labelled paid');
 });

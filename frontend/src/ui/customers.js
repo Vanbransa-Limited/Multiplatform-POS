@@ -14,15 +14,23 @@ export class CustomersView {
 
   async load() {
     this.render();
+    this.bindEvents();
+    await this.loadCustomers();
+    void this.refreshCustomers();
+  }
+
+  dispose() { this.disposed = true; }
+
+  async refreshCustomers() {
     // The register lives on the server, so this screen shows everyone the
     // business has - not only whoever was typed into this device.
     try {
       await pullCustomers();
     } catch {
+      if (this.disposed) return;
       showNotification('Showing this device only — the customer directory could not be read.', 'warning');
     }
-    await this.loadCustomers();
-    this.bindEvents();
+    if (!this.disposed) await this.loadCustomers();
   }
 
   render() {
@@ -110,11 +118,12 @@ export class CustomersView {
   }
 
   async loadCustomers() {
-    if (!state.currentTenant) return;
+    if (this.disposed || !state.currentTenant) return;
 
     try {
       const customers = await db.customers.where('tenant_id').equals(state.currentTenant.id).toArray();
       const tbody = document.getElementById('customers-registry-body');
+      if (this.disposed || !tbody || !this.container.contains(tbody)) return;
 
       if (customers.length === 0) {
         tbody.innerHTML = `
@@ -125,7 +134,7 @@ export class CustomersView {
         return;
       }
 
-      tbody.innerHTML = '';
+      const fragment = document.createDocumentFragment();
       customers.forEach(cust => {
         const balance = cust.credit_balance || 0;
         const limit = cust.credit_limit || 0;
@@ -156,8 +165,9 @@ export class CustomersView {
             ` : ''}
           </td>
         `;
-        tbody.appendChild(tr);
+        fragment.appendChild(tr);
       });
+      tbody.replaceChildren(fragment);
 
       // Bind actions
       tbody.querySelectorAll('.btn-repay-tab').forEach(btn => {

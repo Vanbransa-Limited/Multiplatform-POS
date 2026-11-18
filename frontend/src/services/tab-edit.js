@@ -3,6 +3,7 @@ import { logAuditEvent } from '../db/index';
 import { state } from '../context';
 import { roundTotals, closingUpdate, tabOwes, tabsWithTotals, OPEN } from './tabs';
 import { saleAsOrder } from './customer-orders';
+import { billableCheckoutRounds } from './checkout-rounds';
 
 /**
  * Takes one item off an open tab.
@@ -201,14 +202,14 @@ async function replaceServerRound(round, line) {
  * disagree about what a table owes.
  */
 export async function readOpenTabs(branchId) {
-  return db.transaction('r', [db.tabs, db.sales, db.payments, db.sale_lines], async () => {
+  return db.transaction('r', [db.tabs, db.sales, db.payments, db.sale_lines, db.products], async () => {
   const tabs = await (branchId
     ? db.tabs.where('[branch_id+status]').equals([branchId, OPEN])
     : db.tabs.where('status').equals(OPEN)).toArray();
   // Check the unpaid ledger as well as tab headers. An absent or incorrectly
   // settled header must not make a saved, unpaid round disappear from view.
   const pending = await db.sales.where('status').equals('PENDING_PAYMENT')
-    .filter(sale => (!branchId || sale.branch_id === branchId) && Boolean(sale.table_no)).toArray();
+    .filter(sale => !sale.proforma_id && (!branchId || sale.branch_id === branchId) && Boolean(sale.table_no)).toArray();
   if (!tabs.length && !pending.length) return [];
   const onOpenTabs = tabs.length ? await db.sales.where('tab_id').anyOf(tabs.map(tab => tab.id)).toArray() : [];
   const sales = [...new Map([...onOpenTabs, ...pending].map(sale => [sale.id, sale])).values()];
@@ -221,16 +222,18 @@ export async function readOpenTabs(branchId) {
   for (const row of payments) {
     ledger.set(row.sale_id, [...(ledger.get(row.sale_id) || []), row]);
   }
+  const products = await db.products.bulkGet([...new Set(lines.map(line => line.product_id).filter(Boolean))]);
+  const names = new Map(products.filter(Boolean).map(product => [product.id, product.name]));
   const linesBySale = new Map();
   for (const line of lines) {
-    linesBySale.set(line.sale_id, [...(linesBySale.get(line.sale_id) || []), { qty: line.qty }]);
+    linesBySale.set(line.sale_id, [...(linesBySale.get(line.sale_id) || []), { ...line, name: line.product_name || line.name || names.get(line.product_id) || 'Item' }]);
   }
 
   const headers = await db.tabs.bulkGet([...new Set(pending.map(sale => sale.tab_id).filter(Boolean))]);
   const byId = new Map(headers.filter(Boolean).map(tab => [tab.id, tab]));
   const openIds = new Set(tabs.map(tab => tab.id));
   const rounds = sales
-    .filter((sale) => !branchId || sale.branch_id === branchId)
+    .filter((sale) => !sale.proforma_id && (!branchId || sale.branch_id === branchId))
     .map((sale) => ({
       ...saleAsOrder(sale, { payments: ledger.get(sale.id), lines: linesBySale.get(sale.id) || [] }),
       tabId: sale.tab_id || `recovered-${sale.id}`,
@@ -268,13 +271,13 @@ export async function readOpenTabs(branchId) {
  */
 export async function freeSettledTab(tabId) {
   if (!tabId) return null;
-  return db.transaction('rw', [db.tabs, db.sales, db.payments], async () => {
+  return db.transaction('rw', [db.tabs, db.sales, db.payments, db.sale_lines], async () => {
   const tab = await db.tabs.get(tabId);
   if (!tab || tab.status !== OPEN) return null;
 
   // Every round on the table, not only the ones just settled: a tab with one
   // round still owing stays open for whoever settles it.
-  const rounds = await db.sales.where('tab_id').equals(tabId).toArray();
+  const rounds = await billableCheckoutRounds(await db.sales.where('tab_id').equals(tabId).toArray(), db);
   const ledger = await db.payments.where('sale_id').anyOf(rounds.map(sale => sale.id)).toArray();
   const bySale = new Map();
   for (const row of ledger) {

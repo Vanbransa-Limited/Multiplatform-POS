@@ -165,6 +165,13 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Issued proformas are immutable; only server callables may issue or settle them.
+    match /proformas/{documentId} {
+      allow read: if canReadTenantDocument()
+        && request.auth.token.staff_role in ['owner', 'store_manager', 'supervisor', 'bar_staff', 'cashier', 'store_keeper'];
+      allow write: if false;
+    }
+
     match /customer_orders/{documentId} {
       allow read: if canReadTenantDocument()
         && request.auth.token.staff_role in ['owner', 'store_manager', 'supervisor', 'bar_staff', 'cashier', 'store_keeper'];
@@ -248,6 +255,13 @@ service cloud.firestore {
     }
 
     match /stock_movements/{documentId} {
+      allow read: if canReadTenantDocument();
+      allow write: if false;
+    }
+
+    // House requests waiting on the store manager. Created and decided only by
+    // changeStock / decideStockRequest, so nobody can approve their own by hand.
+    match /stock_requests/{documentId} {
       allow read: if canReadTenantDocument();
       allow write: if false;
     }

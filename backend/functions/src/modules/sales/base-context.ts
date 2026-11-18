@@ -2,6 +2,7 @@ import type { DocumentData, Transaction } from "firebase-admin/firestore";
 import { HttpsError } from "firebase-functions/v2/https";
 
 import { db } from "../../lib/firebase";
+import { canSell } from "../../shared/roles";
 import { SELLING_ROLES } from "./constants";
 import type { BaseSaleContext, ParsedSaleInput } from "./types";
 
@@ -120,6 +121,14 @@ export async function loadBaseSaleContext(
     throw new HttpsError(
       "failed-precondition",
       "Tenant settings are missing.",
+    );
+  }
+  // The owner's per-role switch. A queued offline sale refused here stays in
+  // the till's outbox and goes through once selling is switched back on.
+  if (!canSell(settings, String(staff.role))) {
+    throw new HttpsError(
+      "permission-denied",
+      "Selling is switched off for this role.",
     );
   }
 

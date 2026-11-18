@@ -130,3 +130,58 @@ test('a table is free only when every round on its tab is paid for', () => {
   assert.equal(tabOwes([owing], new Map([['s2', [{ method: 'CREDIT', amount: 400, settled_at: 'then' }]]]), saleAsOrder), false);
   assert.equal(tabOwes([], ledger, saleAsOrder), false);
 });
+
+test('one open tab per name, however the name is typed', async () => {
+  const { tabKey, openTabAt } = await import('./tabs.js');
+  assert.equal(tabKey('  VIP   Lounge '), 'vip lounge');
+  assert.equal(tabKey('Table 5'), '5');
+  assert.equal(tabKey('table5'), '5');
+  assert.equal(tabKey('T5'), 't5');
+  const tabs = [{ id: 'a', status: 'OPEN', table_no: 'VIP', branch_id: 'b1' }];
+  assert.equal(openTabAt(tabs, 'b1', 'vip ')?.id, 'a');
+  assert.equal(openTabAt(tabs, 'b1', 'Table VIP')?.id, 'a');
+  assert.equal(openTabAt(tabs, 'b2', 'VIP'), null);
+});
+
+
+import { mergeTabLines } from './tabs.js';
+
+const billRound = (overrides = {}) => ({
+  paymentStatus: 'unpaid', subtotal: 100, tax_total: 16, grand_total: 100,
+  dueMinor: 10000, totalMinor: 10000,
+  lines: [{ product_id: 'beer', name: 'Beer', qty: 1, line_total: 100 }],
+  ...overrides,
+});
+
+test('tab invoice merges the same product across rounds without changing amounts', () => {
+  const result = mergeTabLines([billRound(), billRound({
+    lines: [{ product_id: 'beer', product_name: 'Beer', qty: 2, line_total: 250 }],
+  })]);
+  assert.equal(result.lines.length, 1);
+  assert.equal(result.lines[0].name, 'Beer');
+  assert.equal(result.lines[0].qty, 3);
+  assert.equal(result.lines[0].line_total, 350);
+});
+
+test('tab invoice excludes voided rounds and their totals', () => {
+  assert.deepEqual(mergeTabLines([billRound(), billRound({ paymentStatus: 'void' }),
+    billRound({ status: 'VOIDED' })]), mergeTabLines([billRound()]));
+});
+
+test('tab invoice excludes paid rounds and their totals', () => {
+  assert.deepEqual(mergeTabLines([billRound(), billRound({ paymentStatus: 'paid' })]),
+    mergeTabLines([billRound()]));
+});
+
+test('tab invoice totals equal the sum of unpaid rounds', () => {
+  const result = mergeTabLines([billRound(), billRound({
+    subtotal: 250, tax_total: 40, grand_total: 250, dueMinor: 25000, totalMinor: 25000,
+    lines: [{ product_id: 'food', name: 'Food', qty: 1, line_total: 250 }],
+  })]);
+  assert.equal(result.subtotal, 350);
+  assert.equal(result.tax_total, 56);
+  assert.equal(result.grand_total, 350);
+  assert.equal(result.dueMinor, 35000);
+  assert.equal(result.totalMinor, 35000);
+  assert.equal(result.lines.reduce((sum, line) => sum + line.line_total, 0), result.grand_total);
+});

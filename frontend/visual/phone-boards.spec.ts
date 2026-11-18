@@ -8,15 +8,18 @@ async function mount(page: Page, file: string, name: string) {
   await page.addStyleTag({ content: readFileSync('src/ui/styles.css', 'utf8') + readFileSync('src/ui/mobile.css', 'utf8') });
   const source = readFileSync(`src/ui/${file}.js`, 'utf8').replace(/^import[\s\S]*?;\r?\n/gm, '').replace(`export class ${name}`, `window.Screen = class ${name}`);
   const filters = readFileSync('src/ui/mobile-filters.js', 'utf8').replace('export function', 'function');
+  const tabRules = readFileSync('src/services/tabs.js', 'utf8').replace(/^import[\s\S]*?;\r?\n/gm, '').replaceAll('export ', '');
   await page.addScriptTag({ content: `
     const state={currentUser:{role:'Owner'},currentBranch:{id:'b1'}};
     const escapeHtml=value=>String(value??''); const esc=escapeHtml;
     const cashIsEnabled=()=>true; const storeIsEnabled=()=>Boolean(window.hasStore);
     const MpesaService=class{}; const DEVICE_ID='test-device';
-    const db={users:{toArray:async()=>[]}};
+    const db={users:{toArray:async()=>[]},categories:{toArray:async()=>[]}};
     const readOpenTabs=async()=>[{id:'tab1',table:'9',order_no:'TAB-9',dueMinor:50000,items:2,rounds:[{ref:'TAB-9'}],opened_at:'2026-11-10T10:00:00Z'}];
     const pullOpenOrders=async()=>[];
+    const pullSales=async()=>null;
     ${filters}
+    ${tabRules}
     ${source}
     window.view=new window.Screen(document.querySelector('.tab-view'));
   ` });
@@ -78,7 +81,7 @@ test('House uses labelled item cards and an Actions sheet that opens the selecte
   await page.getByRole('button', { name: 'Stock actions', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Stock actions' })).toBeVisible();
   await page.locator('[data-stock-panel=entry]').click();
-  await expect(page.getByRole('dialog', { name: 'Stock actions' })).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: 'Stock actions' })).toBeHidden();
   await expect(page.locator('#stk-entry-panel')).toBeVisible();
   await page.locator('#stk-product-search').fill('Stock item');
   await page.locator('#stk-search').fill('item 24');

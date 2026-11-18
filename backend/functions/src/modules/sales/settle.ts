@@ -6,6 +6,7 @@ import { db } from '../../lib/firebase';
 import { deterministicId } from '../../shared/identifiers';
 import { asRecord, documentId, optionalText } from '../../shared/validation';
 import { SELLING_ROLES } from './constants';
+import { readReceiptUsage, receiptAllocation } from '../../shared/mpesa-receipt';
 
 /**
  * Settling a sale that went out unpaid.
@@ -82,6 +83,7 @@ export const claimSalePayment = onCall({ region: FUNCTION_REGION }, async (reque
   const input = asRecord(request.data);
   const checkoutId = documentId(input.checkoutId, 'checkoutId');
   const stkKey = input.stkKey ? documentId(input.stkKey, 'stkKey') : null;
+  const deviceId = input.deviceId ? documentId(input.deviceId, 'deviceId') : null;
   // Older tills do not send the method; treat them as a typed code, the case
   // that was wrongly blocked.
   const nextMethod = input.method === undefined || input.method === 'mpesa' ? 'mpesa' : 'other';
@@ -92,6 +94,10 @@ export const claimSalePayment = onCall({ region: FUNCTION_REGION }, async (reque
   const refs = uuids.map(uuid => db.collection('sales').doc(deterministicId('sale', `${actor.tenantId}:${uuid}`)));
   return db.runTransaction(async tx => {
     const sales = await tx.getAll(...refs);
+    const device = deviceId ? await tx.get(db.collection('devices').doc(deviceId)) : null;
+    if (deviceId && (!device?.exists || device.data()?.tenantId !== actor.tenantId || device.data()?.status !== 'active')) {
+      throw new HttpsError('failed-precondition', 'This device is not active for the business.');
+    }
     const now = Timestamp.now();
     let dueMinor = 0;
     let branchId: unknown;
@@ -100,6 +106,7 @@ export const claimSalePayment = onCall({ region: FUNCTION_REGION }, async (reque
       if (!doc.exists || sale?.tenantId !== actor.tenantId || String(sale.status).toUpperCase() === 'VOIDED') {
         throw new HttpsError('failed-precondition', 'This order is unavailable. Refresh orders before taking payment.');
       }
+      if (sale.proformaId) throw new HttpsError('failed-precondition', 'This bill belongs to a locked proforma. Record its payment in Proforma invoices.');
       if (branchId && branchId !== sale.branchId) throw new HttpsError('invalid-argument', 'Pay orders from one branch at a time.');
       branchId = sale.branchId;
       const ledger = await tx.get(db.collection('payments').where('saleId', '==', doc.id));
@@ -107,7 +114,9 @@ export const claimSalePayment = onCall({ region: FUNCTION_REGION }, async (reque
       if (!owed) continue;
       dueMinor += owed;
       const own = sale.checkoutId === checkoutId && sale.checkoutStaffId === actor.staffId;
-      if (!own && Number(sale.checkoutExpiresAt?.toMillis?.() || 0) > now.toMillis()) {
+      const sameDevice = Boolean(deviceId && sale.checkoutDeviceId === deviceId && sale.checkoutStaffId === actor.staffId);
+      if (deviceId && device?.data()?.branchId !== sale.branchId) throw new HttpsError('failed-precondition', 'The device and bill belong to different branches.');
+      if (!own && !sameDevice && Number(sale.checkoutExpiresAt?.toMillis?.() || 0) > now.toMillis()) {
         throw new HttpsError('failed-precondition', 'Another device is taking payment for this order. Refresh before trying again.');
       }
       if (sale.checkoutStkKey) {
@@ -126,7 +135,11 @@ export const claimSalePayment = onCall({ region: FUNCTION_REGION }, async (reque
     for (const doc of sales) tx.update(doc.ref, {
       checkoutId, checkoutStaffId: actor.staffId,
       checkoutExpiresAt: Timestamp.fromMillis(now.toMillis() + 5 * 60_000),
-      checkoutStkKey: stkKey,
+      checkoutStkKey: stkKey ?? doc.data()?.checkoutStkKey ?? null,
+      checkoutDeviceId: deviceId ?? doc.data()?.checkoutDeviceId ?? null,
+      checkoutSaleIds: sales.map(sale => sale.id),
+      checkoutAmountMinor: doc.data()?.checkoutId === checkoutId
+        ? Math.max(Number(doc.data()?.checkoutAmountMinor || 0), dueMinor) : dueMinor,
     });
     return { checkoutId, dueMinor };
   });
@@ -173,6 +186,7 @@ export const voidSale = onCall({ region: FUNCTION_REGION }, async (request) => {
     }
     // A second press of Void returns what the first one did rather than
     // restoring the same stock twice.
+    if (sale.proformaId) throw new HttpsError('failed-precondition', 'This bill belongs to a locked proforma and cannot be voided here.');
     if (sale.status === 'VOIDED') return { saleId, saleUuid, voided: true, alreadyVoided: true };
     if (Number(sale.checkoutExpiresAt?.toMillis?.() || 0) > Date.now()) {
       throw new HttpsError('failed-precondition', 'Payment is in progress on this order. Finish or reconcile it before voiding.');
@@ -309,6 +323,13 @@ export const settleSale = onCall({ region: FUNCTION_REGION }, async (request) =>
     // than recording the same money twice.
     if (settlementDoc.exists) return { ...(settlementDoc.data()?.result ?? { saleId, saleUuid, settled: true }), paymentId: settlementRef.id };
 
+    // The SMS code can be from STK, not just C2B. Resolve it to the provider
+    // proof before deciding whether an earlier attempt blocks settlement.
+    const typedIntent = method === 'mpesa' && !attemptId && code
+      ? await tx.get(db.collection('payment_intents').doc(deterministicId('intent', `${actor.tenantId}:${code}`))) : null;
+    const proofAttemptId = attemptId || (typedIntent?.data()?.tenantId === actor.tenantId
+      && typeof typedIntent.data()?.attemptId === 'string' ? String(typedIntent.data()?.attemptId) : null);
+
     const sale = saleDoc.data();
     if (!saleDoc.exists || sale?.tenantId !== actor.tenantId) {
       throw new HttpsError('not-found', 'Sale not found.');
@@ -316,6 +337,7 @@ export const settleSale = onCall({ region: FUNCTION_REGION }, async (request) =>
     if (method === 'cash' && !settingsDoc.data()?.acceptedPaymentMethods?.includes('cash')) {
       throw new HttpsError('failed-precondition', 'This business does not accept cash.');
     }
+    if (sale.proformaId) throw new HttpsError('failed-precondition', 'This bill belongs to a locked proforma. Record its payment in Proforma invoices.');
     if (String(sale.status).toUpperCase() === 'VOIDED') throw new HttpsError('failed-precondition', 'This order was voided.');
     if (Number(sale.checkoutExpiresAt?.toMillis?.() || 0) > Date.now()
       && (input.checkoutId !== sale.checkoutId || actor.staffId !== sale.checkoutStaffId)) {
@@ -324,7 +346,7 @@ export const settleSale = onCall({ region: FUNCTION_REGION }, async (request) =>
     if (sale.checkoutStkKey) {
       const previousId = deterministicId('mpesa-attempt', `${actor.tenantId}:${sale.checkoutStkKey}`);
       const previous = await tx.get(db.collection('mpesa_payments').doc(previousId));
-      const blocked = attemptId === previousId
+      const blocked = proofAttemptId === previousId
         ? null
         : attemptBlocks(previous.data(), method === 'mpesa' ? 'mpesa' : 'other', Date.now());
       if (blocked) throw new HttpsError('failed-precondition', blocked);
@@ -346,13 +368,15 @@ export const settleSale = onCall({ region: FUNCTION_REGION }, async (request) =>
 
     const now = Timestamp.now();
     let receivedMinor = dueMinor;
+    let receivedAt = now;
     let verified = method === 'mpesa';
+    let receiptClaim: { allocationId: string; limitMinor: number } | null = null;
 
-    if (method === 'mpesa' && attemptId) {
+    if (method === 'mpesa' && proofAttemptId) {
       // The till pushed an STK prompt and is settling against what the
       // provider confirmed for it. The attempt is the proof, exactly as the
       // C2B event is below, and is consumed the same way.
-      const attemptRef = db.collection('mpesa_payments').doc(attemptId);
+      const attemptRef = db.collection('mpesa_payments').doc(proofAttemptId);
       const attemptDoc = await tx.get(attemptRef);
       const attempt = attemptDoc.data();
       if (!attemptDoc.exists || attempt?.tenantId !== actor.tenantId) {
@@ -364,12 +388,15 @@ export const settleSale = onCall({ region: FUNCTION_REGION }, async (request) =>
       if (attempt.branchId !== sale.branchId || attempt.customerOrderId) {
         throw new HttpsError('failed-precondition', 'That payment belongs to another branch or customer order.');
       }
+      if (Array.isArray(attempt.settlementSaleIds) && !attempt.settlementSaleIds.includes(saleId)) {
+        throw new HttpsError('failed-precondition', 'That payment was requested for a different bill.');
+      }
       const intentRef = db.collection('payment_intents').doc(deterministicId('intent', `${actor.tenantId}:${String(attempt.receipt || '')}`));
       const intentDoc = await tx.get(intentRef);
       const intent = intentDoc.data();
-      if (!intentDoc.exists || intent?.tenantId !== actor.tenantId || intent?.attemptId !== attemptId
+      if (!intentDoc.exists || intent?.tenantId !== actor.tenantId || intent?.attemptId !== proofAttemptId
         || intent?.amountMinor !== attempt.amountMinor
-        || (intent?.consumedSaleId && intent?.settlementAttemptId !== attemptId)
+        || (intent?.consumedSaleId && intent?.settlementAttemptId !== proofAttemptId)
         || (!intent?.consumedSaleId && intent?.status !== 'verified')) {
         throw new HttpsError('failed-precondition', 'That payment is unavailable or was already used for another sale.');
       }
@@ -391,11 +418,18 @@ export const settleSale = onCall({ region: FUNCTION_REGION }, async (request) =>
           ? `That payment has KES ${(headroomMinor / 100).toFixed(2)} left, short of the KES ${(dueMinor / 100).toFixed(2)} outstanding on this round.`
           : `That payment was KES ${(receivedMinor / 100).toFixed(2)}, short of the KES ${(dueMinor / 100).toFixed(2)} outstanding.`);
       }
-      reference = String(attempt.receipt || attemptId);
+      reference = String(attempt.receipt || proofAttemptId);
+      receivedAt = attempt.completedAt || intent.createdAt || now;
+      const usage = await readReceiptUsage(tx, actor.tenantId, reference);
+      const allocation = receiptAllocation(usage, { tenantId: actor.tenantId, reference,
+        allocationId: `attempt:${proofAttemptId}`, target: `sale:${saleId}`, amountMinor: dueMinor,
+        limitMinor: receivedMinor, allowedTargets: alreadySettled.map(id => `sale:${id}`), verified: true, now });
+      receiptClaim = allocation;
+      tx.set(usage.ref, allocation);
       // Reserve the same provider intent createSale consumes. This prevents
       // one receipt being used once for settlement and again for a new sale.
       tx.update(intentRef, { status: 'consumed', consumedSaleId: intent?.consumedSaleId || saleId,
-        settlementAttemptId: attemptId, consumedAt: now });
+        settlementAttemptId: proofAttemptId, consumedAt: now });
       tx.update(attemptRef, {
         settlementStatus: 'settled_sale',
         settledSaleIds: [...alreadySettled, saleId],
@@ -407,21 +441,41 @@ export const settleSale = onCall({ region: FUNCTION_REGION }, async (request) =>
       });
     } else if (method === 'mpesa') {
       const event = eventDoc.data();
-      // A typed code is never refused. It is verified only when an unused
-      // confirmation covers the amount; otherwise it is the cashier's word, like
-      // a bank reference, and Financials shows it as unverified.
+      // One table can contain several saved rounds. A typed receipt may pay
+      // those rounds within the one server-reserved checkout and amount.
+      const grouped = input.checkoutId === sale.checkoutId && sale.checkoutStaffId === actor.staffId
+        && Array.isArray(sale.checkoutSaleIds) && sale.checkoutSaleIds.includes(saleId);
+      const sameReceiptCheckout = grouped && event?.settlementCheckoutId === sale.checkoutId;
+      if (event?.tenantId === actor.tenantId && (event.settledProformaId || event.settledCustomerOrderId
+        || (event.settledSaleId && !sameReceiptCheckout))) {
+        throw new HttpsError('failed-precondition', 'That code has already settled another invoice.');
+      }
+      // An unused, unconfirmed code remains the cashier's assertion. It still
+      // cannot be reused outside this checkout or beyond its original balance.
       verified = eventDoc.exists
         && event?.tenantId === actor.tenantId
         && event?.disposition !== 'quarantined'
-        && !event?.settledSaleId && !event?.settledCustomerOrderId
-        && Number(event?.payload?.amountMinor || 0) >= dueMinor;
+        && (!event?.settledSaleId || sameReceiptCheckout) && !event?.settledCustomerOrderId && !event?.settledProformaId
+        && Number(event?.payload?.amountMinor || 0) - Number(event?.settledMinor || 0) >= dueMinor;
+      if (sameReceiptCheckout && !verified) throw new HttpsError('failed-precondition', 'That receipt has insufficient unallocated money for this round.');
+      const usage = await readReceiptUsage(tx, actor.tenantId, reference);
+      const allocation = receiptAllocation(usage, { tenantId: actor.tenantId, reference,
+        allocationId: grouped ? `checkout:${sale.checkoutId}` : `sale:${saleId}`,
+        target: `sale:${saleId}`, amountMinor: dueMinor,
+        allowedTargets: grouped ? sale.checkoutSaleIds.map((id: string) => `sale:${id}`) : [],
+        limitMinor: verified ? Number(event?.payload?.amountMinor) : grouped ? Number(sale.checkoutAmountMinor) : dueMinor, verified, now });
+      receiptClaim = allocation;
+      tx.set(usage.ref, allocation);
     }
-    if (method === 'mpesa' && !attemptId && verified) {
+    if (method === 'mpesa' && !proofAttemptId && verified) {
       receivedMinor = Number(eventDoc.data()?.payload?.amountMinor || 0);
       // Consumed, so one payment cannot clear two invoices.
       tx.update(eventRef, {
         settlementStatus: 'settled_sale',
-        settledSaleId: saleId,
+        settledSaleId: eventDoc.data()?.settledSaleId || saleId,
+        settledSaleIds: [...new Set([...(eventDoc.data()?.settledSaleIds || []), saleId])],
+        settledMinor: Number(eventDoc.data()?.settledMinor || 0) + dueMinor,
+        settlementCheckoutId: typeof sale.checkoutId === 'string' && input.checkoutId === sale.checkoutId ? sale.checkoutId : null,
         settledAt: now,
         settledByStaffId: actor.staffId,
       });
@@ -462,8 +516,9 @@ export const settleSale = onCall({ region: FUNCTION_REGION }, async (request) =>
       status: 'completed',
       source: 'sale_settlement',
       verified: result.verified,
+      ...(receiptClaim ? { receiptAllocationId: receiptClaim.allocationId, receiptLimitMinor: receiptClaim.limitMinor } : {}),
       receivedByStaffId: actor.staffId,
-      paidAt: now,
+      paidAt: receivedAt,
       createdAt: now,
       result,
     });

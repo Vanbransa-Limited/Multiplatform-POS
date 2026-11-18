@@ -9,6 +9,8 @@ import { HttpsError, onCall, onRequest } from "firebase-functions/v2/https";
 
 import { FUNCTION_REGION } from "../../config/runtime";
 import { db } from "../../lib/firebase";
+import { claimedBillAmount } from './settlement';
+import { readReceiptUsage, receiptAllocation } from '../../shared/mpesa-receipt';
 import { deterministicId } from "../../shared/identifiers";
 import { safeSum } from "../../shared/money";
 import {
@@ -84,9 +86,11 @@ type InitiateInput = {
   deviceId: string;
   idempotencyKey: string;
   orderReference: string | null;
-  customerId: string;
+  customerId: string | null;
   lines: RequestLine[];
   pricing: Pricing;
+  settlementSaleUuids: string[] | null;
+  checkoutId: string | null;
 };
 
 /** Claims are the only source of tenant and staff identity. */
@@ -192,15 +196,26 @@ function parseInitiateInput(value: unknown): InitiateInput {
     );
   }
 
+  let settlementSaleUuids: string[] | null = null;
+  let checkoutId: string | null = null;
+  if (input.settlementSaleUuids !== undefined && input.settlementSaleUuids !== null) {
+    if (!Array.isArray(input.settlementSaleUuids) || !input.settlementSaleUuids.length || input.settlementSaleUuids.length > 200) {
+      throw new HttpsError('invalid-argument', 'Choose the original bills to settle.');
+    }
+    settlementSaleUuids = [...new Set(input.settlementSaleUuids.map(value => documentId(value, 'saleUuid')))];
+    checkoutId = documentId(input.checkoutId, 'checkoutId');
+  }
   return {
     phone: normalizePhone(input.phone),
     branchId: documentId(input.branchId, "branchId"),
     deviceId: documentId(input.deviceId, "deviceId"),
     idempotencyKey: input.idempotencyKey,
     orderReference,
-    customerId: documentId(input.customerId, "customerId"),
-    lines: parseLines(input.lines),
+    customerId: settlementSaleUuids && !input.customerId ? null : documentId(input.customerId, "customerId"),
+    lines: settlementSaleUuids ? [] : parseLines(input.lines),
     pricing,
+    settlementSaleUuids,
+    checkoutId,
   };
 }
 
@@ -241,6 +256,7 @@ function requestFingerprint(caller: Caller, input: InitiateInput): string {
     lines: input.lines,
     baseAmountMinor: input.pricing.baseAmountMinor,
     cashAmountMinor: input.pricing.cashAmountMinor,
+    ...(input.settlementSaleUuids ? { settlementSaleUuids: input.settlementSaleUuids, checkoutId: input.checkoutId } : {}),
   }));
 }
 
@@ -438,9 +454,9 @@ function validateScope(
 
   const customer = documents.customer.data() ?? {};
   if (
-    !documents.customer.exists
+    !input.settlementSaleUuids && (!documents.customer.exists
     || customer.tenantId !== caller.tenantId
-    || customer.isActive !== true
+    || customer.isActive !== true)
   ) {
     throw new HttpsError("failed-precondition", "Customer is not active for this tenant.");
   }
@@ -505,11 +521,11 @@ async function reserveAttempt(caller: Caller, input: InitiateInput): Promise<Res
     `${caller.tenantId}:${input.deviceId}:${caller.staffId}`,
   );
   const shiftRef = db.collection("shifts").doc(shiftId);
-  const customerRef = db.collection("customers").doc(input.customerId);
+  const customerRef = db.collection("customers").doc(input.customerId || '__saved_bill__');
   const membershipRef = db.collection("membership_discounts").doc(
     membershipDiscountId(caller.tenantId, input.phone),
   );
-  const productRefs = input.lines.map((line) =>
+  const productRefs = (input.settlementSaleUuids ? [] : input.lines).map((line) =>
     db.collection("products").doc(line.productId),
   );
   const fingerprint = requestFingerprint(caller, input);
@@ -581,8 +597,16 @@ async function reserveAttempt(caller: Caller, input: InitiateInput): Promise<Res
       throw new HttpsError("failed-precondition", "M-Pesa is not enabled for this branch.");
     }
 
-    const lineGrosses = authoritativeLineGrosses(caller, input, productDocuments);
-    const cartGrossMinor = safeSum(
+    const settlement = input.settlementSaleUuids ? await claimedBillAmount(transaction, caller, {
+      saleUuids: input.settlementSaleUuids, branchId: input.branchId,
+      checkoutId: input.checkoutId!, stkKey: input.idempotencyKey,
+    }, Date.now()) : null;
+    if (settlement && (input.pricing.baseAmountMinor !== settlement.dueMinor
+      || input.pricing.cashAmountMinor !== 0 || input.pricing.serviceChargeMinor !== 0)) {
+      throw new HttpsError('failed-precondition', 'The bill balance changed. Refresh orders before taking payment.');
+    }
+    const lineGrosses = settlement ? [] : authoritativeLineGrosses(caller, input, productDocuments);
+    const cartGrossMinor = settlement?.dueMinor ?? safeSum(
       lineGrosses.map((line) => line.grossMinor),
       "M-Pesa cart total",
     );
@@ -601,7 +625,7 @@ async function reserveAttempt(caller: Caller, input: InitiateInput): Promise<Res
     }
 
     const now = Timestamp.now();
-    const membership = membershipDiscountFromDocuments({
+    const membership = settlement ? null : membershipDiscountFromDocuments({
       tenantId: caller.tenantId,
       normalizedPhone: input.phone,
       member: membershipDocument,
@@ -655,6 +679,8 @@ async function reserveAttempt(caller: Caller, input: InitiateInput): Promise<Res
       idempotencyKey: input.idempotencyKey,
       requestFingerprint: fingerprint,
       orderReference: input.orderReference,
+      settlementSaleIds: settlement?.saleIds || null,
+      checkoutId: input.checkoutId,
       phone: input.phone,
       ...pricing,
       membershipDiscountSource: membership?.source ?? null,
@@ -1154,6 +1180,21 @@ export async function verifyAttempt(
         throw new HttpsError('failed-precondition', 'The reserved customer order no longer matches this payment.');
       }
       const paidAt = Timestamp.now();
+      const usage = await readReceiptUsage(transaction, String(current.tenantId), receipt);
+      let allocation;
+      try {
+        allocation = receiptAllocation(usage, { tenantId: String(current.tenantId), reference: receipt,
+          allocationId: `customer_order:${current.customerOrderId}`, target: `customer_order:${current.customerOrderId}`,
+          amountMinor: Number(current.amountMinor), limitMinor: Number(current.amountMinor), verified: true, now: paidAt });
+      } catch {
+        // The provider money is real even if another checkout already used its
+        // code. Preserve the confirmation without crediting a second order.
+        const resultDesc = 'M-Pesa received this payment, but its receipt is already allocated. Reconcile the original order.';
+        transaction.update(attemptRef, { status: 'paid', receipt, verifiedBy: 'callback_and_stk_query',
+          completedAt: paidAt, verifiedAt: paidAt, updatedAt: paidAt, settlementStatus: 'receipt_conflict', resultDesc });
+        return { ...current, status: 'paid', receipt, settlementStatus: 'receipt_conflict', resultDesc };
+      }
+      transaction.set(usage.ref, allocation);
       transaction.set(receiptRef, { provider: 'mpesa', receipt, attemptId, tenantId: current.tenantId, amountMinor: current.amountMinor, createdAt: paidAt });
       transaction.update(orderRef, { paymentStatus: 'paid', paymentMethod: 'mpesa', paymentReference: receipt, paidAt, status: 'awaiting_print' });
       transaction.set(db.collection('payments').doc(`web_${current.customerOrderId}`), { tenantId: current.tenantId, branchId: current.branchId, customerOrderId: current.customerOrderId, method: 'mpesa', amountMinor: current.amountMinor, reference: receipt, status: 'completed', paidAt, source: 'customer_menu' });
@@ -1191,6 +1232,7 @@ export async function verifyAttempt(
         lines: current.lines,
         lineDiscounts: current.lineDiscounts,
         orderReference: current.orderReference,
+        settlementSaleIds: current.settlementSaleIds || null,
         idempotencyKey: current.idempotencyKey,
         attemptId,
         reference: receipt,

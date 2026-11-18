@@ -1,6 +1,7 @@
 // Keep discovery lightweight: domain modules own their triggers and this entry
 // point only re-exports them for the Firebase Functions runtime.
 export { health } from "./health";
+export { issueProforma, payProforma } from './modules/proformas';
 export { createPlatformTenant, listPlatformTenants } from './modules/platform';
 export {
   getMpesaCapability,
@@ -14,6 +15,7 @@ export {
 } from "./modules/mpesa/c2b";
 export { importProducts, upsertProduct, upsertCategory, retireProduct, deleteProduct, retireMissingProducts, dedupeProducts, retireSeedProducts } from "./modules/catalogue";
 export { createSale } from "./modules/sales";
+export { generateEtr, setupEtims } from "./modules/etims";
 export { settleSale, voidSale, claimSalePayment } from "./modules/sales/settle";
 // Open tabs, published for observation only. Never read back as money.
 export { publishOpenOrders } from "./modules/sales/open-orders";
@@ -24,6 +26,7 @@ export {
   resetStaffPassword,
   setStaffActive,
   listStaffNames,
+  setModuleAccess,
 } from "./modules/staff-admin";
 export { openShift } from "./modules/shifts";
 export { getPublicMenu, printCustomerOrder, submitCustomerOrder, updateCustomerOrder } from './modules/customer-orders';
@@ -37,7 +40,7 @@ export {
   settleCustomerOrderCard,
   settleCustomerOrderCash,
 } from './modules/customer-orders/payments';
-export { configureStock, changeStock, setProductTracking, importStock } from './modules/stock';
+export { configureStock, changeStock, decideStockRequest, setProductTracking, importStock } from './modules/stock';
 
 // TEMPORARY: exported so the first owner can be created after the cutover from
 // PIN sign-in. It is guarded by POS_BOOTSTRAP_SECRET and refuses to run once

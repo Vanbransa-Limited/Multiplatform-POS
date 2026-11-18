@@ -36,6 +36,15 @@ export function prepareSaleLines(
   productDocuments: readonly DocumentSnapshot<DocumentData>[],
   tenantId: string,
 ): PreparedLine[] {
+  // The till's VIP row represents 30% of the goods subtotal. Its catalogue
+  // price is only a placeholder; using it changes an already prepared bill.
+  const hasServiceCharge = requestedLines.some(line => line.productId === 'prod-table-service');
+  const goodsSubtotal = hasServiceCharge ? safeSum(requestedLines.map((line, index) => {
+    if (line.productId === 'prod-table-service' || line.productId === 'prod-staff-discount') return 0;
+    const product = productDocuments[index]?.data() ?? {};
+    return minorUnits(product.sellPriceMinor, `${line.productId}.sellPriceMinor`) * line.qty;
+  }), 'service charge base') : 0;
+  const serviceChargeMinor = Math.round(goodsSubtotal * 0.30);
   return productDocuments.map((snapshot, index) => {
     const requested = requestedLines[index];
     const product = snapshot.data() ?? {};
@@ -50,7 +59,10 @@ export function prepareSaleLines(
       );
     }
 
-    const unitPriceMinor = minorUnits(
+    if (requested.productId === 'prod-table-service' && (requested.qty !== 1 || product.isService !== true)) {
+      throw new HttpsError('invalid-argument', 'The table service charge must be a single service line.');
+    }
+    const unitPriceMinor = requested.productId === 'prod-table-service' ? serviceChargeMinor : minorUnits(
       product.sellPriceMinor,
       `${requested.productId}.sellPriceMinor`,
     );

@@ -1,6 +1,7 @@
 import { db } from '../db/schema';
 import { state } from '../context';
 import { escapeHtml } from '../services/print-receipt';
+import { mergeTabLines } from '../services/tabs';
 import { readOpenTabs } from '../services/tab-edit';
 import { pullOpenOrders } from '../services/open-orders';
 import { pullSales } from '../services/catalogue';
@@ -11,8 +12,9 @@ import { DEVICE_ID } from '../services/firebase';
  *
  * The till only needs to know which table it is ringing for, so the floor
  * lives here rather than as a wall of chips over the cart. Nothing is settled
- * or edited on this screen. Settling and taking items off open the tab in the
- * Orders Viewer, and another round opens the till on that table, so each job
+ * or edited on this screen. Pay now and Edit tab open the tab in the Orders
+ * Viewer (settle dialog / item editor), and Add items opens the till on that
+ * table in tab-only mode, so each job
  * still happens in the one place built for it.
  */
 export class TabManagementView {
@@ -75,7 +77,7 @@ export class TabManagementView {
         opened_at: order.createdAt,
         dueMinor: order.dueMinor,
         items: (order.lines || []).reduce((total, line) => total + (Number(line.qty) || 0), 0),
-        rounds: [{ id: order.id }],
+        rounds: [{ ...order }],
         readOnly: true,
       }));
     const localRefs = new Set(tabs.map((tab) => tab.order_no).filter(Boolean));
@@ -144,6 +146,7 @@ export class TabManagementView {
 
   card(tab) {
     const ref = this.refFor(tab);
+    const { lines } = mergeTabLines(tab.unpaidRounds || tab.rounds);
     const opened = tab.opened_at ? new Date(tab.opened_at) : null;
     const by = tab.opened_by ? this.names.get(tab.opened_by) || tab.opened_by : '';
     const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
@@ -155,8 +158,11 @@ export class TabManagementView {
         </div>
         <div class="co-meta">${escapeHtml(ref)} · ${plural(tab.items, 'item')} · ${plural(tab.rounds.length, 'round')}<br>
           Opened ${escapeHtml(opened ? opened.toLocaleTimeString() : '—')}${by ? ` by <b>${escapeHtml(by)}</b>` : ''}</div>
+        <div class="co-meta">${lines.slice(0, 8).map(line => `<div>${escapeHtml(line.name)} &times; ${escapeHtml(line.qty)}</div>`).join('')}${lines.length > 8 ? `<div>+${escapeHtml(lines.length - 8)} more</div>` : ''}</div>
         <div class="co-actions">
-          ${tab.readOnly ? '' : `<a class="co-print" style="text-decoration:none" href="/till?table=${encodeURIComponent(tab.table)}">Add a round</a>`}
+          ${ref ? `<a class="co-print" style="text-decoration:none" href="/orders?order=${escapeHtml(encodeURIComponent(ref))}&invoice=1">Invoice</a>` : ''}
+          ${tab.readOnly ? '' : `<a class="co-print" style="text-decoration:none" href="/till?table=${encodeURIComponent(tab.table)}">Add items</a>`}
+          ${ref && !tab.readOnly ? `<a class="co-print" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}&edit=1">Edit tab</a>` : ''}
           ${ref ? `<a class="co-pay" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}">Pay now</a>` : ''}
           ${tab.readOnly ? '<span class="co-meta" style="margin:0">Running on another till · Pay now settles it from here</span>' : ''}
         </div>

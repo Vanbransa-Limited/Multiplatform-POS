@@ -3,6 +3,7 @@ import { HttpsError } from "firebase-functions/v2/https";
 
 import { db } from "../../lib/firebase";
 import { deterministicId } from "../../shared/identifiers";
+import { readReceiptUsage, receiptAllocation } from '../../shared/mpesa-receipt';
 import { needsProviderIntent } from "./constants";
 import { mpesaIntentMatchesSale } from "./domain";
 import { sellingLocation } from '../stock';
@@ -97,6 +98,7 @@ export async function loadSaleDependencies(
       || intent.amountMinor !== expected.amountMinor
       || intent.status !== "verified"
       || intent.consumedSaleId
+      || (Array.isArray(intent.settlementSaleIds) && intent.settlementSaleIds.length > 0)
       || (
         expected.method === "mpesa"
         && !mpesaIntentMatchesSale(input, preparedLines, intent, expected)
@@ -109,7 +111,28 @@ export async function loadSaleDependencies(
     }
   });
 
+  const receiptClaims = [];
+  const receiptConflicts: string[] = [];
+  const codes = new Set<string>();
+  for (const payment of input.payments.filter(row => row.method === 'mpesa' && row.reference)) {
+    const reference = payment.reference!.trim().toUpperCase();
+    if (codes.has(reference)) throw new HttpsError('invalid-argument', 'Enter each M-Pesa receipt only once.');
+    codes.add(reference);
+    const usage = await readReceiptUsage(transaction, input.tenantId, reference);
+    try { receiptClaims.push({ ref: usage.ref, data: receiptAllocation(usage, {
+      tenantId: input.tenantId, reference, allocationId: `sale:${deterministicId('sale', `${input.tenantId}:${input.idempotencyKey}`)}`,
+      target: `sale:${deterministicId('sale', `${input.tenantId}:${input.idempotencyKey}`)}`,
+      amountMinor: payment.amountMinor, limitMinor: payment.amountMinor, verified: !payment.unverified, now: timestamp,
+    }) }); } catch (error) {
+      // A completed offline sale must reach the business even when the
+      // cashier reused a code. Retain it for review without claiming money.
+      if (!payment.unverified || !(error instanceof HttpsError) || error.code !== 'failed-precondition') throw error;
+      receiptConflicts.push(reference);
+    }
+  }
   return {
+    receiptClaims,
+    receiptConflicts,
     physicalLines,
     digitalPayments,
     balanceRefs,

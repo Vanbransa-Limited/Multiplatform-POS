@@ -10,7 +10,10 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 async function main() {
   const assets = new Set();
-  for (const route of process.argv.includes('--backend-only') ? [] : ['orders', 'till', 'tabs']) {
+  const proformas = process.argv.includes('--proformas');
+  const routes = proformas ? ['orders', 'till', 'tabs', 'qrtools', 'finance', 'settings', 'customers', 'inventory', 'shifts'] : ['orders', 'till', 'tabs'];
+  if (process.argv.includes('--payments-stock')) routes.push('mpesa', 'house-stock', 'store-stock');
+  for (const route of process.argv.includes('--backend-only') ? [] : routes) {
     const response = await fetch(`${host}/${route}/`, { cache: 'no-store', signal: AbortSignal.timeout(30_000) });
     if (!response.ok) throw new Error(`Live ${route} returned ${response.status}`);
     const live = Buffer.from(await response.arrayBuffer());
@@ -27,7 +30,10 @@ async function main() {
     if (hash(live) !== hash(built)) throw new Error('Live JavaScript does not match this build.');
   }
   console.log(JSON.stringify({ verifiedJavaScriptAssets: assets.size }));
-  for (const name of ['createSale', 'settleSale', 'voidSale', 'publishOpenOrders', 'claimSalePayment']) {
+  const names = ['createSale', 'settleSale', 'voidSale', 'publishOpenOrders', 'claimSalePayment'];
+  if (proformas) names.push('issueProforma', 'payProforma', 'settleCustomerOrderByCode', 'generateEtr', 'setupEtims');
+  if (process.argv.includes('--payments-stock')) names.push('initiateMpesaStk', 'queryMpesaStatus', 'checkCustomerOrderPayment', 'decideStockRequest');
+  for (const name of names) {
     const response = await fetch(`https://europe-west1-vanbransa-pos.cloudfunctions.net/${name}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: {} }), signal: AbortSignal.timeout(30_000),
     });

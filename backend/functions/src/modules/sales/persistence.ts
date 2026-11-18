@@ -28,6 +28,7 @@ export function writeSaleRecords({
   timestamp,
 }: WriteSaleRecordsOptions): void {
   const saleId = String(records.sale.id);
+  for (const claim of dependencies.receiptClaims || []) transaction.set(claim.ref, claim.data);
   transaction.set(db.collection("sales").doc(saleId), records.sale);
   records.lines.forEach((line) => {
     transaction.set(db.collection("sale_lines").doc(String(line.id)), line);

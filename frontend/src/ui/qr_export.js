@@ -2,6 +2,10 @@ import { tenantStorage } from '../services/tenant-cache.js';
 import { db } from '../db/schema.js';
 import { getStockOnHand } from '../db/index.js';
 import { state, showNotification } from '../context.js';
+import { proformaHtml, proformaTotals } from '../services/event-proforma.js';
+import { escapeHtml as esc } from '../services/print-receipt.js';
+import { issueProforma } from '../services/proformas.js';
+import { ProformaRegister } from './proformas.js';
 
 /**
  * Customer menu lives beside the app, so derive it from wherever the till is
@@ -27,7 +31,10 @@ export class QrToolsView {
     this.render();
     this.bindEvents();
     if (this.activeTab === 'alerts') await this.runAlertCheck();
+    if (this.activeTab === 'proforma') await this.loadProforma();
   }
+
+  dispose() { this.proformaRegister?.dispose(); }
 
   render() {
     const t = this.activeTab;
@@ -37,8 +44,9 @@ export class QrToolsView {
       '<button class="pane-nav-btn ' + (t === 'qr' ? 'active' : '') + '" data-qtab="qr">\uD83D\uDCF1 QR Menu</button>',
       '<button class="pane-nav-btn ' + (t === 'export' ? 'active' : '') + '" data-qtab="export">\uD83D\uDCCA Export Reports</button>',
       '<button class="pane-nav-btn ' + (t === 'alerts' ? 'active' : '') + '" data-qtab="alerts">\uD83D\uDD14 Stock Alerts</button>',
+      '<button class="pane-nav-btn ' + (t === 'proforma' ? 'active' : '') + '" data-qtab="proforma">\uD83D\uDCC4 Event Proforma</button>',
       '</div>',
-      '<div class="settings-content" style="flex:1;overflow-y:auto;padding:20px;">',
+      '<div class="settings-content" style="flex:1;min-width:0;overflow-y:auto;padding:20px;">',
 
       // QR TAB
       '<div id="qt-qr" style="display:' + (t === 'qr' ? 'block' : 'none') + '">',
@@ -95,6 +103,7 @@ export class QrToolsView {
       '</div>',
       '</div>',
 
+      '<div id="qt-proforma" style="display:' + (t === 'proforma' ? 'block' : 'none') + '"></div>',
       // ALERTS TAB
       '<div id="qt-alerts" style="display:' + (t === 'alerts' ? 'block' : 'none') + '">',
       '<div class="discount-section">',
@@ -120,11 +129,13 @@ export class QrToolsView {
   bindEvents() {
     this.container.querySelectorAll('[data-qtab]').forEach(btn => {
       btn.addEventListener('click', async (e) => {
+        this.proformaRegister?.dispose();
         this.activeTab = e.currentTarget.getAttribute('data-qtab');
         this.render();
         this.bindEvents();
         if (this.activeTab === 'qr') this.generateQR();
         if (this.activeTab === 'alerts') await this.runAlertCheck();
+        if (this.activeTab === 'proforma') await this.loadProforma();
       });
     });
 
@@ -157,6 +168,192 @@ export class QrToolsView {
       });
     }
   }
+
+  // ── EVENT PROFORMA ──
+  // A priced offer for a planned event, printed to A4. Not a sale: nothing is
+  // booked and no stock moves until the event is rung up at the till.
+
+  /** Business, bank and M-Pesa details, remembered on this device after the first print. */
+  proformaProfile() {
+    let saved = {};
+    try { saved = JSON.parse(tenantStorage.getItem('pos_proforma_profile') || '{}') || {}; } catch { /* corrupt cache */ }
+    const tenant = state.currentTenant || {};
+    return {
+      name: tenant.trading_name || '', address: '', phone: tenant.phone || '', email: '', kraPin: tenant.kra_pin || '',
+      bank: '', branch: '', accountName: tenant.trading_name || '', accountNo: '', paybill: '', terms: '50% deposit to confirm the booking; balance due on the event date.',
+      ...saved,
+    };
+  }
+
+  nextProformaNumber() {
+    const today = new Date().toISOString().slice(2, 10).replace(/-/g, '');
+    let n = 1;
+    try { const last = JSON.parse(tenantStorage.getItem('pos_proforma_seq') || '{}'); if (last.day === today) n = last.n + 1; } catch { /* first one */ }
+    return { number: `PF-${today}-${String(n).padStart(2, '0')}`, day: today, n };
+  }
+
+  async loadProforma() {
+    const host = document.getElementById('qt-proforma');
+    if (!host) return;
+    this.proformaProducts = (await db.products.where('tenant_id').equals(state.currentTenant?.id || '').toArray())
+      .filter((p) => !p.retired_at && Number(p.sell_price) > 0)
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    this.proformaLines = this.proformaLines || [];
+    const pf = this.proformaProfile();
+    const today = new Date().toISOString().slice(0, 10);
+    const week = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+    const field = (id, label, value = '', type = 'text') => `<div class="discount-field"><label for="${id}">${label}</label><input type="${type}" id="${id}" value="${esc(value)}"></div>`;
+    host.innerHTML = `<div class="discount-section">
+      <h3>📄 Proforma invoice for an event</h3>
+      <p style="color:var(--text-secondary);font-size:13px;margin:0 0 16px;">Prepare an event invoice, then save and lock it before sending it to the client. Issued invoices stay in Proforma invoices, outside Running orders. Nothing is sold and no stock moves on issue. Payments enter daily totals when received.</p>
+      <div class="pf-fields">
+        ${field('pf-number', 'Proforma no.', this.nextProformaNumber().number)}
+        ${field('pf-date', 'Date', today, 'date')}
+        ${field('pf-due', 'Due date', week, 'date')}
+        ${field('pf-quote', 'Quote ref. (optional)')}
+        ${field('pf-lpo', 'Client order / LPO no. (optional)')}
+      </div>
+      <h4 style="margin:12px 0 4px;">Billed to</h4>
+      <div class="pf-fields">
+        ${field('pf-client-name', 'Client name')}${field('pf-client-company', 'Company / organisation')}
+        ${field('pf-client-address', 'Address')}${field('pf-client-phone', 'Phone', '', 'tel')}
+        ${field('pf-client-email', 'Email', '', 'email')}${field('pf-client-pin', 'Client KRA PIN')}
+      </div>
+      ${field('pf-subject', 'Subject (the event)', '')}
+      <h4 style="margin:12px 0 4px;">Items</h4>
+      <div class="pf-item-picker">
+        <div class="discount-field"><label for="pf-pick">From the menu</label><select id="pf-pick"><option value="">Choose an item…</option>${this.proformaProducts.map((p) => `<option value="${esc(p.id)}">${esc(p.name)} — KES ${Number(p.sell_price).toFixed(2)}</option>`).join('')}</select></div>
+        <button type="button" class="sec-btn" id="pf-add-item">Add item</button>
+        <button type="button" class="sec-btn" id="pf-add-custom">Add a service line</button>
+      </div>
+      <div id="pf-lines"></div>
+      <div class="pf-fields">
+        ${field('pf-discount', 'Discount (KES)', '0', 'number')}
+        <div class="discount-field pf-terms"><label for="pf-terms">Payment terms</label><textarea id="pf-terms" rows="3">${esc(pf.terms)}</textarea></div>
+        ${field('pf-signed', 'Authorised by', state.currentUser?.name || '')}
+      </div>
+      <details class="pf-business"><summary>Business, bank and M-Pesa details (remembered on this device)</summary>
+        <div class="pf-fields">
+          ${field('pf-biz-name', 'Business name', pf.name)}${field('pf-biz-address', 'Address', pf.address)}
+          ${field('pf-biz-phone', 'Phone', pf.phone)}${field('pf-biz-email', 'Email', pf.email)}
+          ${field('pf-biz-pin', 'KRA PIN', pf.kraPin)}${field('pf-bank', 'Bank', pf.bank)}
+          ${field('pf-bank-branch', 'Branch', pf.branch)}${field('pf-acc-name', 'Account name', pf.accountName)}
+          ${field('pf-acc-no', 'Account no.', pf.accountNo)}${field('pf-paybill', 'M-Pesa paybill', pf.paybill)}
+        </div>
+      </details>
+      <div id="pf-total" aria-live="polite"></div>
+      <button class="sec-btn" id="pf-print">Preview draft &amp; print</button>
+      <button class="discount-save-btn" id="pf-issue">Save &amp; lock invoice</button>
+      <p id="pf-issue-message" role="status">Check the details before issuing. Saved invoices cannot be edited.</p>
+    </div><div class="discount-section" id="pf-register"></div>`;
+    this.proformaRegister?.dispose();
+    this.proformaRegister = new ProformaRegister(host.querySelector('#pf-register'));
+    void this.proformaRegister.load();
+
+    const val = (id) => (document.getElementById(id)?.value || '').trim();
+    const renderTotals = () => {
+      const t = proformaTotals(this.proformaLines, Math.round(Number(val('pf-discount')) * 100));
+      document.getElementById('pf-total').textContent = `Amount due: KES ${(t.dueMinor / 100).toFixed(2)} (VAT included: KES ${(t.vatMinor / 100).toFixed(2)})`;
+    };
+    const renderLines = () => {
+      const wrap = document.getElementById('pf-lines');
+      wrap.innerHTML = this.proformaLines.length ? this.proformaLines.map((line, i) => `<div class="pf-line">
+          <div class="discount-field pf-description"><label for="pf-description-${i}">Description</label><input id="pf-description-${i}" type="text" data-pf="${i}" data-key="description" value="${esc(line.description)}" aria-label="Description, line ${i + 1}"></div>
+          <div class="discount-field"><label for="pf-qty-${i}">Qty</label><input id="pf-qty-${i}" type="number" min="1" step="1" data-pf="${i}" data-key="qty" value="${line.qty}" aria-label="Quantity, line ${i + 1}"></div>
+          <div class="discount-field"><label for="pf-unit-${i}">Unit price (KES)</label><input id="pf-unit-${i}" type="number" min="0" step="0.01" data-pf="${i}" data-key="unit" value="${(line.unitMinor / 100).toFixed(2)}" aria-label="Unit price, line ${i + 1}"></div>
+          <button type="button" class="sec-btn" data-pf-remove="${i}" aria-label="Remove line ${i + 1}">✕</button>
+        </div>`).join('')
+        : '<p style="color:var(--text-secondary);font-size:13px;">No items yet.</p>';
+      renderTotals();
+    };
+    renderLines();
+
+    document.getElementById('pf-add-item').onclick = () => {
+      const product = this.proformaProducts.find((p) => p.id === val('pf-pick'));
+      if (!product) { showNotification('Choose an item from the menu first.', 'warning'); return; }
+      this.proformaLines.push({ description: product.name, qty: 1, unitMinor: Math.round(Number(product.sell_price) * 100) });
+      renderLines();
+    };
+    document.getElementById('pf-add-custom').onclick = () => {
+      this.proformaLines.push({ description: '', qty: 1, unitMinor: 0 });
+      renderLines();
+    };
+    document.getElementById('pf-discount').oninput = renderTotals;
+    const lines = document.getElementById('pf-lines');
+    lines.oninput = (event) => {
+      const input = event.target.closest('[data-pf]');
+      if (!input) return;
+      const line = this.proformaLines[Number(input.dataset.pf)];
+      if (input.dataset.key === 'description') line.description = input.value;
+      if (input.dataset.key === 'qty') line.qty = Math.max(1, Math.round(Number(input.value) || 1));
+      if (input.dataset.key === 'unit') line.unitMinor = Math.max(0, Math.round(Number(input.value) * 100) || 0);
+      // Replacing the row during blur removes the next field before it can
+      // receive focus. Keep the fields in place while the operator types.
+      renderTotals();
+    };
+    lines.onclick = (event) => {
+      const remove = event.target.closest('[data-pf-remove]');
+      if (!remove) return;
+      this.proformaLines.splice(Number(remove.dataset.pfRemove), 1);
+      renderLines();
+    };
+
+    const invoiceDocument = () => {
+      if (!val('pf-client-name')) { showNotification('Enter the client name.', 'warning'); return; }
+      if (!this.proformaLines.length || this.proformaLines.some((line) => !line.description.trim())) {
+        showNotification('Add at least one item, and describe every line.', 'warning'); return;
+      }
+      const profile = {
+        name: val('pf-biz-name'), address: val('pf-biz-address'), phone: val('pf-biz-phone'), email: val('pf-biz-email'), kraPin: val('pf-biz-pin'),
+        bank: val('pf-bank'), branch: val('pf-bank-branch'), accountName: val('pf-acc-name'), accountNo: val('pf-acc-no'), paybill: val('pf-paybill'), terms: val('pf-terms'),
+      };
+      try { tenantStorage.setItem('pos_proforma_profile', JSON.stringify(profile)); } catch { /* private window */ }
+      return {
+        business: profile, number: val('pf-number'), date: val('pf-date'), dueDate: val('pf-due'), quoteRef: val('pf-quote'), lpo: val('pf-lpo'),
+        client: { name: val('pf-client-name'), company: val('pf-client-company'), address: val('pf-client-address'), phone: val('pf-client-phone'), email: val('pf-client-email'), kraPin: val('pf-client-pin') },
+        subject: val('pf-subject'), lines: this.proformaLines.map(line => ({ ...line })), discountMinor: Math.round(Number(val('pf-discount')) * 100) || 0,
+        terms: profile.terms, bank: profile, paybill: profile.paybill, signedBy: val('pf-signed'),
+      };
+    };
+    document.getElementById('pf-print').onclick = () => {
+      const invoice = invoiceDocument();
+      if (!invoice) return;
+      const html = proformaHtml(invoice);
+      const win = window.open('', '_blank');
+      if (!win) { showNotification('Allow pop-ups to print the proforma.', 'error'); return; }
+      win.document.write(html);
+      win.document.close();
+      setTimeout(() => win.print(), 400);
+    };
+    document.getElementById('pf-issue').onclick = async (event) => {
+      const invoice = invoiceDocument();
+      if (!invoice) return;
+      const message = document.getElementById('pf-issue-message');
+      const controls = [...host.querySelector('.discount-section').querySelectorAll('input, textarea, select, button')];
+      controls.forEach(control => { control.disabled = true; });
+      message.textContent = 'Saving and locking invoice…';
+      this.proformaRequestId = this.proformaRequestId || crypto.randomUUID();
+      try {
+        const saved = await issueProforma({ requestId: this.proformaRequestId, branchId: state.currentBranch?.id, invoice });
+        this.proformaLines = [];
+        this.proformaRequestId = null;
+        host.querySelector('.discount-section').innerHTML = `<h3>${esc(saved.number)} saved and locked</h3><p>The original invoice is available below and in Orders Viewer → Proforma invoices and Financials &amp; AI. Record payment there when it arrives.</p><button type="button" class="discount-save-btn" id="pf-new">Prepare another invoice</button>`;
+        host.querySelector('#pf-new').onclick = () => this.loadProforma();
+        this.proformaRegister.select(saved.id);
+        showNotification('Proforma invoice saved and locked.', 'success');
+      } catch (error) {
+        message.textContent = `Invoice could not be saved: ${error.message}`;
+        controls.forEach(control => { control.disabled = false; });
+        return;
+      }
+      // Reserve the local suggestion only after the server issues the invoice.
+      const next = this.nextProformaNumber();
+      if (invoice.number === next.number) {
+        try { tenantStorage.setItem('pos_proforma_seq', JSON.stringify({ day: next.day, n: next.n })); } catch { /* private window */ }
+      }
+    };
+  }
+
 
   async generateQR() {
     const urlEl = document.getElementById('qr-url-input');

@@ -15,7 +15,9 @@ async function setup(page: any) {
   await page.addScriptTag({ content: `
     const db = new Dexie('payment-commit-test-' + crypto.randomUUID());
     db.version(1).stores({tabs:'id',shifts:'id,user_id',sales:'id,sale_uuid',sale_lines:'id,sale_id',payments:'id,sale_id',stock_movements:'id',audit_log:'id,created_at',customers:'id'});
-    const state={currentTenant:{id:'t1'},currentBranch:{id:'b1'},currentUser:{id:'s1'},cloudShiftId:'shift1'};
+    const state={currentTenant:{id:'t1'},currentBranch:{id:'b1'},currentUser:{id:'s1',role:'Owner'},cloudShiftId:'shift1'};
+    const canSell=()=>true;
+    const claimSalePayment=async()=>({});
     const DEVICE_ID='device1',WALK_IN_CUSTOMER_ID='walk-in',firebaseConfigured=true,HELD_ORDER_MS=60000;
     const showNotification=()=>{};const getHouseStock=async()=>100;
     const isReceivable=method=>['CREDIT','PROFORMA'].includes(String(method).toUpperCase());
@@ -35,7 +37,7 @@ async function setup(page: any) {
       mpesaProofMatchesCurrentCart:()=>true,resolveTabForRound:async()=>null,
       selectedCustomer:{id:WALK_IN_CUSTOMER_ID,price_tier:'RETAIL'},totals:{subtotal:5,total:5,tax:0,discount:0},
       cart:[{product:{id:'p1',name:'Test item',is_service:0,tax_code:'A',sell_price:5,cost_price:0},qty:1}]};
-    view.registerOrder=registerOrder;view.releaseHeldLease=()=>{};
+    view.registerOrder=registerOrder;view.releaseHeldLease=()=>{};view.assertTabNameFree=async()=>{};
     view.buildPendingPaymentRecords=()=>[{id:crypto.randomUUID(),method:'CREDIT',amount:5}];
     view.buildPaymentRecords=()=>[paymentRow()];
     view.roundsBeingSettled=async()=>[view.pendingSale.saleId];

@@ -1,19 +1,12 @@
 import { db } from '../db/schema';
-import { EtimsService } from './etims';
 import { callFunction, firebaseConfigured, hasTenantSession, TENANT_ID, DEVICE_ID, WALK_IN_CUSTOMER_ID } from './firebase';
 import { state, showNotification } from '../context';
 import { pullStock } from './stock';
 import { isReceivable } from './takings';
 import { mapPaymentMethod, staffDiscountAsLineDiscounts, toMinor } from './tender';
 import { publishOpenOrders } from './open-orders';
-
-/**
- * Set VITE_DEMO_FISCAL=1 to drain the outbox through the bundled eTIMS
- * simulator instead of the real backend. The simulator invents KRA signatures,
- * so anything it produces is recorded as SIMULATED and must never be shown to a
- * taxpayer as proof of fiscalisation.
- */
-const DEMO_FISCAL = process.env.NEXT_PUBLIC_DEMO_FISCAL === '1';
+import { readWithDeadline } from './read-deadline.js';
+import { isNonBillableAdjustment, missingReceivable } from './checkout-rounds.js';
 
 /**
  * A sale the server is still owed.
@@ -31,6 +24,7 @@ const DEMO_FISCAL = process.env.NEXT_PUBLIC_DEMO_FISCAL === '1';
 const REFUSED_SALE_RETRY_MS = 60 * 60 * 1000;
 
 export function awaitingTransmission(sale, now = Date.now()) {
+  if (sale.sync_omitted === 'adjustment_only') return false;
   if (sale.synced_at !== undefined && sale.synced_at !== null) return false;
   if (sale.status === 'VOIDED') return false;
   if (sale.server_pending) return true;
@@ -54,13 +48,13 @@ export class SyncManager {
     }
     if (!(await this.transmitSale(sale))) {
       const current = await db.sales.get(saleId);
+      if (current?.sync_omitted === 'adjustment_only') return current;
       throw new Error(current?.sync_error_msg || 'The pending order has not reached the server. Retry before taking payment.');
     }
     return db.sales.get(saleId);
   }
 
   constructor() {
-    this.etims = new EtimsService();
     this.isSyncing = false;
     this.connectionStatus = 'ONLINE'; // 'ONLINE' or 'OFFLINE'
     this.onStatusChange = null; // Callback for UI state binding
@@ -82,21 +76,20 @@ export class SyncManager {
    * the row stays queued rather than being rejected in a loop.
    */
   async buildSalePayload(sale) {
+    this.skipTransmissionReason = null;
     // Why a payload could not be built, so the till can say more than "incomplete".
     const incomplete = (reason) => { this.incompleteReason = reason; return null; };
     const lines = await db.sale_lines.where('sale_id').equals(sale.id).toArray();
     let payments = await db.payments.where('sale_id').equals(sale.id).toArray();
     if (lines.length === 0) return incomplete('it has no items');
-    // Some unpaid rounds were saved without their receivable row. They are owed
-    // their total, and without the row they could neither upload nor be paid.
-    if (payments.length === 0 && sale.status === 'PENDING_PAYMENT' && Number(sale.grand_total) > 0) {
-      const receivable = {
-        id: crypto.randomUUID(), sale_id: sale.id, method: 'PROFORMA',
-        amount: Number(Number(sale.grand_total).toFixed(2)), reference: '', provider_txn_id: '',
-        verified: 0, received_at: sale.sold_at || new Date().toISOString(),
-      };
-      await db.payments.add(receivable);
-      payments = [receivable];
+    if (isNonBillableAdjustment(sale, lines, payments)) {
+      this.skipTransmissionReason = 'adjustment_only';
+      return null;
+    }
+    const receivable = missingReceivable(sale, payments);
+    if (receivable) {
+      await db.payments.put(receivable);
+      payments = [...payments, receivable];
     }
     if (payments.length === 0) return incomplete('it has no payment or amount owed');
 
@@ -173,9 +166,6 @@ export class SyncManager {
     this.isSyncing = true;
 
     try {
-      // Reconcile acknowledged rounds before republishing the floor: a
-      // payment on another device must also free the original device's table.
-      if (firebaseConfigured && await hasTenantSession()) await this.refreshSharedOrders();
       const unsyncedSales = await db.sales.where('sync_pending').equals(1).filter(awaitingTransmission).toArray();
 
       if (this.onStatusChange) {
@@ -183,16 +173,11 @@ export class SyncManager {
       }
       // No backend reachable: hold the queue. This is the normal state on a
       // till that has not been enrolled yet, so it is not an error.
-      const canTransmit = DEMO_FISCAL || (firebaseConfigured && await hasTenantSession());
+      const canTransmit = firebaseConfigured && await hasTenantSession();
       if (!canTransmit) return;
 
-      // Before the early return, not after it: a table opens, orders another
-      // round and settles without a single row entering the outbox, so gating
-      // this on unsynced sales would leave the floor invisible on a quiet till.
-      await this.publishOpenTabs();
-
-      if (unsyncedSales.length === 0) return;
-
+      // Paid orders must reach the server before advisory floor/history reads.
+      // A stalled snapshot used to hold the entire sales queue behind it.
       let transmitted = false;
       for (const sale of unsyncedSales) {
         if (this.connectionStatus === 'OFFLINE') break;
@@ -209,7 +194,10 @@ export class SyncManager {
       // right: the old refresh ran beside this drain and always read the
       // balances back before the server had moved them, so a sold item sat at
       // its pre-sale figure until some other screen happened to pull again.
-      if (transmitted) await pullStock().catch(() => {});
+      if (transmitted) await readWithDeadline(pullStock, 8000).catch(() => {});
+      // Reconcile before publishing, but a slow read must not hold the next
+      // queue drain indefinitely. This never times out a payment/sale write.
+      if (firebaseConfigured) await readWithDeadline(() => this.refreshSharedOrders(), 8000).catch(() => {});
       // Again after the drain: settling a tab is exactly what has to stop it
       // showing as open on every other screen.
       await this.publishOpenTabs();
@@ -274,6 +262,11 @@ export class SyncManager {
     }
     const payload = await this.buildSalePayload(sale);
     if (!payload) {
+      if (this.skipTransmissionReason === 'adjustment_only') {
+        await db.sales.update(sale.id, { sync_pending: 0, sync_omitted: 'adjustment_only',
+          sharing_pending: 0, sync_error_msg: null, fiscal_status: 'NOT_APPLICABLE' });
+        return false;
+      }
       await db.sales.update(sale.id, {
         fiscal_status: 'NEEDS_REVIEW',
         sync_error_msg: `Sale is incomplete and cannot be submitted automatically: ${this.incompleteReason || 'unknown reason'}.`
@@ -281,35 +274,15 @@ export class SyncManager {
       return false;
     }
 
-    if (DEMO_FISCAL) {
-      await this.transmitSimulated(sale);
-      return false;
-    }
-
     try {
       const result = await callFunction('createSale', payload);
-      await db.transaction('rw', [db.sales, db.fiscal_records], async () => {
-        await db.sales.update(sale.id, {
-          synced_at: new Date().toISOString(),
-          // The backend owns fiscal state; it starts pending until an eTIMS
-          // worker confirms, so we do not invent FISCALIZED here.
-          fiscal_status: (result && result.sale && result.sale.fiscalStatus) || 'PENDING',
-          server_sale_id: result && result.sale ? result.sale.id : null,
-          server_invoice_no: result && result.sale ? result.sale.invoiceNumber : null,
-          sync_error_msg: null
-        });
-        if (result && result.sale && result.sale.invoiceNumber) {
-          await db.fiscal_records.put({
-            id: `srv-${sale.id}`,
-            sale_id: sale.id,
-            cu_invoice_no: result.sale.invoiceNumber,
-            result_code: 'ACCEPTED',
-            result_msg: result.replayed ? 'Idempotent replay of an existing sale.' : 'Accepted by backend.',
-            submitted_at: sale.sold_at,
-            confirmed_at: new Date().toISOString(),
-            attempt_count: 1
-          });
-        }
+      await db.sales.update(sale.id, {
+        synced_at: new Date().toISOString(),
+        // KRA signs a bill only when an ETR is generated for it (services/etr.js).
+        fiscal_status: (result && result.sale && result.sale.fiscalStatus) || 'PENDING',
+        server_sale_id: result && result.sale ? result.sale.id : null,
+        server_invoice_no: result && result.sale ? result.sale.invoiceNumber : null,
+        sync_error_msg: null
       });
       return true;
     } catch (err) {
@@ -323,41 +296,6 @@ export class SyncManager {
       if (!permanent) throw err; // stop the run; retry on the next tick
       return false;
     }
-  }
-
-  /** Demo-only path. Everything it writes is labelled SIMULATED. */
-  async transmitSimulated(sale) {
-    const lines = await db.sale_lines.where('sale_id').equals(sale.id).toArray();
-    const result = await this.etims.transmitSale(sale, lines);
-
-    if (!result.success) {
-      await db.sales.update(sale.id, {
-        fiscal_status: 'TERMINAL_ERROR',
-        sync_error_msg: result.message
-      });
-      return;
-    }
-
-    await db.transaction('rw', [db.sales, db.fiscal_records], async () => {
-      await db.sales.update(sale.id, {
-        synced_at: new Date().toISOString(),
-        fiscal_status: 'SIMULATED'
-      });
-      await db.fiscal_records.put({
-        id: `sim-${sale.id}`,
-        sale_id: sale.id,
-        cu_invoice_no: result.cu_invoice_no,
-        cu_serial: result.cu_serial,
-        receipt_signature: result.receipt_signature,
-        internal_data: result.internal_data,
-        qr_payload: result.qr_payload,
-        result_code: 'SIMULATED',
-        result_msg: 'DEMO ONLY - not submitted to KRA.',
-        submitted_at: sale.sold_at,
-        confirmed_at: result.confirmed_at,
-        attempt_count: 1
-      });
-    });
   }
 
   startSyncScheduler() {

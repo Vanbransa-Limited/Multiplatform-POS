@@ -31,14 +31,16 @@ export const receivingLocation = (settings: Record<string, unknown>): 'STORE' | 
 /**
  * Who may do which stock job.
  *
- * Pulling stock from the Store into the House happens mid-service, so bar staff
- * can do it without hunting for a keeper. Booking a delivery in is a goods-received
+ * Anyone on the floor may *ask* for stock to move from the Store into the
+ * House; only the store manager (or the owner, when they are off) approves it,
+ * so nothing leaves the Store without their say. Booking a delivery in is a goods-received
  * decision and stays with stock staff. Correcting a count rewrites history, so
  * it stays with the two roles that answer for both rooms.
  */
 const STOCK_ROLES = {
   receive: ['owner', 'store_manager', 'store_keeper'],
-  request: ['owner', 'store_manager', 'store_keeper', 'bar_staff'],
+  request: ['owner', 'store_manager', 'supervisor', 'cashier', 'bar_staff', 'store_keeper'],
+  approve: ['owner', 'store_manager'],
   adjust: ['owner', 'store_manager'],
   // Switching the Store off folds the whole room into the House. That is a
   // decision about the shape of the business rather than a stock operation,
@@ -57,16 +59,51 @@ export function stockActor(
       'permission-denied',
       job === 'configure' ? 'Only the owner can change the stock locations.'
         : job === 'adjust' ? 'Sign in as the owner or a store manager to correct a count.'
+          : job === 'approve' ? 'Only the owner or a store manager can approve stock requests.'
           : job === 'request' ? 'Sign in as service or stock staff.'
             : 'Sign in as stock management staff.',
     );
   }
-  return { tenantId: String(token.tenant_id), staffId: String(token.staff_id) };
+  return { tenantId: String(token.tenant_id), staffId: String(token.staff_id), role: String(token.staff_role) };
+}
+
+/**
+ * Moves stock from the Store into the House inside a transaction that has
+ * already read both balances. Both sides get a movement, so the trail explains
+ * where every unit came from.
+ */
+function moveIntoHouse(tx: FirebaseFirestore.Transaction, m: {
+  tenantId: string; branchId: string; productId: string; qty: number; staffId: string; referenceId: string;
+  house: FirebaseFirestore.DocumentSnapshot; store: FirebaseFirestore.DocumentSnapshot; now: Timestamp;
+}) {
+  const available = storedQty(m.store.data()?.qty);
+  if (available < m.qty) throw new HttpsError('failed-precondition', `The Store holds only ${available}.`);
+  const before = storedQty(m.house.data()?.qty);
+  const sides: [FirebaseFirestore.DocumentReference, string, number, number][] = [
+    [m.store.ref, 'STORE', available - m.qty, -m.qty],
+    [m.house.ref, 'HOUSE', storedQty(before + m.qty), m.qty],
+  ];
+  for (const [ref, location, qty, delta] of sides) {
+    tx.set(ref, { id: ref.id, tenantId: m.tenantId, branchId: m.branchId, productId: m.productId, location, qty, updatedAt: m.now }, { merge: true });
+    tx.create(db.collection('stock_movements').doc(`${m.referenceId}_${location}`), { tenantId: m.tenantId, branchId: m.branchId, productId: m.productId, location, qty: delta, type: 'request', referenceId: m.referenceId, createdByStaffId: m.staffId, createdAt: m.now });
+  }
+  return { before, qty: before + m.qty, storeQty: available - m.qty };
 }
 
 export function quantity(value: unknown, allowZero = false): number {
   if (!Number.isSafeInteger(value) || Number(value) < (allowZero ? 0 : 1) || Number(value) > 100000000) throw new HttpsError('invalid-argument', 'Enter a valid whole-number quantity.');
   return Number(value);
+}
+
+/**
+ * A balance already on file. Sales may drive the House below zero (an offline
+ * sale cannot be refused after the fact), so negatives are legal here, unlike
+ * in what a person types.
+ */
+export function storedQty(value: unknown): number {
+  const qty = Number(value ?? 0);
+  if (!Number.isSafeInteger(qty) || Math.abs(qty) > 100000000) throw new HttpsError('invalid-argument', 'Enter a valid whole-number quantity.');
+  return qty;
 }
 
 const ACTIONS = ['receive', 'request', 'adjust'];
@@ -97,6 +134,7 @@ export const changeStock = onCall({ region: FUNCTION_REGION }, async (request) =
     }
     if (branch.data()?.tenantId !== actor.tenantId || branch.data()?.status !== 'active' || product.data()?.tenantId !== actor.tenantId || product.data()?.isService) throw new HttpsError('failed-precondition', 'Choose a stock item in an active branch.');
     const settings = settingsDoc.data() || {};
+    if (action === 'request' && (product.data()?.isActive === false || product.data()?.retiredAt)) throw new HttpsError('failed-precondition', 'Restore this stock item before requesting it.');
 
     // Each action names its own location, so the client cannot post a delivery
     // straight into the House while a Store is enabled.
@@ -104,15 +142,29 @@ export const changeStock = onCall({ region: FUNCTION_REGION }, async (request) =
     if (!locationsFor(settings).includes(location)) throw new HttpsError('failed-precondition', 'This location is disabled by the stock policy.');
     if (action === 'request' && !storeEnabled(settings)) throw new HttpsError('failed-precondition', 'There is no Store to request from.');
 
+    // Anyone but an approver only asks. The request waits for the store
+    // manager, and the audit row doubles as the replay guard for it.
+    if (action === 'request' && !(STOCK_ROLES.approve as readonly string[]).includes(actor.role)) {
+      const pendingRef = db.collection('stock_requests').doc(deterministicId('stock-request', `${actor.tenantId}:${requestId}`));
+      const now = Timestamp.now();
+      const productName = product.data()?.name || productId;
+      tx.create(pendingRef, { id: pendingRef.id, tenantId: actor.tenantId, branchId, productId, productName, qty, note: reason || null, status: 'pending', requestedByStaffId: actor.staffId, createdAt: now });
+      const result = { status: 'pending', requestId: pendingRef.id };
+      tx.create(auditRef, { tenantId: actor.tenantId, actorStaffId: actor.staffId, action: 'stock.request_pending', entityId: productId, fingerprint, metadata: { reason: reason || 'request', qty, branchId, productName }, result, createdAt: now });
+      return result;
+    }
+
     const balanceRef = db.collection('stock_balances').doc(`${branchId}_${productId}_${location}`);
     const sourceRef = db.collection('stock_balances').doc(`${branchId}_${productId}_STORE`);
     const [balance, source] = await tx.getAll(balanceRef, sourceRef);
-    const before = quantity(balance.data()?.qty || 0, true);
+    const before = storedQty(balance.data()?.qty);
     if (action === 'adjust' && input.expectedQty !== before) throw new HttpsError('aborted', 'Stock changed. Refresh before correcting.');
 
     const after = action === 'adjust' ? qty : before + qty;
-    if (after < Number(balance.data()?.reservedQty || 0)) throw new HttpsError('failed-precondition', 'Insufficient available stock.');
-    quantity(after, true);
+    // Only a lowering can eat into what kitchen prints have reserved.
+    if (after < before && after < Number(balance.data()?.reservedQty || 0)) throw new HttpsError('failed-precondition', 'Insufficient available stock.');
+    // Adding stock may leave an oversold House still negative; that is a refill, not an error.
+    storedQty(after);
 
     const now = Timestamp.now();
     const write = (ref: FirebaseFirestore.DocumentReference, loc: string, amount: number, delta: number) => {
@@ -122,18 +174,66 @@ export const changeStock = onCall({ region: FUNCTION_REGION }, async (request) =
 
     let movedFrom: number | null = null;
     if (action === 'request') {
-      // The request is fulfilled in the same step: the Store is debited here,
-      // so there is no pending state for stock to sit in.
-      const available = quantity(source.data()?.qty || 0, true);
-      if (available < qty) throw new HttpsError('failed-precondition', `The Store holds only ${available}.`);
-      movedFrom = available - qty;
-      write(sourceRef, 'STORE', movedFrom, -qty);
+      // An approver's own request needs nobody's sign-off, so it moves now.
+      movedFrom = moveIntoHouse(tx, { tenantId: actor.tenantId, branchId, productId, qty, staffId: actor.staffId, referenceId: id, house: balance, store: source, now }).storeQty;
+    } else {
+      write(balanceRef, location, after, after - before);
     }
-    write(balanceRef, location, after, after - before);
 
     const result = { qty: after, location, storeQty: movedFrom };
     tx.create(auditRef, { tenantId: actor.tenantId, actorStaffId: actor.staffId, action: `stock.${action}`, entityId: productId, fingerprint, metadata: { reason: reason || action, before, after, branchId, location, productName: product.data()?.name || productId }, result, createdAt: now });
     return result;
+  });
+});
+
+/**
+ * The store manager's answer to a pending House request.
+ *
+ * Approving moves the stock in the same transaction that marks the request,
+ * so two managers approving at once cannot move it twice: the second sees it
+ * is no longer pending. A Store that cannot cover it refuses and the request
+ * stays pending, to be approved later or turned down.
+ */
+export const decideStockRequest = onCall({ region: FUNCTION_REGION }, async (request) => {
+  const actor = stockActor(request.auth, 'approve');
+  const input = asRecord(request.data);
+  const requestId = documentId(input.requestId, 'requestId');
+  const decision = String(input.decision);
+  if (!['approve', 'reject'].includes(decision)) throw new HttpsError('invalid-argument', 'Approve or reject the request.');
+  const reason = optionalText(input.reason, 'reason', 300);
+  const ref = db.collection('stock_requests').doc(requestId);
+
+  return db.runTransaction(async (tx) => {
+    const [pending, settingsDoc] = await tx.getAll(ref, db.collection('tenant_settings').doc(actor.tenantId));
+    const data = pending.data();
+    if (!pending.exists || !data || data.tenantId !== actor.tenantId) throw new HttpsError('not-found', 'No such request.');
+    if (data.status !== 'pending') {
+      if (data.status === (decision === 'approve' ? 'approved' : 'rejected')) return { ...(data.decisionResult || { status: data.status }), alreadyDecided: true };
+      throw new HttpsError('failed-precondition', `This request was already ${data.status}.`);
+    }
+    const now = Timestamp.now();
+    const decided = { decidedByStaffId: actor.staffId, decidedAt: now, reason: reason || null };
+
+    if (decision === 'reject') {
+      tx.update(ref, { status: 'rejected', ...decided, decisionResult: { status: 'rejected' } });
+      tx.create(db.collection('audit_logs').doc(), { tenantId: actor.tenantId, actorStaffId: actor.staffId, action: 'stock.request_rejected', entityId: data.productId, metadata: { requestId, qty: data.qty, reason: reason || 'rejected', branchId: data.branchId, productName: data.productName }, createdAt: now });
+      return { status: 'rejected' };
+    }
+
+    if (!storeEnabled(settingsDoc.data() || {})) throw new HttpsError('failed-precondition', 'There is no Store to request from.');
+    const [branch, product] = await tx.getAll(db.collection('branches').doc(data.branchId), db.collection('products').doc(data.productId));
+    if (branch.data()?.tenantId !== actor.tenantId || branch.data()?.status !== 'active'
+      || product.data()?.tenantId !== actor.tenantId || product.data()?.isActive === false || product.data()?.retiredAt || product.data()?.isService) {
+      throw new HttpsError('failed-precondition', 'The request item or branch is no longer active. Reject the request or restore the item before approval.');
+    }
+    const [house, store] = await tx.getAll(
+      db.collection('stock_balances').doc(`${data.branchId}_${data.productId}_HOUSE`),
+      db.collection('stock_balances').doc(`${data.branchId}_${data.productId}_STORE`),
+    );
+    const moved = moveIntoHouse(tx, { tenantId: actor.tenantId, branchId: data.branchId, productId: data.productId, qty: data.qty, staffId: actor.staffId, referenceId: requestId, house, store, now });
+    tx.update(ref, { status: 'approved', ...decided, decisionResult: { status: 'approved', qty: moved.qty, storeQty: moved.storeQty } });
+    tx.create(db.collection('audit_logs').doc(), { tenantId: actor.tenantId, actorStaffId: actor.staffId, action: 'stock.request_approved', entityId: data.productId, metadata: { requestId, requestedByStaffId: data.requestedByStaffId, qty: data.qty, before: moved.before, after: moved.qty, branchId: data.branchId, location: 'HOUSE', productName: data.productName }, createdAt: now });
+    return { status: 'approved', qty: moved.qty, storeQty: moved.storeQty };
   });
 });
 
@@ -203,7 +303,7 @@ export const configureStock = onCall({ region: FUNCTION_REGION }, async (request
     sources.forEach((source, index) => {
       const data = source.data();
       tx.update(source.ref, { qty: 0, updatedAt: now });
-      tx.set(targets[index].ref, { ...data, id: targets[index].id, location: 'HOUSE', qty: quantity(data.qty + (targets[index].data()?.qty || 0), true), updatedAt: now });
+      tx.set(targets[index].ref, { ...data, id: targets[index].id, location: 'HOUSE', qty: storedQty(data.qty + storedQty(targets[index].data()?.qty)), updatedAt: now });
     });
     tx.update(settingsRef, { storeEnabled: wanted, stockMode: wanted ? 'both' : 'house_only', updatedAt: now, updatedByStaffId: actor.staffId });
     tx.create(db.collection('audit_logs').doc(), { tenantId: actor.tenantId, actorStaffId: actor.staffId, action: 'stock.locations_changed', metadata: { storeEnabled: wanted, moved: sources.map((doc) => ({ id: doc.id, qty: doc.data().qty })) }, createdAt: now });

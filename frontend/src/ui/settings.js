@@ -3,9 +3,14 @@ import { db } from '../db/schema';
 import { UsersView } from './users';
 import { verifyAuditTrail } from '../db/index';
 import { state, showNotification } from '../context';
-import { pullPaymentSettings, saveCashEnabled, pullAcceptedMethods, saveAcceptedMethods, TENDERS } from '../services/payment-settings';
+import { pullPaymentSettings, saveCashEnabled, pullAcceptedMethods, cachedAcceptedMethods, saveAcceptedMethods, TENDERS } from '../services/payment-settings';
 import { cachedTradingHours, pullTradingHours, saveTradingHours } from '../services/trading-hours';
+import { ACCESS_ROLES, accessModules, currentAccess, saveModuleAccess } from '../services/module-access.js';
+import { ROLE_LABELS } from '../services/roles.js';
+import { NAV_GROUPS } from '../navigation.js';
 import { configureStock, storeIsEnabled, pullStock } from '../services/stock';
+import { escapeHtml } from '../services/print-receipt';
+import { callFunction } from '../services/firebase';
 
 /** 00:00 - 23:00 as an hour picker, with the stored hour selected. */
 function hourOptions(selected) {
@@ -22,15 +27,90 @@ export class SettingsView {
   }
 
   async load() {
-    try { await pullStock(); } catch {}
-    try { await pullPaymentSettings(); } catch { showNotification('Could not refresh business payment settings.', 'warning'); }
-    // Falls back to the cached hours rather than blocking the screen; the
-    // financial report applies its own defaults if these were never set.
-    try { this.tradingHours = await pullTradingHours(); } catch { this.tradingHours = cachedTradingHours(); }
-    try { this.acceptedMethods = await pullAcceptedMethods(); } catch { this.acceptedMethods = this.acceptedMethods || []; }
+    this.tradingHours = cachedTradingHours();
+    this.acceptedMethods = cachedAcceptedMethods();
+    this.settingsReady = false;
+    this.settingsStatus = 'Showing saved settings. Refreshing from the server…';
     this.activeTab = this.activeTab || 'general';
     this.render();
     this.bindEvents();
+    void this.refreshSettings();
+  }
+
+  async refreshSettings() {
+    const results = await Promise.allSettled([pullStock(), pullPaymentSettings(), pullTradingHours(), pullAcceptedMethods()]);
+    if (this.disposed) return;
+    this.settingsReady = results.every(result => result.status === 'fulfilled');
+    this.settingsStatus = this.settingsReady
+      ? 'Settings are up to date.'
+      : 'Settings could not refresh. Reopen this screen to retry before saving changes.';
+    if (results[2].status === 'fulfilled') this.tradingHours = results[2].value;
+    if (results[3].status === 'fulfilled') this.acceptedMethods = results[3].value;
+    if (!this.settingsEdited) { this.render(); this.bindEvents(); }
+    else {
+      const status = this.container.querySelector('#settings-refresh-status');
+      if (status) status.textContent = this.settingsStatus;
+      this.setSettingsWriteState();
+    }
+  }
+
+  setSettingsWriteState() {
+    // Cached settings are usable immediately, but never save unknown defaults.
+    this.container.querySelectorAll('button[id^="save-"]').forEach(button => {
+      if (this.settingsReady === false) {
+        if (button.dataset.refreshDisabled === undefined) button.dataset.refreshDisabled = String(button.disabled);
+        button.disabled = true;
+      } else if (button.dataset.refreshDisabled !== undefined) {
+        button.disabled = button.dataset.refreshDisabled === 'true';
+        delete button.dataset.refreshDisabled;
+      }
+    });
+  }
+
+  /**
+   * Which roles reach each module, and who may sell. Only the owner can change
+   * it (the callable refuses anyone else); a store manager sees it read-only.
+   */
+  moduleAccessCard() {
+    const owner = state.currentUser?.role === 'Owner';
+    const access = currentAccess();
+    const modules = accessModules();
+    const selected = ACCESS_ROLES.includes(this.accessRole) ? this.accessRole : ACCESS_ROLES[0];
+    const groups = [{ label: 'Selling', keys: ['sell'] }, ...NAV_GROUPS.map(group => ({ label: group.label, keys: group.items.map(item => item.tab) }))];
+    const panels = ACCESS_ROLES.map(code => `<div data-access-panel="${code}" ${code === selected ? '' : 'hidden'}>
+      <div class="access-role-heading"><h4>${escapeHtml(ROLE_LABELS[code])} permissions</h4><span data-access-count="${code}">${modules.filter(module => access[module.key].includes(code)).length} of ${modules.length} enabled</span></div>
+      ${groups.map(group => `<fieldset class="access-group" ${owner ? '' : 'disabled'}><legend>${escapeHtml(group.label)}</legend>
+        ${modules.filter(module => group.keys.includes(module.key)).map(({ key, label }) => `<label class="access-permission">
+          <span class="access-permission-name">${escapeHtml(label)}${key === 'sell' ? '<small>Create sales and add rounds to tabs</small>' : ''}</span>
+          <span class="access-control"><input type="checkbox" role="switch" data-access="${key}" data-role="${code}" aria-label="${escapeHtml(`${label}: ${ROLE_LABELS[code]}`)}" ${access[key].includes(code) ? 'checked' : ''}><span class="access-state" aria-hidden="true"></span></span>
+        </label>`).join('')}</fieldset>`).join('')}
+    </div>`).join('');
+    return `<section class="discount-section module-access"><h3>Module access</h3>
+      <p class="access-intro">Choose a role to manage the modules it can open. The owner always has full access.</p>
+      ${owner ? '' : '<p class="access-readonly">Only the owner can change these permissions. You can review each role below.</p>'}
+      <div class="discount-field access-role-picker"><label for="access-role">Staff role</label><select id="access-role">${ACCESS_ROLES.map(code => `<option value="${code}" ${code === selected ? 'selected' : ''}>${escapeHtml(ROLE_LABELS[code])}</option>`).join('')}</select></div>
+      <div class="access-panels">${panels}</div>
+      <div class="access-footer"><button id="save-module-access" class="primary-btn" ${owner ? '' : 'disabled'}>Save module access</button>
+      <p id="module-access-result" role="status">${owner ? 'Changes apply after you save.' : 'Read-only access'}</p></div>
+    </section>`;
+  }
+
+  /**
+   * Which roles reach each module, and who may sell. Only the owner can change
+   * it (the callable refuses anyone else); a store manager sees it read-only.
+   */
+  moduleAccessCard() {
+    const owner = state.currentUser?.role === 'Owner';
+    const access = currentAccess();
+    const head = ACCESS_ROLES.map((code) => `<th scope="col">${escapeHtml(ROLE_LABELS[code])}</th>`).join('');
+    const rows = accessModules().map(({ key, label }) => `<tr><th scope="row">${escapeHtml(label)}</th>${ACCESS_ROLES.map((code) => `<td><input type="checkbox" data-access="${key}" data-role="${code}" aria-label="${escapeHtml(`${label}: ${ROLE_LABELS[code]}`)}" ${access[key].includes(code) ? 'checked' : ''} ${owner ? '' : 'disabled'}></td>`).join('')}</tr>`).join('');
+    return `<section class="discount-section module-access"><h3>Module access</h3>
+      <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px;">Tick the roles that can open each module. The owner always has everything. "Sell" decides who can ring up a sale at the till.</p>
+      <div style="overflow-x:auto;"><table class="module-access-table" style="border-collapse:collapse;font-size:13px;min-width:560px;">
+        <thead><tr><th scope="col" style="text-align:left;">Module</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>
+      <button id="save-module-access" class="primary-btn" style="margin-top:12px;" ${owner ? '' : 'disabled'}>Save module access</button>
+      <p id="module-access-result" role="status"></p>
+    </section>`;
   }
 
   render() {
@@ -58,11 +138,12 @@ export class SettingsView {
         </div>
 
         <!-- Right content -->
-        <div class="settings-content" style="flex:1;overflow-y:auto;padding:20px;">
+        <div class="settings-content" style="flex:1;min-width:0;overflow-y:auto;padding:20px;">
+          <p id="settings-refresh-status" role="status" style="font-size:13px;color:var(--text-secondary);margin:0 0 16px;">${escapeHtml(this.settingsStatus || '')}</p>
           ${this.activeTab === 'general' ? `<section class="discount-section"><h3>Stock locations</h3>
             <details class="stock-location-help" ${window.matchMedia('(max-width: 1023px)').matches ? '' : 'open'}><summary>How stock locations work</summary>
             <p>Every business has a <b>House</b> — it is what service draws from and what a sale decrements, so it cannot be switched off.</p>
-            <p>A <b>Store</b> is an optional back room in front of it. With a Store enabled, every delivery is booked into the Store and the House tops itself up by requesting; the stock moves immediately, with no approval step. Switching the Store off folds everything it holds into the House rather than stranding it.</p>
+            <p>A <b>Store</b> is an optional back room in front of it. With a Store enabled, every delivery is booked into the Store and the House tops itself up by requesting. A request waits until the store manager (or the owner) approves it, and only then does the stock move. Switching the Store off folds everything it holds into the House rather than stranding it.</p>
             </details>
             <select id="stock-mode" ${state.currentUser?.role === 'Owner' ? '' : 'disabled'}>${[['true','House and Store'],['false','House only']].map(([value,label]) => `<option value="${value}" ${String(storeIsEnabled()) === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
             <button id="save-stock-mode" class="primary-btn" ${state.currentUser?.role === 'Owner' ? '' : 'disabled'}>Save stock locations</button><p id="stock-mode-result" role="status"></p></section>` : ''}
@@ -282,21 +363,40 @@ export class SettingsView {
                   </label>` : `<span style="font-size:11px;color:var(--text-muted);">Owner access only</span>`}
               </div>
               <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border-color);border-radius:8px;padding:16px;">
-                <div style="font-weight:700;font-size:14px;margin-bottom:12px;">🏛️ KRA eTIMS Credentials</div>
+                <div style="font-weight:700;font-size:14px;margin-bottom:4px;">🏛️ KRA eTIMS (ETR receipts)</div>
+                <p style="font-size:11px;color:var(--text-secondary);margin:0 0 12px;">Connect this branch to the OSCU device KRA approved for it. Once connected, paid bills get a Generate ETR button.</p>
                 <div style="margin-bottom:12px;">
-                  <label style="font-size:11px;color:var(--text-secondary);">Taxpayer eTIMS PIN</label>
-                  <input type="text" id="set-taxpayer-pin" value="${state.currentTenant ? state.currentTenant.kra_pin : ''}" style="width:100%;padding:8px;border-radius:4px;background:rgba(0,0,0,0.2);border:1px solid var(--border-color);color:#fff;margin-top:4px;">
+                  <label for="set-taxpayer-pin" style="font-size:11px;color:var(--text-secondary);">Business KRA PIN</label>
+                  <input type="text" id="set-taxpayer-pin" value="${escapeHtml(state.currentTenant?.kra_pin || '')}" maxlength="11" ${isOwner ? '' : 'disabled'} style="width:100%;padding:8px;border-radius:4px;background:rgba(0,0,0,0.2);border:1px solid var(--border-color);color:#fff;margin-top:4px;">
+                </div>
+                <div style="margin-bottom:12px;">
+                  <label for="set-etims-bhf" style="font-size:11px;color:var(--text-secondary);">eTIMS branch ID</label>
+                  <input type="text" id="set-etims-bhf" value="${escapeHtml(state.currentBranch?.etims_bhf_id || '00')}" maxlength="2" ${isOwner ? '' : 'disabled'} style="width:100%;padding:8px;border-radius:4px;background:rgba(0,0,0,0.2);border:1px solid var(--border-color);color:#fff;margin-top:4px;">
+                </div>
+                <div style="margin-bottom:12px;">
+                  <label for="set-etims-serial" style="font-size:11px;color:var(--text-secondary);">OSCU device serial number</label>
+                  <input type="text" id="set-etims-serial" value="" autocomplete="off" ${isOwner ? '' : 'disabled'} style="width:100%;padding:8px;border-radius:4px;background:rgba(0,0,0,0.2);border:1px solid var(--border-color);color:#fff;margin-top:4px;">
+                </div>
+                <div style="margin-bottom:12px;">
+                  <label for="set-etims-itemcls" style="font-size:11px;color:var(--text-secondary);">Default item classification code (used where a product has none)</label>
+                  <input type="text" id="set-etims-itemcls" value="" maxlength="10" inputmode="numeric" ${isOwner ? '' : 'disabled'} style="width:100%;padding:8px;border-radius:4px;background:rgba(0,0,0,0.2);border:1px solid var(--border-color);color:#fff;margin-top:4px;">
                 </div>
                 <div style="margin-bottom:16px;">
-                  <label style="font-size:11px;color:var(--text-secondary);">eTIMS Control Unit Serial (OSCU)</label>
-                  <input type="text" value="OSCU020004992" readonly style="width:100%;padding:8px;border-radius:4px;background:rgba(0,0,0,0.2);border:1px solid var(--border-color);color:#fff;margin-top:4px;">
+                  <label for="set-etims-env" style="font-size:11px;color:var(--text-secondary);">Environment</label>
+                  <select id="set-etims-env" ${isOwner ? '' : 'disabled'} style="width:100%;padding:8px;border-radius:4px;background:rgba(0,0,0,0.2);border:1px solid var(--border-color);color:#fff;margin-top:4px;">
+                    <option value="sandbox">Sandbox (testing)</option>
+                    <option value="production">Production (live receipts)</option>
+                  </select>
                 </div>
-                <button id="save-kra-settings" style="background:var(--accent-blue);color:#fff;border:none;padding:8px 16px;border-radius:6px;font-weight:700;cursor:pointer;">Save KRA Config</button>
+                ${isOwner
+                  ? '<button id="save-kra-settings" style="background:var(--accent-blue);color:#fff;border:none;padding:8px 16px;border-radius:6px;font-weight:700;cursor:pointer;">Connect eTIMS</button>'
+                  : '<span style="font-size:11px;color:var(--text-muted);">Owner access only</span>'}
               </div>
             </div>
           </div>
 
           <!-- AUDIT TAB -->
+          ${this.activeTab === 'staff' ? this.moduleAccessCard() : ''}
           <div id="stab-staff" style="display:${this.activeTab === 'staff' ? 'block' : 'none'}"></div>
 
           <div id="stab-audit" style="display:${this.activeTab === 'audit' ? 'block' : 'none'}">
@@ -329,9 +429,35 @@ export class SettingsView {
     this.usersView.load();
   }
 
-  dispose() { this.usersView?.dispose(); }
+  dispose() { this.disposed = true; this.usersView?.dispose(); }
 
   bindEvents() {
+    this.setSettingsWriteState();
+    this.container.addEventListener('input', () => { this.settingsEdited = true; }, { once: true });
+    this.container.addEventListener('change', () => { this.settingsEdited = true; }, { once: true });
+    this.container.querySelector('#access-role')?.addEventListener('change', event => {
+      this.accessRole = event.target.value;
+      // Keep every role mounted so switching roles never discards a draft.
+      this.container.querySelectorAll('[data-access-panel]').forEach(panel => { panel.hidden = panel.dataset.accessPanel !== this.accessRole; });
+    });
+    this.container.querySelectorAll('input[data-access]').forEach(box => box.addEventListener('change', () => {
+      const enabled = this.container.querySelectorAll(`input[data-role="${box.dataset.role}"]:checked`).length;
+      this.container.querySelector(`[data-access-count="${box.dataset.role}"]`).textContent = `${enabled} of ${accessModules().length} enabled`;
+      this.container.querySelector('#module-access-result').textContent = 'Unsaved changes. Save to apply permissions for all roles.';
+    }));
+    this.container.querySelector('#save-module-access')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const result = this.container.querySelector('#module-access-result');
+      const map = Object.fromEntries(accessModules().map(({ key }) => [key, []]));
+      this.container.querySelectorAll('input[data-access]:checked').forEach((box) => map[box.dataset.access].push(box.dataset.role));
+      button.disabled = true;
+      const fields = this.container.querySelectorAll('.access-group');
+      fields.forEach(field => { field.disabled = true; });
+      result.textContent = 'Saving permissions…';
+      try { await saveModuleAccess(map); result.textContent = 'Saved. Each till picks this up when it next loads settings.'; }
+      catch (error) { result.textContent = error.message || 'Module access could not be saved.'; }
+      finally { button.disabled = false; fields.forEach(field => { field.disabled = false; }); }
+    });
     const stockButton = this.container.querySelector('#save-stock-mode');
     if (stockButton) stockButton.onclick = async () => {
       stockButton.disabled = true;
@@ -472,13 +598,31 @@ export class SettingsView {
       });
     }
 
-    // KRA settings
+    // KRA eTIMS: the server initialises the device with KRA and keeps its key.
     const saveKra = document.getElementById('save-kra-settings');
-    if (saveKra) saveKra.addEventListener('click', () => {
-      const pin = document.getElementById('set-taxpayer-pin').value;
-      if (!pin) return;
-      if (state.currentTenant) { state.currentTenant.kra_pin = pin; db.tenants.update(state.currentTenant.id, { kra_pin: pin }); }
-      showNotification('KRA Settings saved.', 'success');
+    if (saveKra) saveKra.addEventListener('click', async () => {
+      const value = (id) => document.getElementById(id).value.trim();
+      const tin = value('set-taxpayer-pin').toUpperCase();
+      if (!state.currentBranch?.id) return showNotification('Choose a branch first.', 'error');
+      saveKra.disabled = true;
+      saveKra.textContent = 'Connecting…';
+      try {
+        const result = await callFunction('setupEtims', {
+          branchId: state.currentBranch.id,
+          tin,
+          bhfId: value('set-etims-bhf'),
+          deviceSerial: value('set-etims-serial'),
+          environment: value('set-etims-env'),
+          defaultItemClassCode: value('set-etims-itemcls') || undefined,
+        });
+        if (state.currentTenant) { state.currentTenant.kra_pin = tin; await db.tenants.update(state.currentTenant.id, { kra_pin: tin }); }
+        showNotification(`eTIMS connected (${result.environment}). SCU ID ${result.sdcId}.`, 'success');
+      } catch (error) {
+        showNotification(error?.message || 'eTIMS could not be connected.', 'error');
+      } finally {
+        saveKra.disabled = false;
+        saveKra.textContent = 'Connect eTIMS';
+      }
     });
 
     // Verify Logs

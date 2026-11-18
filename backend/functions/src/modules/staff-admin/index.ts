@@ -20,7 +20,7 @@ import { FUNCTION_REGION } from "../../config/runtime";
 import { db } from "../../lib/firebase";
 import { SELLING_ROLES } from "../sales/constants";
 import { deterministicId } from "../../shared/identifiers";
-import { ADMIN_ROLES, canAssignRole, STAFF_ROLES } from "../../shared/roles";
+import { ADMIN_ROLES, canAssignRole, normaliseModuleAccess, STAFF_ROLES } from "../../shared/roles";
 import { asRecord, documentId, optionalText } from "../../shared/validation";
 
 const BOOTSTRAP_SECRET = defineSecret("POS_BOOTSTRAP_SECRET");
@@ -558,4 +558,28 @@ export const listStaffNames = onCall({ region: FUNCTION_REGION }, async (request
   return {
     staff: snapshot.docs.map((doc) => ({ id: doc.id, name: String(doc.data().name || doc.id) })),
   };
+});
+
+/**
+ * The owner's switches for which roles reach each module, and who may sell.
+ *
+ * Owner only: a store manager who could edit this could grant themselves
+ * anything. The map is not on the client write allowlist in firestore.rules,
+ * so this callable is the only way in.
+ */
+export const setModuleAccess = onCall({ region: FUNCTION_REGION }, async (request) => {
+  const token = request.auth?.token;
+  if (!token?.tenant_id || !token.staff_id || token.staff_role !== "owner") {
+    throw new HttpsError("permission-denied", "Only the owner can change module access.");
+  }
+  const tenantId = String(token.tenant_id);
+  const staffId = String(token.staff_id);
+  const moduleAccess = normaliseModuleAccess(asRecord(request.data, "Request data").moduleAccess);
+  const now = Timestamp.now();
+  await db.collection("tenant_settings").doc(tenantId).update({ moduleAccess, updatedAt: now, updatedByStaffId: staffId });
+  await db.collection("audit_logs").add({
+    tenantId, branchId: null, actorStaffId: staffId, action: "settings.module_access",
+    entityType: "tenant_settings", entityId: tenantId, metadata: { moduleAccess }, createdAt: now,
+  });
+  return { moduleAccess };
 });

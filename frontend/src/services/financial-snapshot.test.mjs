@@ -1,11 +1,66 @@
 ﻿import test from 'node:test';
 import assert from 'node:assert/strict';
-import { financialSnapshot, financialAnswer } from './financial-snapshot.js';
+import { financialSnapshot, financialAnswer, paymentAttemptLabel } from './financial-snapshot.js';
 const from = Date.parse('2026-09-08T00:00:00+03:00');
 const to = Date.parse('2026-09-09T23:59:59.999+03:00');
 const date = '2026-09-09T10:00:00Z';
-const snapshot = data => financialSnapshot({ tenantId: 'tenant', from, to, ...data });
+const snapshot = data => financialSnapshot({ tenantId: 'tenant', from, to, nowMs: Date.parse(date) + 60000, ...data });
 const attempt = (id, amountMinor, status = 'paid', extra = {}) => ({ id, tenantId: 'tenant', receipt: id, amountMinor, status, requestedAt: date, completedAt: date, ...extra });
+
+test('old unresolved prompts remain audit events and never become unpaid invoices', () => {
+  const report = snapshot({ nowMs: Date.parse(date) + 86400000,
+    attempts: ['ambiguous', 'verification_pending', 'pending'].map(status => attempt(status, 105000, status)) });
+  assert.equal(report.unpaid, 0);
+  assert.equal(report.collected, 0);
+  assert.equal(report.unpaidOrders.length, 0);
+  assert.equal(report.unconfirmedAttemptCount, 3);
+  for (const row of report.transactions) assert.equal(paymentAttemptLabel(row), 'NO CONFIRMATION — PROMPT ONLY');
+});
+
+test('conflicting offline receipts are visible for review and never add another received payment', () => {
+  const report = snapshot({ serverSales: [{ id: 'new-sale', tenantId: 'tenant', status: 'completed', invoiceNumber: 'INV-OFFLINE', soldAt: date, totalMinor: 105000 }],
+    serverPayments: [{ id: 'old-payment', tenantId: 'tenant', method: 'mpesa', reference: 'SAMECODE', amountMinor: 105000, paidAt: date },
+      { id: 'conflict', tenantId: 'tenant', saleId: 'new-sale', method: 'mpesa', reference: 'SAMECODE', amountMinor: 105000,
+        paidAt: date, status: 'receipt_conflict', verified: false, receiptConflict: true }] });
+  assert.equal(report.collected, 1050);
+  assert.equal(report.paymentCount, 1);
+  assert.equal(report.receiptReviewCount, 1);
+  const row = report.transactions.find(row => row.id === 'conflict');
+  assert.equal(row.invoice_no, 'INV-OFFLINE');
+  assert.match(paymentAttemptLabel(row), /ALREADY RECORDED.*REVIEW/);
+  assert.match(financialAnswer(report), /excluded from money received/);
+});
+
+test('server-allocated table rounds count one whole receipt; legacy reused codes still count once', () => {
+  const serverSales = [1, 2].map(n => ({ id: `sale${n}`, tenantId: 'tenant', invoiceNumber: `INV${n}`, status: 'completed', soldAt: date }));
+  const serverPayments = [50000, 20000].map((amountMinor,i) => ({ id: `pay${i}`, tenantId: 'tenant', saleId: `sale${i+1}`,
+    method: 'mpesa', amountMinor, reference: 'TABLECODE', paidAt: date, receiptAllocationId: 'checkout:table', receiptLimitMinor: 70000 }));
+  const report = snapshot({ serverSales, serverPayments });
+  assert.equal(report.collected, 700);
+  assert.equal(report.paymentCount, 1);
+  assert.equal(report.transactions[0].invoice_no, 'INV1 / INV2');
+  const legacy = snapshot({ serverSales, serverPayments: serverPayments.map(({ receiptAllocationId, receiptLimitMinor, ...row }) => row) });
+  assert.equal(legacy.collected, 500);
+});
+
+test('a provider receipt binds to its saved invoice and upgrades a matching ledger receipt once', () => {
+  const serverSales = [{ id: 'saved', tenantId: 'tenant', invoiceNumber: 'INV-537', status: 'completed',
+    checkoutStkKey: 'new-prompt', totalMinor: 105000, soldAt: date }];
+  const credit = { id: 'credit', tenantId: 'tenant', saleId: 'saved', method: 'credit', amountMinor: 105000, paidAt: date };
+  const proof = attempt('original-receipt', 105000, 'paid', { idempotencyKey: 'new-prompt' });
+  const pending = snapshot({ serverSales, serverPayments: [credit], attempts: [proof] });
+  assert.equal(pending.transactions[0].invoice_no, 'INV-537');
+  assert.equal(pending.transactions[0].unapplied, true);
+  assert.equal(pending.transactions[0].unsynced, false);
+  const reconciled = snapshot({ serverSales, attempts: [proof], serverPayments: [
+    { ...credit, settledAt: date }, { id: 'receipt', tenantId: 'tenant', saleId: 'saved', method: 'mpesa',
+      reference: 'original-receipt', amountMinor: 105000, paidAt: date, verified: false },
+  ] });
+  assert.equal(reconciled.collected, 1050);
+  assert.equal(reconciled.paymentCount, 1);
+  assert.equal(reconciled.transactions[0].verified, true);
+  assert.equal(reconciled.transactions[0].unapplied, false);
+});
 
 test('truncated references preserve first-prefix matching and exact references take priority', () => {
   const report = snapshot({
@@ -248,7 +303,7 @@ test('an M-Pesa payment finds its invoice through the sale uuid, and says so whe
 
   const orphan = report.transactions.find(row => row.reference === 'UICLV696Q7');
   assert.equal(orphan.invoice_no, undefined);
-  assert.equal(orphan.unsynced, true);
+  assert.equal(orphan.unsynced, false);
   // Still counted as money received - it arrived - but reported as unmatched
   // so it reads as a till holding an unsent sale, not as takings gone astray.
   assert.equal(report.collected, 450);
@@ -359,7 +414,7 @@ test('a payment names its order even when the sale is still queued on another ti
   // With nothing published, it falls back to saying so rather than to the key.
   const blind = snapshot({ attempts: [attempt('UICQ86BKY0', 140000, 'paid', { orderReference })] });
   assert.equal(blind.transactions[0].held_on_till, false);
-  assert.equal(blind.transactions[0].unsynced, true);
+  assert.equal(blind.transactions[0].unsynced, false);
 });
 
 test("the owner sees a cashier's bank settlement that is still stuck on that cashier's till", () => {

@@ -26,7 +26,8 @@ export class UsersView {
       controls: [this.container.querySelector('.staff-toolbar-actions'), this.container.querySelector('.staff-import-guidance')],
       title: 'Staff actions', buttonLabel: 'Actions', closeOnSelect: true, doneLabel: 'Done',
     });
-    await this.refresh();
+    await this.populateUsers();
+    if (!this.disposed) void this.refresh();
   }
 
   dispose() { this.disposed = true; this.actionSheet?.dispose(); }
@@ -140,6 +141,7 @@ export class UsersView {
   async populateUsers() {
     const tbody = document.getElementById('users-table-body');
     const users = await db.users.where('status').equals('ACTIVE').toArray();
+    if (this.disposed || !tbody || !this.container.contains(tbody)) return;
 
     if (users.length === 0) {
       tbody.innerHTML = '<tr><td colspan="4" style="padding: 24px; text-align: center; color: var(--text-muted);">No active users found.</td></tr>';

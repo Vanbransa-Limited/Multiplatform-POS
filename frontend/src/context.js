@@ -66,9 +66,35 @@ export function showNotification(message, type = 'success') {
     gap: '10px'
   });
   
-  setTimeout(() => { notif.style.transform = 'translateY(0)'; }, 50);
+  // On a phone the toast sits over the bottom nav, so a tap or sideways swipe
+  // clears it at once instead of making staff wait it out.
+  notif.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  Object.assign(notif.style, { cursor: 'pointer', touchAction: 'pan-y' });
+  let gone = false;
+  let startX = null;
+  const dismiss = () => { if (!gone) { gone = true; notif.remove(); } };
+  notif.addEventListener('pointerdown', (e) => {
+    startX = e.clientX;
+    notif.setPointerCapture?.(e.pointerId);
+  });
+  notif.addEventListener('pointermove', (e) => {
+    if (startX === null) return;
+    const dx = e.clientX - startX;
+    notif.style.transition = 'none';
+    notif.style.transform = `translateX(${dx}px)`;
+    notif.style.opacity = String(Math.max(0, 1 - Math.abs(dx) / 200));
+  });
+  // A tap and a finished swipe both end here; either way the reader is done with it.
+  notif.addEventListener('pointerup', () => { if (startX !== null) dismiss(); });
+  notif.addEventListener('pointercancel', () => {
+    startX = null;
+    Object.assign(notif.style, { transform: 'translateY(0)', opacity: '1' });
+  });
+
+  setTimeout(() => { if (startX === null) notif.style.transform = 'translateY(0)'; }, 50);
   setTimeout(() => {
+    if (gone) return;
     notif.style.transform = 'translateY(100px)';
-    setTimeout(() => notif.remove(), 300);
-  }, 4000);
+    setTimeout(dismiss, 300);
+  }, type === 'error' ? 8000 : 4000);
 }

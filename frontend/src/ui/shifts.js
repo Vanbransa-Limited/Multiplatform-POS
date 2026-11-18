@@ -11,11 +11,15 @@ export class ShiftsView {
   }
 
   async load() {
-    try { await pullPaymentSettings(); } catch { showNotification('Payment settings could not refresh.', 'warning'); }
     this.activeShift = await db.shifts.where('user_id').equals(state.currentUser.id).filter((shift) => shift.status === 'OPEN' && shift.branch_id === state.currentBranch.id).first();
     this.render();
     this.bindEvents();
+    void pullPaymentSettings().catch(() => {
+      if (!this.disposed) showNotification('Payment settings could not refresh.', 'warning');
+    });
   }
+
+  dispose() { this.disposed = true; }
 
   render() {
     if (!this.activeShift) {

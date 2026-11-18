@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { isNonBillableAdjustment, missingReceivable } from './checkout-rounds.js';
 
 // sync.js reaches for Dexie through a bundler-resolved path, so the predicate
 // is lifted out of the source the same way pullSales is in financial-sync.
@@ -56,7 +57,7 @@ test('voided orders never transmit, and transmitted ones are not resent', () => 
 });
 
 /** The drain itself, lifted out the same way, with its collaborators faked. */
-function drain({ transmits, sales = [{ id: 's1' }, { id: 's2' }] }) {
+function drain({ transmits, sales = [{ id: 's1' }, { id: 's2' }], refresh = async () => {}, onTransmit = () => {} }) {
   const calls = [];
   // Ends at the next method, whatever it is: anchoring on a later one swept
   // publishOpenTabs into the slice and failed as a bare syntax error.
@@ -65,20 +66,21 @@ function drain({ transmits, sales = [{ id: 's1' }, { id: 's2' }] }) {
     .slice(start, source.indexOf('\n  /**', start + 1))
     .replace('async syncOutbox()', 'async function syncOutbox()');
   const syncOutbox = new Function(
-    'db', 'DEMO_FISCAL', 'firebaseConfigured', 'hasTenantSession', 'awaitingTransmission', 'pullStock',
+    'db', 'firebaseConfigured', 'hasTenantSession', 'awaitingTransmission', 'pullStock', 'readWithDeadline',
     `return ${body}`,
   )(
     { sales: { where: () => ({ equals: () => ({ filter: () => ({ toArray: async () => sales, count: async () => 0 }) }) }) } },
-    false, true, async () => true, () => true,
+    true, async () => true, () => true,
     async () => { calls.push('pullStock'); },
+    async read => read(),
   );
 
   return syncOutbox.call({
     isSyncing: false,
     connectionStatus: 'ONLINE',
     onStatusChange: null,
-    refreshSharedOrders: async () => {},
-    transmitSale: async (sale) => { calls.push(`transmit:${sale.id}`); return transmits; },
+    refreshSharedOrders: refresh,
+    transmitSale: async (sale) => { calls.push(`transmit:${sale.id}`); onTransmit(sale); return transmits; },
     publishOpenTabs: async () => { calls.push('publishOpenTabs'); },
   }).then(() => calls);
 }
@@ -88,19 +90,30 @@ test('House balances are refreshed after the sales land, never beside them', asy
   // in parallel with the drain reads the balances back before they have moved
   // and the till shows a sold item still on the shelf.
   assert.deepEqual(await drain({ transmits: true }),
-    ['publishOpenTabs', 'transmit:s1', 'transmit:s2', 'pullStock', 'publishOpenTabs']);
+    ['transmit:s1', 'transmit:s2', 'pullStock', 'publishOpenTabs']);
 });
 
 test('a queue that transmitted nothing does not re-read every balance', async () => {
   assert.deepEqual(await drain({ transmits: false }),
-    ['publishOpenTabs', 'transmit:s1', 'transmit:s2', 'publishOpenTabs']);
+    ['transmit:s1', 'transmit:s2', 'publishOpenTabs']);
 });
 
-test('open tabs are published before the drain, so a quiet till is still visible', async () => {
+test('a stalled shared-order read cannot prevent paid sales from uploading', async () => {
+  let finish;
+  const waiting = new Promise(resolve => { finish = resolve; });
+  const uploaded = [];
+  const run = drain({ transmits: true, refresh: () => waiting, onTransmit: sale => uploaded.push(sale.id) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(uploaded, ['s1', 's2']);
+  finish();
+  await run;
+});
+
+test('open tabs are published even when a quiet till has no queued sales', async () => {
   // A table can open, order and settle without a single row entering the
   // outbox. Publishing only after a transmission left those floors dark.
-  const calls = await drain({ transmits: false });
-  assert.equal(calls[0], 'publishOpenTabs');
+  const calls = await drain({ transmits: false, sales: [] });
+  assert.deepEqual(calls, ['publishOpenTabs']);
   // And again afterwards, because settling is what closes a tab on every
   // other screen.
   assert.equal(calls.at(-1), 'publishOpenTabs');
@@ -112,11 +125,11 @@ test('a refused sale waits out its retry time instead of going up every tick', a
   const later = new Date(Date.now() + 60_000).toISOString();
   const earlier = new Date(Date.now() - 60_000).toISOString();
   assert.deepEqual(await drain({ transmits: false, sales: [{ id: 's1', sync_retry_after: later }, { id: 's2', sync_retry_after: earlier }, { id: 's3' }] }),
-    ['publishOpenTabs', 'transmit:s2', 'transmit:s3', 'publishOpenTabs']);
+    ['transmit:s2', 'transmit:s3', 'publishOpenTabs']);
 });
 
 /** buildSalePayload, lifted the same way, with its collaborators faked. */
-function payloadFor({ payments, lines = [{ product_id: 'p1', qty: 1, line_total: 100 }] }) {
+function payloadFor({ payments, lines = [{ product_id: 'p1', qty: 1, line_total: 100 }], sale = {}, saved = [] }) {
   const start = source.indexOf('  async buildSalePayload(');
   const body = source
     .slice(start, source.indexOf('\n  /**', start + 1))
@@ -125,20 +138,22 @@ function payloadFor({ payments, lines = [{ product_id: 'p1', qty: 1, line_total:
 
   const table = (rows) => ({ where: () => ({ equals: () => ({ toArray: async () => rows }) }) });
   const build = new Function(
-    'db', 'isReceivable', 'mapPaymentMethod', 'toMinor', 'staffDiscountAsLineDiscounts', 'TENANT_ID',
+    'db', 'isReceivable', 'mapPaymentMethod', 'toMinor', 'staffDiscountAsLineDiscounts', 'TENANT_ID', 'isNonBillableAdjustment', 'missingReceivable',
     `return ${body}`,
   )(
-    { sale_lines: table(lines), payments: table(payments), shifts: { get: async () => ({ user_id: 'staff-1' }) } },
+    { sale_lines: table(lines), payments: { ...table(payments), put: async row => saved.push(row) }, shifts: { get: async () => ({ user_id: 'staff-1' }) } },
     (method) => ['CREDIT', 'PROFORMA'].includes(String(method).toUpperCase()),
-    (method) => ({ CASH: 'cash', BANK: 'bank_transfer' }[String(method).toUpperCase()] || null),
+    (method) => ({ CASH: 'cash', BANK: 'bank_transfer', PROFORMA: 'credit', CREDIT: 'credit' }[String(method).toUpperCase()] || null),
     (amount) => Math.round(Number(amount) * 100),
     (rows) => rows,
     'tenant',
+    isNonBillableAdjustment, missingReceivable,
   );
 
   return build({
     id: 's1', tenant_id: 'tenant', branch_id: 'b1', device_id: 'd1',
     shift_id: 'sh1', customer_id: 'c1', sale_uuid: 'uuid-1', created_by: 'staff-1',
+    ...sale,
   });
 }
 
@@ -165,4 +180,22 @@ test('a zero-amount tender never reaches the server, and never strands the real 
   ] });
   assert.equal(settled.payments.length, 1);
   assert.equal(settled.payments[0].method, 'bank_transfer');
+});
+
+test('an unpaid KES2100 bill with zero credit uploads its recovered debt once', async () => {
+  const saved=[];
+  const payload=await payloadFor({payments:[{method:'CREDIT',amount:0}],sale:{status:'PENDING_PAYMENT',grand_total:2100},saved});
+  assert.equal(saved.length,1);
+  assert.equal(saved[0].amount,2100);
+  assert.deepEqual(payload.payments,[{method:'credit',amountMinor:210000,reference:undefined}]);
+  const retried=await payloadFor({payments:[{method:'CREDIT',amount:0},...saved],sale:{status:'PENDING_PAYMENT',grand_total:2100},saved});
+  assert.equal(saved.length,1);
+  assert.deepEqual(retried.payments,payload.payments);
+});
+
+test('an empty discount round is never uploaded as a zero-value sale', async () => {
+  const payload=await payloadFor({payments:[{method:'CREDIT',amount:0}],sale:{status:'PENDING_PAYMENT',grand_total:0},
+    lines:[{product_id:'prod-staff-discount',qty:1,unit_price:0,line_total:0}]});
+  assert.equal(payload,null);
+  assert.equal(awaitingTransmission({sync_omitted:'adjustment_only',sync_pending:1,server_pending:true}),false);
 });

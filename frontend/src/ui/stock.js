@@ -1,11 +1,13 @@
 import { db } from '../db/schema';
-import { state } from '../context';
-import { pullStock, changeStock, storeIsEnabled, pullStockMovements, importStock } from '../services/stock';
+import { state, showNotification } from '../context';
+import { pullStock, changeStock, storeIsEnabled, pullStockMovements, importStock, pullStockRequests, decideStockRequest } from '../services/stock';
 import { STOCK_TEMPLATE_CSV, downloadCsvTemplate, parseStockFile } from '../services/csv';
 import { escapeHtml as esc } from '../services/print-receipt';
 import { compareNames, pullCatalogue } from '../services/catalogue';
 import { readWithDeadline } from '../services/read-deadline';
 import { createMobileFilters } from './mobile-filters';
+import { callFunction } from '../services/firebase';
+import { adjustTarget, stockTakeRows, findDuplicate } from '../services/stock-actions.js';
 
 /** How a movement row reads to the person looking at it. */
 const MOVEMENT_LABELS = {
@@ -45,9 +47,12 @@ export class StockView {
   /** Booking a delivery is a goods-received decision; pulling stock is service. */
   get canWrite() {
     const role = state.currentUser?.role;
-    if (this.action === 'request') return ['Owner', 'Store Manager', 'Store Keeper', 'Bar Staff'].includes(role);
+    // Anyone on the floor may ask; the store manager decides (canApprove).
+    if (this.action === 'request') return Boolean(role);
     return ['Owner', 'Store Manager', 'Store Keeper'].includes(role);
   }
+  /** Who answers House requests. Mirrors STOCK_ROLES.approve on the server. */
+  get canApprove() { return ['Owner', 'Store Manager'].includes(state.currentUser?.role); }
   get canReceiveImport() { return this.action === 'receive' && ['Owner', 'Store Manager', 'Store Keeper'].includes(state.currentUser?.role); }
   get canImport() { return this.canReceiveImport || this.canCount; }
 
@@ -85,13 +90,15 @@ export class StockView {
     try {
       // The optional trail must not block quantities, and each network read
       // has a deadline so offline SDK retries cannot trap this screen.
-      const [stock, catalogue, movements] = await Promise.allSettled([
+      const [stock, catalogue, movements, requests] = await Promise.allSettled([
         readWithDeadline(() => pullStock()),
         readWithDeadline(() => pullCatalogue()),
         readWithDeadline(() => this.loadMovements()),
+        readWithDeadline(() => this.loadRequests()),
       ]);
       if (this.disposed) return;
       if (movements.status === 'rejected') this.movements = null;
+      if (requests.status === 'rejected') this.requests = null;
       this.refreshStatus = stock.status === 'fulfilled'
         ? ''
         : 'Showing cached stock. Server refresh failed or timed out. Retry when connected.';
@@ -157,9 +164,9 @@ export class StockView {
     return store
       ? {
         title: 'House Stock',
-        blurb: 'What service can actually reach. Sales come out of here. Top it up by requesting from the Store — the stock moves immediately, with no approval step.',
+        blurb: 'What service can actually reach. Sales come out of here. Top it up by requesting from the Store. A request waits for the store manager to approve it, then the stock moves.',
         formTitle: 'Request from the Store',
-        formHint: 'Moves stock out of the Store and into the House in one step. Both sides are recorded.',
+        formHint: 'Asks the store manager to move stock from the Store into the House. Nothing moves until they approve.',
         verb: 'Request into House',
       }
       : {
@@ -173,12 +180,15 @@ export class StockView {
 
   async render({ preserveForm = false } = {}) {
     const rows = await this.rows();
+    if (this.canCount) this.categories = await db.categories.toArray().catch(() => []);
     if (this.disposed) return;
     this.currentRows = rows;
     if (preserveForm && this.container.querySelector('#stk-body')) {
       this.container.querySelector('#stk-body').innerHTML = this.rowsHtml(rows);
       const trail = this.container.querySelector('#stk-movements');
       if (trail) trail.innerHTML = this.movementsHtml();
+      const queue = this.container.querySelector('#stk-requests');
+      if (queue) queue.outerHTML = this.requestsHtml();
       this.updateRefreshStatus();
       return;
     }
@@ -199,6 +209,9 @@ export class StockView {
 
         <div class="stk-actions" aria-label="Stock actions">
           ${this.canWrite ? `<button type="button" class="stk-action" data-stock-panel="entry" aria-controls="stk-entry-panel" aria-expanded="${this.openPanel === 'entry'}">${copy.formTitle}</button>` : ''}
+          ${this.canCount ? `<button type="button" class="stk-action" data-stock-panel="new" aria-controls="stk-new-panel" aria-expanded="${this.openPanel === 'new'}">Add new item</button>
+          <button type="button" class="stk-action" data-stock-panel="adjust" aria-controls="stk-adjust-panel" aria-expanded="${this.openPanel === 'adjust'}">Add / Remove stock</button>
+          <button type="button" class="stk-action" data-stock-panel="take" aria-controls="stk-take-panel" aria-expanded="${this.openPanel === 'take'}">Stock take</button>` : ''}
           ${this.canImport ? `<button type="button" class="stk-action" data-stock-panel="import" aria-controls="stk-import-panel" aria-expanded="${this.openPanel === 'import'}">${this.canReceiveImport ? `Import stock into ${this.location === 'STORE' ? 'Store' : 'House'}` : 'Import a House stock count'}</button>` : ''}
         </div>
         ${this.canWrite ? `
@@ -256,6 +269,9 @@ export class StockView {
           <div id="stk-import-report"></div>
         </section>` : ''}
 
+        ${this.requestsHtml()}
+        ${this.canCount ? this.countPanelsHtml(rows) : ''}
+
         <div class="stk-table-wrap stock-balances">
           <table class="stk-table">
             <thead>
@@ -269,6 +285,7 @@ export class StockView {
             <tbody id="stk-body">${this.rowsHtml(rows)}</tbody>
           </table>
         </div>
+        ${this.canCount ? '<p class="stk-hint">Fix count corrects one item. To count everything, use Stock take in Actions.</p>' : ''}
 
 
 
@@ -291,6 +308,162 @@ export class StockView {
       const panel = this.container.querySelector(`#${button.getAttribute('aria-controls')}`);
       if (!panel.hidden) panel.scrollIntoView({ block: 'start' });
     });
+  }
+
+  /**
+   * The owner's and store manager's own tools: a brand-new item, a few units
+   * in or out, and a full stock take. Each goes through a callable that
+   * enforces the same roles, so hiding them is courtesy, not security.
+   */
+  countPanelsHtml(rows) {
+    const room = this.location === 'STORE' ? 'Store' : 'House';
+    const options = rows.map((row) => `<option value="${esc(row.product.id)}">${esc(row.product.name)} — ${row.qty} in ${room}</option>`).join('');
+    return `
+        <section id="stk-new-panel" class="stk-card" ${this.openPanel === 'new' ? '' : 'hidden'}>
+          <h3>Add new item</h3>
+          <p class="stk-hint">For an item the business has never stocked. It is added to the menu catalogue and its opening stock is booked in. Already stocked? Use Add / Remove stock.</p>
+          <form id="stk-new-form" class="stk-form">
+            <div class="stk-field grow"><label for="stk-new-name">Name</label><input id="stk-new-name" name="name" type="text" maxlength="300" required></div>
+            <div class="stk-field"><label for="stk-new-sku">SKU (optional)</label><input id="stk-new-sku" name="sku" type="text" maxlength="200"></div>
+            <div class="stk-field"><label for="stk-new-category">Type</label><select id="stk-new-category" name="categoryId"><option value="">—</option>${(this.categories || []).map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></div>
+            <div class="stk-field"><label for="stk-new-price">Sell price (KES)</label><input id="stk-new-price" name="price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0 = not for sale yet"></div>
+            <div class="stk-field"><label for="stk-new-qty">Opening quantity</label><input id="stk-new-qty" name="qty" type="number" min="0" step="1" inputmode="numeric" value="0"></div>
+            <div class="stk-field grow"><label for="stk-new-ref">Delivery reference</label><input id="stk-new-ref" name="reason" type="text" maxlength="300"></div>
+            <div class="stk-field"><button class="primary-btn" type="submit">Add item</button></div>
+          </form>
+        </section>
+        <section id="stk-adjust-panel" class="stk-card" ${this.openPanel === 'adjust' ? '' : 'hidden'}>
+          <h3>Add / Remove stock</h3>
+          <p class="stk-hint">A few units in or out of the ${room}: breakage, a found crate, a return. Recorded with your reason. To recount everything, use Stock take.</p>
+          <form id="stk-adjust-form" class="stk-form">
+            <div class="stk-field grow"><label for="stk-adjust-product">Item</label><select id="stk-adjust-product" name="productId" required>${options}</select></div>
+            <div class="stk-field"><label for="stk-adjust-dir">Change</label><select id="stk-adjust-dir" name="direction"><option value="add">Add</option><option value="remove">Remove</option></select></div>
+            <div class="stk-field"><label for="stk-adjust-qty">Quantity</label><input id="stk-adjust-qty" name="qty" type="number" min="1" step="1" inputmode="numeric" required></div>
+            <div class="stk-field grow"><label for="stk-adjust-reason">Reason</label><input id="stk-adjust-reason" name="reason" type="text" maxlength="250" required></div>
+            <div class="stk-field"><button class="primary-btn" type="submit">Save change</button></div>
+          </form>
+        </section>
+        <section id="stk-take-panel" class="stk-card" ${this.openPanel === 'take' ? '' : 'hidden'}>
+          <h3>Stock take</h3>
+          <p class="stk-hint">Count the ${room} and type what is physically there. Each figure replaces the count on file; leave an item blank if you did not count it.</p>
+          <form id="stk-take-form">
+            <div class="stk-table-wrap"><table class="stk-table"><thead><tr><th>Item</th><th class="num">On file</th><th class="num">Counted</th></tr></thead><tbody>
+              ${rows.map((row) => `<tr><td>${esc(row.product.name)}</td><td class="num">${row.qty}</td><td class="num"><input type="text" inputmode="numeric" data-take="${esc(row.product.id)}" aria-label="Counted ${esc(row.product.name)}" style="width:6em"></td></tr>`).join('')}
+            </tbody></table></div>
+            <div class="stk-form" style="margin-top:12px">
+              <div class="stk-field grow"><label for="stk-take-reason">Reason</label><input id="stk-take-reason" type="text" maxlength="300" placeholder="e.g. Month-end stock take" required></div>
+              <div class="stk-field"><button class="primary-btn" type="submit">Submit stock take</button></div>
+            </div>
+          </form>
+        </section>`;
+  }
+
+  bindCountPanels(rows) {
+    const byId = new Map(rows.map((row) => [row.product.id, row]));
+    const busy = async (form, work) => {
+      const button = form.querySelector('button[type="submit"]');
+      button.disabled = true;
+      try { await work(); } catch (error) { this.say(error.message || 'That could not be saved.', false); } finally { button.disabled = false; }
+    };
+    const after = async (message) => {
+      await Promise.all([pullCatalogue().catch(() => {}), this.loadMovements()]);
+      this.openPanel = null;
+      const search = this.search;
+      await this.render();
+      this.search = search;
+      this.say(message, true);
+    };
+
+    const create = this.container.querySelector('#stk-new-form');
+    if (create) create.onsubmit = (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(create));
+      const name = data.name.trim();
+      const qty = Number(data.qty || 0);
+      if (!name) { this.say('Give the new item a name.', false); return; }
+      if (!Number.isInteger(qty) || qty < 0) { this.say('Opening quantity must be a whole number.', false); return; }
+      // upsertProduct keys a product by its SKU, so re-adding an existing item
+      // would quietly overwrite its price and details.
+      const clash = findDuplicate(rows.map((row) => row.product), name, data.sku);
+      if (clash) { this.say(`${clash.name} already exists. Use Add / Remove stock to change its count.`, false); return; }
+      const priced = parseFloat(data.price) > 0;
+      void busy(create, async () => {
+        const product = await callFunction('upsertProduct', {
+          name, sku: data.sku.trim() || `SKU-${Date.now().toString().slice(-6)}`, categoryId: data.categoryId || null,
+          sellPrice: parseFloat(data.price) || 0, trackStock: true, showOnMenu: true,
+        });
+        if (qty > 0) {
+          try {
+            await changeStock({ action: 'receive', branchId: state.currentBranch.id, productId: product.id, qty, reason: data.reason.trim() || 'Opening stock', requestId: crypto.randomUUID() });
+          } catch (error) {
+            await after(`${name} was added, but its opening stock was not booked (${error.message}). Use Add / Remove stock.`);
+            return;
+          }
+        }
+        await after(`${name} added${qty ? ` with ${qty} in stock` : ''}.${priced ? '' : ' Set its price in Menu Admin before selling it.'}`);
+      });
+    };
+
+    const adjust = this.container.querySelector('#stk-adjust-form');
+    if (adjust) adjust.onsubmit = (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(adjust));
+      const row = byId.get(data.productId);
+      if (!row) return;
+      const target = adjustTarget(row.qty, data.direction, data.qty);
+      if (target.error) { this.say(target.error, false); return; }
+      if (!data.reason.trim()) { this.say('Give a reason; it is recorded against the change.', false); return; }
+      this.submit({
+        action: 'adjust', productId: row.product.id, qty: target.qty, location: this.location, expectedQty: row.qty,
+        reason: `${data.direction === 'add' ? 'Added' : 'Removed'} ${data.qty}: ${data.reason.trim()}`,
+      }, adjust.querySelector('button[type="submit"]'));
+    };
+
+    const take = this.container.querySelector('#stk-take-form');
+    if (take) take.onsubmit = (event) => {
+      event.preventDefault();
+      const counts = Object.fromEntries([...take.querySelectorAll('[data-take]')].map((input) => [input.dataset.take, input.value]));
+      const result = stockTakeRows(rows.map((row) => row.product), counts);
+      if (result.error) { this.say(result.error, false); return; }
+      const reason = take.querySelector('#stk-take-reason').value.trim();
+      if (!reason) { this.say('A stock take needs a reason.', false); return; }
+      void busy(take, async () => {
+        const batch = crypto.randomUUID().replace(/-/g, '').slice(0, 20);
+        let counted = 0;
+        const skipped = [];
+        for (let start = 0; start < result.rows.length; start += 150) {
+          const done = await importStock({ mode: 'count', branchId: state.currentBranch.id, location: this.location, reason, createMissing: false, batchId: `${batch}${start}`, rows: result.rows.slice(start, start + 150) });
+          counted += done.imported;
+          skipped.push(...done.rejected);
+        }
+        await after(`Stock take saved: ${counted} item(s) counted.${skipped.length ? ` ${skipped.length} skipped: ${skipped.slice(0, 3).map((r) => `${r.sku} (${r.message})`).join('; ')}` : ''}`);
+      });
+    };
+  }
+
+  /** Pending House requests; nothing is shown without a Store to request from. */
+  async loadRequests() {
+    if (!storeIsEnabled()) { this.requests = []; return; }
+    const [requests, users] = await Promise.all([pullStockRequests(state.currentBranch?.id), db.users.toArray()]);
+    const names = new Map(users.map((user) => [user.id, user.name]));
+    this.requests = requests.map((r) => ({ ...r, who: names.get(r.requestedByStaffId) || r.requestedByStaffId || '—' }));
+  }
+
+  requestsHtml() {
+    const list = this.requests;
+    if (!storeIsEnabled() || list === undefined || (Array.isArray(list) && !list.length)) return '<section id="stk-requests" hidden></section>';
+    if (list === null) return '<section id="stk-requests" class="stk-card"><p class="stk-empty">Pending requests could not be read. Refresh when connected.</p></section>';
+    return `<section id="stk-requests" class="stk-card">
+      <h3>Pending requests (${list.length})</h3>
+      <p class="stk-hint">${this.canApprove ? 'Approve to move the stock from the Store into the House, or reject it.' : 'Waiting for the store manager to approve.'}</p>
+      <div class="stk-table-wrap"><table class="stk-table">
+        <thead><tr><th>Item</th><th class="num">Qty</th><th>Asked by</th><th>Note</th>${this.canApprove ? '<th></th>' : ''}</tr></thead>
+        <tbody>${list.map((r) => `<tr>
+          <td>${esc(r.productName || r.productId)}</td><td class="num">${Number(r.qty)}</td><td>${esc(r.who)}</td><td>${esc(r.note || '')}</td>
+          ${this.canApprove ? `<td style="text-align:right;white-space:nowrap"><button type="button" class="stk-edit" data-decide="approve" data-request="${esc(r.id)}">Approve</button> <button type="button" class="stk-edit" data-decide="reject" data-request="${esc(r.id)}">Reject</button></td>` : ''}
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </section>`;
   }
 
   /** The trail, or an honest line about why it is not there. */
@@ -326,7 +499,7 @@ export class StockView {
         <td class="stock-item-name">${esc(row.product.name)}</td>
         ${requesting ? `<td data-label="In Store" class="num ${row.storeQty ? '' : 'stk-zero'}">${row.storeQty}</td>` : ''}
         <td data-label="${this.location === 'STORE' ? 'In Store' : 'In House'}" class="num ${row.qty ? '' : 'stk-zero'}">${row.qty}${row.reservedQty ? ` <span class="stk-low">(${row.reservedQty} held)</span>` : ''}</td>
-        ${this.canCount ? `<td class="stock-item-action" style="text-align:right"><button type="button" class="stk-edit" aria-label="Correct stock for ${esc(row.product.name)}" data-correct="${esc(row.product.id)}" data-qty="${row.qty}" data-name="${esc(row.product.name)}">Correct</button></td>` : ''}
+        ${this.canCount ? `<td class="stock-item-action" style="text-align:right"><button type="button" class="stk-edit" aria-label="Fix the count for ${esc(row.product.name)} (one item, not a stock take)" data-correct="${esc(row.product.id)}" data-qty="${row.qty}" data-name="${esc(row.product.name)}">Fix count</button></td>` : ''}
       </tr>`).join('');
   }
 
@@ -411,6 +584,32 @@ export class StockView {
       };
     });
     this.bindImport();
+    this.bindCountPanels(rows);
+    // Delegated, because a refresh swaps the list without re-binding.
+    this.container.onclick = async (event) => {
+      const button = event.target.closest('[data-decide]');
+      if (!button || !this.canApprove) return;
+      const decision = button.dataset.decide;
+      const reason = decision === 'reject' ? window.prompt('Why is this request rejected? (shown in the audit trail)') : '';
+      if (reason === null) return;
+      button.disabled = true;
+      try {
+        const result = await decideStockRequest(button.dataset.request, decision, reason || undefined);
+        const refreshes = await Promise.allSettled([this.loadRequests(), this.loadMovements()]);
+        if (Array.isArray(this.requests)) this.requests = this.requests.filter(row => row.id !== button.dataset.request);
+        const search = this.search;
+        await this.render();
+        this.search = search;
+        const outcome = result.status === 'approved'
+          ? Number.isFinite(result.qty) ? `Approved. House now ${result.qty}, Store ${result.storeQty}.` : 'This request was already approved.'
+          : 'Request rejected.';
+        const warning = result.refreshWarning || (refreshes.some(read => read.status === 'rejected') ? 'Saved, but some stock details could not refresh. Refresh when connected.' : '');
+        this.say([outcome, warning].filter(Boolean).join(' '), true);
+      } catch (error) {
+        button.disabled = false;
+        this.say(error.message || 'That request could not be decided.', false);
+      }
+    };
     const search = this.container.querySelector('#stk-search');
     search.oninput = (event) => {
       this.search = event.target.value;
@@ -468,7 +667,9 @@ export class StockView {
 
   say(text, ok) {
     const message = this.container.querySelector('#stk-msg');
-    if (message) { message.textContent = text; message.className = `stk-msg ${ok ? 'ok' : 'bad'}`; }
+    // The line lives in the delivery panel; with that panel shut, say it as a toast instead.
+    if (message && !message.closest('[hidden]')) { message.textContent = text; message.className = `stk-msg ${ok ? 'ok' : 'bad'}`; }
+    else showNotification(text, ok ? 'success' : 'error');
   }
 
   /**
@@ -487,13 +688,17 @@ export class StockView {
     try {
       const result = await changeStock({ ...body, requestId: this.attempt.requestId });
       this.attempt = null;
+      if (payload.action === 'request') await this.loadRequests().catch(() => { this.requests = null; });
       const search = this.search;
       await this.render();
       this.search = search;
       this.say(
-        payload.action === 'request'
+        (payload.action === 'request' && result.status === 'pending'
+          ? 'Requested. Waiting for the store manager to approve it before the stock moves.'
+          : payload.action === 'request'
           ? `Moved into the House. House now ${result.qty}, Store ${result.storeQty}.`
-          : `Saved. ${this.location === 'STORE' ? 'Store' : 'House'} now ${result.qty}.`,
+          : `Saved. ${this.location === 'STORE' ? 'Store' : 'House'} now ${result.qty}.`)
+          + (result.refreshWarning ? ` ${result.refreshWarning}` : ''),
         true,
       );
     } catch (error) {

@@ -35,19 +35,12 @@ test('a name carrying markup is printed as text, never as an element', () => {
   assert.ok(html.includes('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;'));
 });
 
-test('the approved receipt keeps its labels, fiscal block and footer', () => {
+test('the approved receipt keeps its labels and footer', () => {
   const html = renderReceiptHtml(receipt);
   assert.ok(html.includes('Waiter/Waitress'), 'the floor label, not "Cashier"');
-  assert.ok(html.includes('KRA eTIMS FISCAL RECORD'));
   assert.ok(html.includes('Powered by KPOS Pro Systems'));
   // No inline size may undercut the print rules that force legible type.
   assert.ok(!/font-size:\s*1[12]px/.test(html.replace(/font-size:12px; color:#555/g, '')));
-
-  const signed = renderReceiptHtml({
-    ...receipt,
-    fiscal: { cuSerial: 'CU1', signature: 'SIG', invoiceNo: 'CU-1' },
-  });
-  assert.ok(signed.includes('SCAN TO VERIFY KRA'), 'the verification block belongs on a fiscalised receipt');
 });
 
 test('a table is printed when the sale carries one, and skipped when it does not', () => {
@@ -69,14 +62,31 @@ test('money always renders to two decimals and never as NaN', () => {
   assert.ok(!html.includes('NaN'));
 });
 
-test('an unsigned sale says so rather than printing a blank fiscal block', () => {
-  assert.ok(renderReceiptHtml(receipt).includes('AWAITING FISCAL SIGNATURE'));
-  const signed = renderReceiptHtml({
-    ...receipt,
-    fiscal: { cuSerial: 'CU1', signature: 'SIG', invoiceNo: '9' }
-  });
-  assert.ok(signed.includes('CU1'));
-  assert.ok(!signed.includes('AWAITING FISCAL SIGNATURE'));
+const etr = {
+  environment: 'sandbox', invcNo: 7, sdcId: 'KRACU013000001', mrcNo: 'WIS01000150', curRcptNo: '1', totRcptNo: '9',
+  intrlData: 'EAHSAV6ECUUXSY6PCCJYAUP6MI', rcptSign: 'QUII27MATATSHFRB', sdcDateTime: '20261113120500', buyerPin: 'A123456789Z',
+  verifyUrl: 'https://etims-sbx.kra.go.ke/common/link/etims/receipt/indexEtimsReceiptData?Data=P051234567A00QUII27MATATSHFRB',
+};
+
+test('a receipt KRA has not signed makes no fiscal claim', () => {
+  const html = renderReceiptHtml(receipt);
+  assert.ok(!/ETR|KRA eTIMS|FISCAL|SIGNATURE/i.test(html));
+});
+
+test('an ETR receipt prints the KRA signature, the buyer PIN and a QR code', () => {
+  const html = renderReceiptHtml({ ...receipt, etr });
+  assert.ok(html.includes('ETR RECEIPT'));
+  assert.ok(html.includes('A123456789Z'));
+  assert.ok(html.includes('KRACU013000001/1'));
+  assert.ok(html.includes('QUII27MATATSHFRB'));
+  assert.ok(html.includes('EAHSAV6ECUUXSY6PCCJYAUP6MI'));
+  assert.ok(html.includes('<svg') && html.includes('<path d="M'));
+});
+
+test('a QR is only drawn for a KRA link, and job values stay text', () => {
+  const html = renderReceiptHtml({ ...receipt, etr: { ...etr, verifyUrl: 'https://evil.example/', rcptSign: '<b>x</b>' } });
+  assert.ok(!html.includes('<svg'));
+  assert.ok(html.includes('&lt;b&gt;x&lt;/b&gt;'));
 });
 
 test('identity the merchant has not supplied yet prints nothing, not an empty label', () => {

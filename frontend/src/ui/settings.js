@@ -95,24 +95,6 @@ export class SettingsView {
     </section>`;
   }
 
-  /**
-   * Which roles reach each module, and who may sell. Only the owner can change
-   * it (the callable refuses anyone else); a store manager sees it read-only.
-   */
-  moduleAccessCard() {
-    const owner = state.currentUser?.role === 'Owner';
-    const access = currentAccess();
-    const head = ACCESS_ROLES.map((code) => `<th scope="col">${escapeHtml(ROLE_LABELS[code])}</th>`).join('');
-    const rows = accessModules().map(({ key, label }) => `<tr><th scope="row">${escapeHtml(label)}</th>${ACCESS_ROLES.map((code) => `<td><input type="checkbox" data-access="${key}" data-role="${code}" aria-label="${escapeHtml(`${label}: ${ROLE_LABELS[code]}`)}" ${access[key].includes(code) ? 'checked' : ''} ${owner ? '' : 'disabled'}></td>`).join('')}</tr>`).join('');
-    return `<section class="discount-section module-access"><h3>Module access</h3>
-      <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px;">Tick the roles that can open each module. The owner always has everything. "Sell" decides who can ring up a sale at the till.</p>
-      <div style="overflow-x:auto;"><table class="module-access-table" style="border-collapse:collapse;font-size:13px;min-width:560px;">
-        <thead><tr><th scope="col" style="text-align:left;">Module</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>
-      <button id="save-module-access" class="primary-btn" style="margin-top:12px;" ${owner ? '' : 'disabled'}>Save module access</button>
-      <p id="module-access-result" role="status"></p>
-    </section>`;
-  }
-
   render() {
     this.usersView?.dispose(); this.usersView = null;
     const cashEnabled = tenantStorage.getItem('pos_cash_enabled') !== 'false';

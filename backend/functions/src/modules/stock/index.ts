@@ -134,7 +134,8 @@ export const changeStock = onCall({ region: FUNCTION_REGION }, async (request) =
     }
     if (branch.data()?.tenantId !== actor.tenantId || branch.data()?.status !== 'active' || product.data()?.tenantId !== actor.tenantId || product.data()?.isService) throw new HttpsError('failed-precondition', 'Choose a stock item in an active branch.');
     const settings = settingsDoc.data() || {};
-    if (action === 'request' && (product.data()?.isActive === false || product.data()?.retiredAt)) throw new HttpsError('failed-precondition', 'Restore this stock item before requesting it.');
+    // Sale eligibility is separate from inventory retirement: unpriced supplies still move.
+    if (action === 'request' && product.data()?.retiredAt) throw new HttpsError('failed-precondition', 'Restore this stock item before requesting it.');
 
     // Each action names its own location, so the client cannot post a delivery
     // straight into the House while a Store is enabled.
@@ -223,7 +224,7 @@ export const decideStockRequest = onCall({ region: FUNCTION_REGION }, async (req
     if (!storeEnabled(settingsDoc.data() || {})) throw new HttpsError('failed-precondition', 'There is no Store to request from.');
     const [branch, product] = await tx.getAll(db.collection('branches').doc(data.branchId), db.collection('products').doc(data.productId));
     if (branch.data()?.tenantId !== actor.tenantId || branch.data()?.status !== 'active'
-      || product.data()?.tenantId !== actor.tenantId || product.data()?.isActive === false || product.data()?.retiredAt || product.data()?.isService) {
+      || product.data()?.tenantId !== actor.tenantId || product.data()?.retiredAt || product.data()?.isService) {
       throw new HttpsError('failed-precondition', 'The request item or branch is no longer active. Reject the request or restore the item before approval.');
     }
     const [house, store] = await tx.getAll(

@@ -370,13 +370,58 @@ test('supervisor and store keeper request approval; foreign managers and retired
       await assert.rejects(decide(requester, { requestId: asked.requestId, decision: 'approve' }));
       await assert.rejects(decide({ token: { ...manager.token, tenant_id: 'other' } }, { requestId: asked.requestId, decision: 'approve' }));
       await assert.rejects(call(requester, { action: 'request', qty: 5, requestId: 'role-check' }), /already used/);
-      docs.get('products/p1').isActive = false;
+      docs.get('products/p1').retiredAt = new Date();
       await assert.rejects(decide(manager, { requestId: asked.requestId, decision: 'approve' }), /active|available|retired/i);
       await assert.rejects(call(requester, { action: 'request', qty: 4, requestId: 'inactive-item' }), /Restore/);
       assert.equal(docs.get('stock_balances/b1_p1_STORE').qty, 30);
     } finally { restore(); }
   }
 });
+
+for (const role of ['supervisor', 'cashier', 'bar_staff', 'store_keeper']) {
+test(`an unpriced supply requested by ${role} waits for approval and moves exactly once`, async () => {
+  const docs = base();
+  docs.set('stock_balances/b1_p1_STORE', { qty: 8 });
+  docs.set('stock_balances/b1_p1_HOUSE', { qty: -3 });
+  docs.get('products/p1').isActive = false;
+  const restore = harness(docs);
+  try {
+    const waiter = { token: { tenant_id: 't1', staff_id: 'w1', staff_role: role } };
+    const asked = await call(waiter, { action: 'request', qty: 2, requestId: 'sugar' });
+    assert.equal(asked.status, 'pending');
+    assert.equal(docs.get('stock_balances/b1_p1_STORE').qty, 8);
+    assert.equal(docs.get('stock_balances/b1_p1_HOUSE').qty, -3);
+    assert.equal([...docs.keys()].filter(path => path.startsWith('stock_movements/')).length, 0);
+    assert.deepEqual(await call(waiter, { action: 'request', qty: 2, requestId: 'sugar' }), asked);
+    await decide(manager, { requestId: asked.requestId, decision: 'approve' });
+    assert.equal(docs.get('stock_balances/b1_p1_STORE').qty, 6);
+    assert.equal(docs.get('stock_balances/b1_p1_HOUSE').qty, -1);
+    assert.equal((await decide(owner, { requestId: asked.requestId, decision: 'approve' })).alreadyDecided, true);
+    assert.equal([...docs.keys()].filter(path => path.startsWith('stock_movements/')).length, 2);
+    assert.equal(docs.get('products/p1').isActive, false);
+  } finally { restore(); }
+});
+}
+
+for (const actor of [owner, manager]) {
+test(`an unpriced supply can be moved directly by ${actor.token.staff_role}`, async () => {
+  const docs = base();
+  docs.set('stock_balances/b1_p1_STORE', { qty: 8 });
+  docs.get('products/p1').isActive = false;
+  const restore = harness(docs);
+  try {
+    await assert.rejects(call(actor, { action: 'request', qty: 9, requestId: 'too-many' }), /holds only 8/);
+    const result = await call(actor, { action: 'request', qty: 2, requestId: 'supply' });
+    assert.deepEqual(result, { qty: 2, location: 'HOUSE', storeQty: 6 });
+    assert.deepEqual(await call(actor, { action: 'request', qty: 2, requestId: 'supply' }), result);
+    assert.equal(docs.get('stock_balances/b1_p1_STORE').qty, 6);
+    assert.equal(docs.get('stock_balances/b1_p1_HOUSE').qty, 2);
+    assert.equal([...docs.keys()].filter(path => path.startsWith('stock_movements/')).length, 2);
+    docs.get('products/p1').retiredAt = new Date();
+    await assert.rejects(call(actor, { action: 'request', qty: 1, requestId: 'retired-supply' }), /Restore/);
+  } finally { restore(); }
+});
+}
 
 test('a waiter asks, nothing moves, and the store manager approves the move', async () => {
   const docs = base();

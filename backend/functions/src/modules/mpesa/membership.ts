@@ -154,6 +154,8 @@ export function allocateMembershipDiscount(
   lines: readonly { productId: string; grossMinor: number }[],
   discountMinor: number,
 ): MembershipLineDiscount[] {
+  // Saved-bill settlement has no cart lines and never carries a discount.
+  if (lines.length === 0 && discountMinor === 0) return [];
   const totalGrossMinor = lines.reduce((total, line) => total + line.grossMinor, 0);
   if (
     lines.length === 0

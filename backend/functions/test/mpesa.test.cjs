@@ -207,6 +207,9 @@ test("legacy membership discounts floor to a whole shilling and allocate exactly
   ], 400);
   assert.equal(allocated.reduce((sum, line) => sum + line.discountMinor, 0), 400);
   assert.deepEqual(allocated.map((line) => line.productId), ["food", "drink"]);
+  // Saved-bill settlement carries no lines and no discount: nothing to allocate.
+  assert.deepEqual(allocateMembershipDiscount([], 0), []);
+  assert.throws(() => allocateMembershipDiscount([], 100));
 });
 
 test("a prompt that never reached Safaricom fails cleanly instead of locking the order", async () => {

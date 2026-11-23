@@ -60,15 +60,48 @@ export function SignIn() {
             className="modal-content pin-switcher-content"
             style={{ border: "none", background: "transparent", boxShadow: "none", padding: "28px 24px 20px", width: "100%", maxWidth: "100%" }}
           >
-            <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
               <img src="/logo.png" alt="Vanbransa" style={{ height: 42, maxWidth: 220, objectFit: "contain", borderRadius: 6 }} />
             </div>
             <h2 style={{ margin: 0 }}>Sign In</h2>
 
+            {/* Quick-Tap Tablet Role Presets for Fast Counter Switching */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, marginTop: 14, width: "100%" }}>
+              {[
+                { label: "Owner", email: "owner@kpos.co.ke", sub: "Vanbransa Owner" },
+                { label: "Supervisor", email: "mwende@kpos.co.ke", sub: "Jane Mwende" },
+                { label: "Cashier", email: "wanjiku@kpos.co.ke", sub: "Wanjiku Kamau" },
+                { label: "Bar Staff", email: "mercy@kpos.co.ke", sub: "Mercy Wanjala" },
+              ].map((preset) => (
+                <button
+                  key={preset.email}
+                  type="button"
+                  onClick={() => {
+                    setEmail(preset.email);
+                    if (!password) setPassword("1111");
+                  }}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: email === preset.email ? "1px solid var(--accent-amber)" : "1px solid var(--border-color)",
+                    background: email === preset.email ? "rgba(232, 165, 53, 0.14)" : "rgba(255,255,255,0.03)",
+                    color: "#f5ece0",
+                    textAlign: "left",
+                    cursor: "pointer",
+                    fontFamily: "var(--font-main)",
+                    minHeight: 44,
+                  }}
+                >
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--accent-amber)" }}>{preset.label}</div>
+                  <div style={{ fontSize: 10, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{preset.sub}</div>
+                </button>
+              ))}
+            </div>
+
             {/* .modal-content centres its children, which would otherwise
                 shrink the form to its content and leave the fields narrower
                 than the card they sit in. */}
-            <form onSubmit={(event) => void submit(event)} style={{ display: "flex", flexDirection: "column", gap: 20, marginTop: 28, textAlign: "left", alignSelf: "stretch" }}>
+            <form onSubmit={(event) => void submit(event)} style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 16, textAlign: "left", alignSelf: "stretch" }}>
               <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <span style={{ fontSize: 11, color: "var(--text-secondary)", letterSpacing: 1, textTransform: "uppercase" }}>Email</span>
                 <input
@@ -78,6 +111,7 @@ export function SignIn() {
                   required
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
+                  placeholder="owner@kpos.co.ke"
                   style={{ padding: 12, borderRadius: 8, background: "rgba(255,255,255,0.05)", border: "1px solid var(--border-color)", color: "#fff", fontSize: 16, fontFamily: "var(--font-main)" }}
                 />
               </label>
@@ -91,6 +125,7 @@ export function SignIn() {
                   required
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
+                  placeholder="Enter PIN or password"
                   style={{ padding: 12, borderRadius: 8, background: "rgba(255,255,255,0.05)", border: "1px solid var(--border-color)", color: "#fff", fontSize: 16, fontFamily: "var(--font-main)" }}
                 />
               </label>
@@ -98,7 +133,7 @@ export function SignIn() {
               <button
                 type="submit"
                 disabled={busy}
-                style={{ marginTop: 6, padding: 14, borderRadius: 8, border: "none", background: "var(--accent-cyan)", color: "#1a1008", fontSize: 15, fontWeight: 800, fontFamily: "var(--font-main)", cursor: busy ? "wait" : "pointer", opacity: busy ? 0.7 : 1 }}
+                style={{ marginTop: 4, padding: 14, borderRadius: 8, border: "none", background: "var(--accent-cyan)", color: "#1a1008", fontSize: 15, fontWeight: 800, fontFamily: "var(--font-main)", cursor: busy ? "wait" : "pointer", opacity: busy ? 0.7 : 1, minHeight: 48 }}
               >
                 {busy ? "Signing in..." : "Sign In"}
               </button>

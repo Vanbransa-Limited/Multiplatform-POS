@@ -204,9 +204,62 @@
   .module-page h2 { font-size: 20px !important; }
 }
 
-@media screen and (min-width: 768px) and (max-width: 1023px) {
-  .till-grid { grid-template-columns: minmax(0, 1fr) 310px; height: calc(100dvh - 92px); }
+@media screen and (min-width: 768px) and (max-width: 1180px) {
+  .till-grid {
+    grid-template-columns: minmax(0, 1fr) 330px;
+    gap: 14px;
+    height: calc(100dvh - 86px);
+  }
   .till-catalogue-col, .till-cart-col { min-width: 0; }
+  .product-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+  }
+  .product-card {
+    padding: 12px;
+    height: 280px;
+    min-height: 280px;
+  }
+  .product-card .card-media {
+    height: 104px !important;
+  }
+  .product-card .card-summary-tabs,
+  .product-card .card-tab-content {
+    display: none;
+  }
+  .cart-item-qty-control .qty-btn {
+    width: 36px;
+    height: 36px;
+    font-size: 18px;
+  }
+  .cart-item-remove {
+    min-width: 36px;
+    min-height: 36px;
+    font-size: 16px;
+  }
+  .checkout-btn {
+    min-height: 52px;
+    font-size: 16px;
+  }
+  #payment-modal .modal-content {
+    max-width: min(94vw, 720px) !important;
+    padding: 22px 20px !important;
+  }
+  #payment-modal .checkout-modal-grid {
+    grid-template-columns: 240px minmax(0, 1fr) !important;
+    gap: 16px;
+  }
+  #payment-modal .payment-method-card {
+    padding: 12px 14px;
+    min-height: 54px;
+  }
+}
+
+/* Global touch-action optimization to eliminate 300ms tap delay on tablets and phones */
+.product-card, .filter-chip, .qty-btn, .checkout-btn, .payment-method-card, .quick-cash-btn, .sidebar-nav-btn, .mnav-btn, button {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
 /* Stock counts stay readable beside the quantity being entered. */
 .stock-count-sheet .pos-table { width: 100%; }

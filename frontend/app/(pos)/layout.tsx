@@ -22,7 +22,7 @@ import { MobileNav } from "@/components/mobile-nav";
 function BootScreen() {
   return (
     <div className="pos-boot" role="status" aria-live="polite">
-      <div className="pos-boot-mark">T</div>
+      <div className="pos-boot-mark">V</div>
       <div className="pos-boot-bar"><span /></div>
       <p>Restoring your session…</p>
     </div>

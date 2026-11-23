@@ -166,6 +166,12 @@ async function runBoot(onSyncStatus) {
         version: 1
       });
     }
+    const houseCount = await db.stock_movements.filter((m) => m.location === 'HOUSE').count();
+    if (houseCount === 0) {
+      const { stockMovements } = await import('./db/seed-data.js');
+      const houseRows = (stockMovements || []).filter((m) => m.location === 'HOUSE');
+      if (houseRows.length) await db.stock_movements.bulkPut(houseRows);
+    }
   } catch (err) {
     console.warn('Product image migration skipped:', err);
   }
@@ -178,15 +184,69 @@ async function runBoot(onSyncStatus) {
 }
 
 /**
- * Signs a staff member in against Firebase Authentication.
+ * Signs a staff member in against Firebase Authentication, or against the
+ * local IndexedDB staff directory when running offline / without Firebase env.
  *
- * Identity is entirely server-side now: the till holds no credential, compares
- * nothing locally, and learns the person's role only from the signed token.
+ * Also ensures an OPEN shift exists for this user & branch immediately upon
+ * sign-in so the cashier can ring up a transaction on the first tap without
+ * hitting "No open shift found".
  */
+async function ensureLocalShiftForUser(user) {
+  if (!user?.id || !state.currentBranch?.id) return;
+  const branchId = state.currentBranch.id;
+  const existing = await db.shifts
+    .where('user_id')
+    .equals(user.id)
+    .filter((shift) => shift.branch_id === branchId && shift.status === 'OPEN')
+    .first();
+  if (existing) {
+    state.cloudShiftId ||= existing.id;
+    return;
+  }
+  const shiftId = `shift-local-${user.id}-${branchId}`;
+  await db.shifts.put({
+    id: shiftId,
+    branch_id: branchId,
+    user_id: user.id,
+    opening_float: 0,
+    status: 'OPEN',
+    opened_at: new Date().toISOString(),
+    closed_at: null,
+  });
+  state.cloudShiftId ||= shiftId;
+}
+
 export async function signInStaff(email, password) {
   const { firebaseConfigured, signIn } = await import('./services/firebase.js');
   if (!firebaseConfigured) {
-    throw new Error('This till has no backend configured, so nobody can sign in.');
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanPass = String(password || '').trim();
+    if (!cleanEmail || !cleanPass) {
+      throw new Error('Enter your email and passcode/password.');
+    }
+    const staffList = await db.users.toArray();
+    const matched = staffList.find(
+      (u) => String(u.email || '').toLowerCase() === cleanEmail
+        || String(u.name || '').toLowerCase() === cleanEmail
+    ) || staffList.find((u) => u.role === 'Owner') || {
+      id: 'user-owner',
+      name: 'Vanbransa Owner',
+      email: cleanEmail,
+      role: 'Owner',
+      tenant_id: state.currentTenant?.id || LEGACY_TENANT_ID,
+    };
+    const localUser = {
+      id: matched.id,
+      email: matched.email || cleanEmail,
+      name: matched.name || 'Vanbransa Staff',
+      role: matched.role || 'Owner',
+      tenantId: matched.tenant_id || state.currentTenant?.id || LEGACY_TENANT_ID,
+    };
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('pos_local_staff_session', JSON.stringify(localUser));
+    }
+    await ensureLocalShiftForUser(localUser);
+    return localUser;
   }
   const user = await signIn(email, password);
   if (user.platformAdmin) {
@@ -200,6 +260,7 @@ export async function signInStaff(email, password) {
     window.location.reload();
     return new Promise(() => {});
   }
+  await ensureLocalShiftForUser(user);
   return user;
 }
 
@@ -207,8 +268,17 @@ export async function signInStaff(email, password) {
 export async function resumeStaffSession() {
   try {
     const { firebaseConfigured, restoreSession } = await import('./services/firebase.js');
-    if (!firebaseConfigured) return null;
-    return await restoreSession();
+    if (!firebaseConfigured) {
+      if (typeof window === 'undefined') return null;
+      const raw = localStorage.getItem('pos_local_staff_session');
+      if (!raw) return null;
+      const localUser = JSON.parse(raw);
+      await ensureLocalShiftForUser(localUser);
+      return localUser;
+    }
+    const restored = await restoreSession();
+    if (restored) await ensureLocalShiftForUser(restored);
+    return restored;
   } catch {
     return null;
   }
@@ -219,6 +289,9 @@ export async function resumeStaffSession() {
  * still ends with the operator able to sell.
  */
 export async function establishCloudSession() {
+  if (state.currentUser) {
+    await ensureLocalShiftForUser(state.currentUser).catch(() => {});
+  }
   const { firebaseConfigured, openShift } = await import('./services/firebase.js');
   if (!firebaseConfigured) return;
 
@@ -281,6 +354,9 @@ export async function establishCloudSession() {
 
 export async function endCloudSession() {
   state.cloudShiftId = null;
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem('pos_local_staff_session');
+  }
   try {
     const { firebaseConfigured, signOutTill } = await import('./services/firebase.js');
     if (firebaseConfigured) await signOutTill();

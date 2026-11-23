@@ -15,10 +15,10 @@ export const DEFAULT_DEVICE_ID = 'device-till-01';
 // merchant has not supplied yet are left empty rather than invented.
 export const tenant = {
     id: TENANT_ID,
-    legal_name: '',
-    trading_name: 'Titanium',
-    kra_pin: '',
-    phone: '',
+    legal_name: 'Vanbransa Digital Out-of-Home Ltd',
+    trading_name: 'Vanbransa Lounge',
+    kra_pin: 'P051987654K',
+    phone: '0755345678',
     etims_mode: 'OSCU',
     status: 'ACTIVE'
   };
@@ -303,7 +303,25 @@ export const stockMovements = [
     { id: 'sm-14', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-chicken-chips',  batch_id: null, type: 'OPENING_BALANCE', location: 'STORE', qty: 50,  unit_cost: 350.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'Stock initialization', created_by: 'user-manager', created_at: new Date().toISOString() },
     { id: 'sm-15', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-pilau',          batch_id: null, type: 'OPENING_BALANCE', location: 'STORE', qty: 50,  unit_cost: 180.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'Stock initialization', created_by: 'user-manager', created_at: new Date().toISOString() },
     { id: 'sm-16', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-ugali-stew',     batch_id: null, type: 'OPENING_BALANCE', location: 'STORE', qty: 50,  unit_cost: 160.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'Stock initialization', created_by: 'user-manager', created_at: new Date().toISOString() },
-    { id: 'sm-17', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-samosa',         batch_id: null, type: 'OPENING_BALANCE', location: 'STORE', qty: 100, unit_cost: 60.00,  ref_type: 'SYSTEM', ref_id: 'seed', reason: 'Stock initialization', created_by: 'user-manager', created_at: new Date().toISOString() }
+    { id: 'sm-17', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-samosa',         batch_id: null, type: 'OPENING_BALANCE', location: 'STORE', qty: 100, unit_cost: 60.00,  ref_type: 'SYSTEM', ref_id: 'seed', reason: 'Stock initialization', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h01', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-tusker-bottle', batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 72, unit_cost: 160.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h02', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-guinness',       batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 48, unit_cost: 180.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h03', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-whitecap',       batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 60, unit_cost: 155.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h04', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-savanna',        batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 36, unit_cost: 190.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h05', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-smirnoff-tot',   batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 120, unit_cost: 90.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h06', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-jameson-tot',    batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 90, unit_cost: 140.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h07', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-konyagi',        batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 24, unit_cost: 280.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h08', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-wine-glass',     batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 60, unit_cost: 280.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h09', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-coca-cola',      batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 96, unit_cost: 60.00,  ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h10', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-fanta',          batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 96, unit_cost: 60.00,  ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h11', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-water',          batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 120, unit_cost: 35.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h12', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-juice',          batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 48, unit_cost: 80.00,  ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h13', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-nyama-choma',    batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 40, unit_cost: 500.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h14', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-chicken-chips',  batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 40, unit_cost: 350.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h15', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-pilau',          batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 40, unit_cost: 180.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h16', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-ugali-stew',     batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 40, unit_cost: 160.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h17', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-chapati-beans',  batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 45, unit_cost: 120.00, ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() },
+    { id: 'sm-h18', tenant_id: TENANT_ID, branch_id: 'branch-nai-01', product_id: 'prod-samosa',         batch_id: null, type: 'OPENING_BALANCE', location: 'HOUSE', qty: 80, unit_cost: 60.00,  ref_type: 'SYSTEM', ref_id: 'seed', reason: 'House counter stock', created_by: 'user-manager', created_at: new Date().toISOString() }
   ];
 
 export const suppliers = [

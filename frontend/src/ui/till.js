@@ -404,10 +404,17 @@ export class TillView {
               <!-- Cash Input fields -->
               <div class="checkout-inputs" id="payment-inputs-cash">
                 <label style="font-size:13px;color:var(--text-secondary)">Tendered Cash Amount</label>
-                <input type="number" id="pay-cash-tendered" placeholder="Enter amount received...">
-                <div class="summary-row" style="margin-top:8px;">
+                <input type="number" id="pay-cash-tendered" placeholder="Enter amount received..." inputmode="decimal">
+                <div class="quick-cash-grid" id="quick-cash-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:8px;">
+                  <button type="button" class="sec-btn quick-cash-btn" data-cash="exact" style="padding:8px 4px;font-size:12px;font-weight:700;min-height:40px;">Exact</button>
+                  <button type="button" class="sec-btn quick-cash-btn" data-cash="500" style="padding:8px 4px;font-size:12px;font-weight:700;min-height:40px;">500</button>
+                  <button type="button" class="sec-btn quick-cash-btn" data-cash="1000" style="padding:8px 4px;font-size:12px;font-weight:700;min-height:40px;">1,000</button>
+                  <button type="button" class="sec-btn quick-cash-btn" data-cash="2000" style="padding:8px 4px;font-size:12px;font-weight:700;min-height:40px;">2,000</button>
+                  <button type="button" class="sec-btn quick-cash-btn" data-cash="5000" style="padding:8px 4px;font-size:12px;font-weight:700;min-height:40px;">5,000</button>
+                </div>
+                <div class="summary-row" style="margin-top:10px;">
                   <span>Change Due:</span>
-                  <span id="pay-cash-change" style="font-weight:700;color:var(--accent-green)">KES 0.00</span>
+                  <span id="pay-cash-change" style="font-weight:700;color:var(--accent-green);font-size:15px;">KES 0.00</span>
                 </div>
               </div>
 
@@ -555,10 +562,26 @@ export class TillView {
       this.container.querySelector('#till-mobile-title').textContent = expanded ? 'Current sale' : 'Products';
       if (window.matchMedia('(max-width: 767px)').matches) this.container.closest('.app-main-content')?.scrollTo({ top: 0 });
     });
-    // Search filter typing
+    // Search filter typing + barcode / exact-match instant add on Enter
     const searchInput = document.getElementById('till-search');
     searchInput.addEventListener('input', () => {
       this.filterCatalogue();
+    });
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && this.filteredProducts.length > 0) {
+        e.preventDefault();
+        const q = searchInput.value.trim().toLowerCase();
+        const exact = this.filteredProducts.find(
+          (p) => String(p.sku || '').toLowerCase() === q
+            || String(this.barcodeByProduct?.get(String(p.id)) || '').toLowerCase() === q
+            || String(p.name || '').toLowerCase() === q
+        ) || (this.filteredProducts.length === 1 ? this.filteredProducts[0] : null);
+        if (exact) {
+          this.addToCart(exact);
+          searchInput.value = '';
+          this.filterCatalogue();
+        }
+      }
     });
 
     // Category chips are populated after this binding, so delegate from their stable container.
@@ -672,9 +695,18 @@ export class TillView {
       });
     });
 
-    // Cash tendered math
+    // Cash tendered math + Quick Cash denomination taps
     document.getElementById('pay-cash-tendered').addEventListener('input', (e) => {
       this.updateCashChange(parseFloat(e.target.value) || 0);
+    });
+    document.getElementById('quick-cash-grid')?.addEventListener('click', (e) => {
+      const btn = e.target.closest('.quick-cash-btn');
+      if (!btn) return;
+      const val = btn.getAttribute('data-cash');
+      const amount = val === 'exact' ? Math.ceil(this.totals?.total || 0) : Number(val);
+      const input = document.getElementById('pay-cash-tendered');
+      if (input) input.value = amount;
+      this.updateCashChange(amount);
     });
 
     // Provider proof belongs to the exact phone and split amounts that were
@@ -1755,8 +1787,8 @@ export class TillView {
     if (cashCard) cashCard.style.display = cashEnabled ? '' : 'none';
     document.getElementById('pay-mpesa-code').value = '';
 
-    // Require a deliberate tender choice before revealing its fields.
-    this.selectPaymentMethod(null);
+    // Pre-select CASH (or M-Pesa Code if cash is disabled) for 1-tap tablet checkout speed.
+    this.selectPaymentMethod(cashEnabled ? 'CASH' : 'MPESA_CODE');
     void this.refreshMpesaCapability();
     // On a tab the rounds are already registered and this is settling them,
     // so there is nothing further to register. Off a tab the order joins the
@@ -2785,7 +2817,11 @@ export class TillView {
       // 1. Write Sale
       await db.sales.add(saleRecord);
 
-      // 2. Write Sale Lines & Stock Movements
+      // 2. Write Sale Lines & Stock Movements in bulk for single-frame commit speed
+      const saleLinesBatch = [];
+      const stockMovementsBatch = [];
+      const createdAtIso = new Date().toISOString();
+
       for (const item of this.cart) {
         const rate = saleLineRate(item.product, this.totals, this.selectedCustomer.price_tier);
         const gross = rate * item.qty;
@@ -2796,7 +2832,7 @@ export class TillView {
         if (item.product.tax_code === 'B') taxRate = 0.08;
         else if (item.product.tax_code === 'C' || item.product.tax_code === 'E') taxRate = 0.00;
 
-        await db.sale_lines.add({
+        saleLinesBatch.push({
           id: crypto.randomUUID(),
           sale_id: saleId,
           product_id: item.product.id,
@@ -2810,8 +2846,7 @@ export class TillView {
           unit_cost_at_sale: item.product.cost_price
         });
 
-        // Write Stock movement depletion record (Negative stock blocked checks enforced if needed)
-        await db.stock_movements.add({
+        stockMovementsBatch.push({
           id: crypto.randomUUID(),
           tenant_id: state.currentTenant.id,
           branch_id: state.currentBranch.id,
@@ -2825,14 +2860,15 @@ export class TillView {
           ref_id: saleId,
           reason: 'Customer Checkout POS',
           created_by: state.currentUser.id,
-          created_at: new Date().toISOString()
+          created_at: createdAtIso
         });
       }
 
-      // 3. Write payment records
-      for (const record of paymentRecords) {
-        await db.payments.add(record);
-      }
+      if (saleLinesBatch.length) await db.sale_lines.bulkAdd(saleLinesBatch);
+      if (stockMovementsBatch.length) await db.stock_movements.bulkAdd(stockMovementsBatch);
+
+      // 3. Write payment records in bulk
+      if (paymentRecords.length) await db.payments.bulkAdd(paymentRecords);
 
       // 4. Update Customer Loyalty & Credit Balance. An order nobody has paid
       //    for moves neither; settling it applies both once the money is real.
@@ -2869,12 +2905,14 @@ export class TillView {
 
     if (registered.replayed) return registered;
 
-    // The order already exists at this point. A secondary stock-alert read may
-    // fail offline, but it must never make the till offer to register it twice.
+    // Update cached in-memory houseStockByProduct and trigger low-stock alert in O(1) without blocking I/O
     try {
       for (const item of this.cart) {
         if (!item.product.is_service) {
-          const remainingStock = await getHouseStock(item.product.id, state.currentBranch.id);
+          const pid = String(item.product.id);
+          const prev = this.houseStockByProduct?.get(pid) ?? 0;
+          const remainingStock = prev - item.qty;
+          this.houseStockByProduct?.set(pid, remainingStock);
           if (remainingStock <= 20) {
             showNotification(`Low Stock Alert: ${item.product.name} is down to ${remainingStock} in House! Please request more.`, 'warning');
           }
@@ -3152,8 +3190,8 @@ export class TillView {
       : await db.sale_lines.where('sale_id').equals(sale.id).toArray();
     const tab = sale.tab_id ? await db.tabs.get(sale.tab_id) : null;
     
-    // Load products names mapping
-    const productsList = await db.products.toArray();
+    // Load products names mapping from in-memory catalogue cache (avoid full IndexedDB scan on checkout)
+    const productsList = this.catalogueProducts?.length ? this.catalogueProducts : await db.products.toArray();
     const prodMap = new Map(productsList.map(p => [p.id, p]));
 
     // Construct receipt mock view

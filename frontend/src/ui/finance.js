@@ -41,94 +41,97 @@ export class FinanceView {
   render() {
     this.container.innerHTML = [
       '<style>',
-      '.finance-page { display: flex; flex-direction: column; gap: 18px; padding: 20px 24px 32px; box-sizing: border-box; max-width: 1680px; margin: 0 auto; width: 100%; background: #070807; color: #f3f4f6; font-family: var(--font-main, -apple-system, BlinkMacSystemFont, sans-serif); min-height: calc(100vh - 60px); }',
-      /* Top Header Bar matching Image 1 */
+      '.finance-page { display: flex; flex-direction: column; gap: 18px; padding: 20px 24px 32px; box-sizing: border-box; max-width: 1680px; margin: 0 auto; width: 100%; background: var(--bg-main, #0c0805); color: var(--text-primary, #f5ece0); font-family: var(--font-main, -apple-system, BlinkMacSystemFont, sans-serif); min-height: calc(100vh - 60px); }',
+      /* Top Header Bar — Brown & Black theme */
       '.fin-topbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; padding-bottom: 4px; }',
       '.fin-brand-row { display: flex; align-items: center; gap: 12px; }',
-      '.fin-brand-row h1 { margin: 0; font-size: 26px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; }',
-      '.fin-live-pill { background: #53b74c; color: #041606; font-size: 11px; font-weight: 800; padding: 3px 11px; border-radius: 999px; letter-spacing: 0.2px; display: inline-flex; align-items: center; gap: 5px; }',
-      '.fin-live-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #041606; display: inline-block; }',
+      '.fin-brand-row h1 { margin: 0; font-family: var(--font-display, inherit); font-size: 26px; font-weight: 800; color: #f5ece0; letter-spacing: -0.5px; }',
+      '.fin-live-pill { background: linear-gradient(135deg, #e8a535 0%, #c8822a 100%); color: #160d04; font-size: 11px; font-weight: 800; padding: 3px 11px; border-radius: 999px; letter-spacing: 0.2px; display: inline-flex; align-items: center; gap: 5px; box-shadow: 0 2px 10px rgba(232,165,53,0.28); }',
+      '.fin-live-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #160d04; display: inline-block; }',
       '.fin-topbar-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }',
-      '.fin-pill-box { background: #141514; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: #e5e7eb; }',
-      '.fin-pill-box input[type=date] { background: transparent; border: none; color: #fff; font-size: 12px; font-weight: 600; outline: none; cursor: pointer; padding: 2px 4px; }',
-      '.fin-pill-box select { background: transparent; border: none; color: #fff; font-size: 12px; font-weight: 600; outline: none; cursor: pointer; }',
-      /* Clean Pill Navigation Tabs */
-      '.fin-nav-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid rgba(255,255,255,0.07); padding-bottom: 12px; }',
+      '.fin-pill-box { background: #160f08; border: 1px solid rgba(200,130,42,0.24); border-radius: 12px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: #f5ece0; }',
+      '.fin-pill-box input[type=date] { background: transparent; border: none; color: #f5ece0; font-size: 12px; font-weight: 600; outline: none; cursor: pointer; padding: 2px 4px; }',
+      '.fin-pill-box select { background: transparent; border: none; color: #f5ece0; font-size: 12px; font-weight: 600; outline: none; cursor: pointer; }',
+      '.fin-pill-box select option { background: #160f08; color: #f5ece0; }',
+      /* Clean Pill Navigation Tabs — Brown & Black */
+      '.fin-nav-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid rgba(200,130,42,0.16); padding-bottom: 12px; }',
       '.fin-nav-tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }',
-      '.fin-nav-tab { background: #121312; border: 1px solid rgba(255,255,255,0.06); color: #9ca3af; font-size: 13px; font-weight: 600; padding: 9px 16px; border-radius: 999px; cursor: pointer; transition: all 0.18s ease; display: inline-flex; align-items: center; gap: 6px; min-height: 38px; }',
-      '.fin-nav-tab:hover { color: #ffffff; background: #1a1c1a; border-color: rgba(255,255,255,0.14); }',
-      '.fin-nav-tab.active { background: #134e32; color: #ffffff; border-color: rgba(83,183,76,0.45); font-weight: 700; box-shadow: 0 4px 16px rgba(19,78,50,0.35); }',
-      '.fin-nav-tab[data-fin-tab="ai"].active { background: linear-gradient(135deg, #134e32 0%, #1d6b44 100%); }',
-      '.fin-quick-ranges { display: inline-flex; align-items: center; gap: 4px; background: #121312; padding: 4px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.06); }',
-      '.fin-range-btn { background: transparent; color: #9ca3af; border: none; padding: 6px 12px; border-radius: 999px; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.15s; }',
-      '.fin-range-btn:hover { color: #fff; }',
-      '.fin-range-btn.active { background: #262826; color: #fff; font-weight: 700; }',
-      /* Bento KPI Row matching Image 2 */
+      '.fin-nav-tab { background: #140d07; border: 1px solid rgba(200,130,42,0.18); color: #b89f80; font-size: 13px; font-weight: 600; padding: 9px 16px; border-radius: 999px; cursor: pointer; transition: all 0.18s ease; display: inline-flex; align-items: center; gap: 6px; min-height: 38px; }',
+      '.fin-nav-tab:hover { color: #f5ece0; background: #21150b; border-color: rgba(232,165,53,0.4); }',
+      '.fin-nav-tab.active { background: linear-gradient(145deg, #3a2410 0%, #261709 100%); color: #e8a535; border-color: rgba(232,165,53,0.65); font-weight: 700; box-shadow: 0 4px 16px rgba(200,130,42,0.22); }',
+      '.fin-nav-tab[data-fin-tab="ai"].active { background: linear-gradient(135deg, #e8a535 0%, #c8822a 100%); color: #160d04; border-color: #e8a535; }',
+      '.fin-quick-ranges { display: inline-flex; align-items: center; gap: 4px; background: #140d07; padding: 4px; border-radius: 999px; border: 1px solid rgba(200,130,42,0.18); }',
+      '.fin-range-btn { background: transparent; color: #b89f80; border: none; padding: 6px 12px; border-radius: 999px; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.15s; }',
+      '.fin-range-btn:hover { color: #f5ece0; }',
+      '.fin-range-btn.active { background: #e8a535; color: #160d04; font-weight: 800; }',
+      /* Bento KPI Row — Warm Brown & Espresso Black */
       '.fin-bento-grid { display: grid; grid-template-columns: repeat(4, minmax(170px, 1fr)) minmax(280px, 1.3fr); gap: 14px; align-items: stretch; }',
       '@media(max-width: 1280px) { .fin-bento-grid { grid-template-columns: repeat(2, 1fr); } .fin-bento-side { grid-column: span 2; } }',
       '@media(max-width: 640px) { .fin-bento-grid { grid-template-columns: 1fr; } .fin-bento-side { grid-column: span 1; } }',
-      '.fin-kpi-card { background: #121312; border: 1px solid rgba(255,255,255,0.05); border-radius: 22px; padding: 22px 24px; display: flex; flex-direction: column; justify-content: space-between; min-height: 148px; cursor: pointer; transition: transform 0.15s ease, border-color 0.15s ease; }',
-      '.fin-kpi-card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.14); }',
-      '.fin-kpi-card.emerald { background: linear-gradient(145deg, #134e32 0%, #0d3622 100%); border-color: rgba(83,183,76,0.22); }',
+      '.fin-kpi-card { background: #140d07; border: 1px solid rgba(200,130,42,0.16); border-radius: 22px; padding: 22px 24px; display: flex; flex-direction: column; justify-content: space-between; min-height: 148px; cursor: pointer; transition: transform 0.15s ease, border-color 0.15s ease; }',
+      '.fin-kpi-card:hover { transform: translateY(-2px); border-color: rgba(232,165,53,0.45); }',
+      '.fin-kpi-card.emerald { background: linear-gradient(145deg, #4a2c11 0%, #281708 100%); border-color: rgba(232,165,53,0.42); box-shadow: 0 8px 24px rgba(0,0,0,0.45); }',
       '.fin-kpi-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }',
-      '.fin-kpi-label { font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.72); }',
-      '.fin-kpi-icon { width: 34px; height: 34px; border-radius: 50%; background: rgba(0,0,0,0.32); display: inline-flex; align-items: center; justify-content: center; font-size: 14px; color: rgba(255,255,255,0.85); flex-shrink: 0; }',
-      '.fin-kpi-value { font-size: 34px; font-weight: 800; color: #ffffff; letter-spacing: -1px; margin: 14px 0 2px; line-height: 1.05; }',
-      '.fin-kpi-sub { font-size: 12px; color: rgba(255,255,255,0.55); font-weight: 500; }',
-      /* Right Bento Card: Latest Unpaid / Sessions with green View All pill */
-      '.fin-bento-side { background: #121312; border: 1px solid rgba(255,255,255,0.05); border-radius: 22px; padding: 18px 20px; display: flex; flex-direction: column; justify-content: space-between; gap: 12px; }',
+      '.fin-kpi-label { font-size: 14px; font-weight: 600; color: #c7b299; }',
+      '.fin-kpi-card.emerald .fin-kpi-label { color: #f3d29c; }',
+      '.fin-kpi-icon { width: 34px; height: 34px; border-radius: 50%; background: rgba(10,6,3,0.45); border: 1px solid rgba(232,165,53,0.2); display: inline-flex; align-items: center; justify-content: center; font-size: 14px; color: #e8a535; flex-shrink: 0; }',
+      '.fin-kpi-value { font-family: var(--font-display, inherit); font-size: 34px; font-weight: 800; color: #ffffff; letter-spacing: -1px; margin: 14px 0 2px; line-height: 1.05; }',
+      '.fin-kpi-card.emerald .fin-kpi-value { color: #ffdfa8; }',
+      '.fin-kpi-sub { font-size: 12px; color: #a89074; font-weight: 500; }',
+      /* Right Bento Card: Latest Unpaid Bills with warm amber View All pill */
+      '.fin-bento-side { background: #140d07; border: 1px solid rgba(200,130,42,0.18); border-radius: 22px; padding: 18px 20px; display: flex; flex-direction: column; justify-content: space-between; gap: 12px; }',
       '.fin-side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }',
-      '.fin-side-head h3 { margin: 0; font-size: 16px; font-weight: 700; color: #ffffff; }',
-      '.fin-view-all-btn { background: #65a34e; color: #071908; border: none; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 800; cursor: pointer; transition: filter 0.15s; }',
+      '.fin-side-head h3 { margin: 0; font-size: 16px; font-weight: 700; color: #f5ece0; }',
+      '.fin-view-all-btn { background: linear-gradient(135deg, #e8a535 0%, #c8822a 100%); color: #160d04; border: none; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 800; cursor: pointer; transition: filter 0.15s; }',
       '.fin-view-all-btn:hover { filter: brightness(1.1); }',
-      '.fin-side-list { background: #0a0b0a; border-radius: 16px; padding: 6px 14px; display: flex; flex-direction: column; flex: 1; justify-content: center; }',
-      '.fin-side-item { display: grid; grid-template-columns: 1.2fr 0.9fr auto; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 12px; }',
+      '.fin-side-list { background: #0b0704; border: 1px solid rgba(200,130,42,0.12); border-radius: 16px; padding: 6px 14px; display: flex; flex-direction: column; flex: 1; justify-content: center; }',
+      '.fin-side-item { display: grid; grid-template-columns: 1.2fr 0.9fr auto; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid rgba(200,130,42,0.1); font-size: 12px; }',
       '.fin-side-item:last-child { border-bottom: none; }',
-      '.fin-side-ref { font-weight: 700; color: #ffffff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
-      '.fin-side-time { color: #9ca3af; font-size: 11px; text-align: center; }',
-      '.fin-side-amt { color: #e5e7eb; font-weight: 600; text-align: right; text-decoration: none; }',
-      /* Main Table Card matching Image 1 */
-      '.fin-surface-card { background: #101110; border: 1px solid rgba(255,255,255,0.06); border-radius: 22px; padding: 24px 26px; display: flex; flex-direction: column; gap: 16px; }',
+      '.fin-side-ref { font-weight: 700; color: #f5ece0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '.fin-side-time { color: #a89074; font-size: 11px; text-align: center; }',
+      '.fin-side-amt { color: #e8a535; font-weight: 700; text-align: right; text-decoration: none; }',
+      /* Main Table Card — Deep Espresso Brown & Black */
+      '.fin-surface-card { background: #120c06; border: 1px solid rgba(200,130,42,0.18); border-radius: 22px; padding: 24px 26px; display: flex; flex-direction: column; gap: 16px; }',
       '.fin-surface-header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 16px; }',
-      '.fin-surface-title h2 { margin: 0; font-size: 20px; font-weight: 700; color: #ffffff; letter-spacing: -0.3px; }',
-      '.fin-surface-title p { margin: 5px 0 0; font-size: 12px; color: #8a8f8c; }',
+      '.fin-surface-title h2 { margin: 0; font-size: 20px; font-weight: 700; color: #f5ece0; letter-spacing: -0.3px; }',
+      '.fin-surface-title p { margin: 5px 0 0; font-size: 12px; color: #a89074; }',
       '.fin-surface-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }',
-      '.fin-search-box { background: #171817; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 8px 14px; display: inline-flex; align-items: center; gap: 8px; min-width: 230px; }',
-      '.fin-search-box input { background: transparent; border: none; color: #fff; font-size: 13px; outline: none; width: 100%; }',
-      '.fin-search-box input::placeholder { color: #6b7280; }',
-      '.fin-dark-btn { background: #1c1e1c; border: 1px solid rgba(255,255,255,0.09); color: #e5e7eb; border-radius: 10px; padding: 9px 15px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s; }',
-      '.fin-dark-btn:hover { background: #272a27; color: #fff; }',
-      '.fin-tender-summary { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 13px; color: #d1d5db; font-weight: 600; }',
-      '.fin-tender-pill { background: #171817; border: 1px solid rgba(255,255,255,0.06); padding: 7px 12px; border-radius: 10px; display: inline-flex; align-items: center; gap: 6px; }',
-      /* Clean Minimalist Table matching Image 1 */
+      '.fin-search-box { background: #1b1209; border: 1px solid rgba(200,130,42,0.24); border-radius: 12px; padding: 8px 14px; display: inline-flex; align-items: center; gap: 8px; min-width: 230px; }',
+      '.fin-search-box input { background: transparent; border: none; color: #f5ece0; font-size: 13px; outline: none; width: 100%; }',
+      '.fin-search-box input::placeholder { color: #8c7355; }',
+      '.fin-dark-btn { background: #22160b; border: 1px solid rgba(200,130,42,0.28); color: #f5ece0; border-radius: 10px; padding: 9px 15px; font-size: 12px; font-weight: 700; cursor: pointer; transition: background 0.15s, border-color 0.15s; }',
+      '.fin-dark-btn:hover { background: #301f10; border-color: #e8a535; color: #fff; }',
+      '.fin-tender-summary { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: #e2d1bc; font-weight: 600; }',
+      '.fin-tender-pill { background: #1b1209; border: 1px solid rgba(200,130,42,0.2); padding: 7px 12px; border-radius: 10px; display: inline-flex; align-items: center; gap: 6px; }',
+      /* Clean Minimalist Table — Brown & Black */
       '.fin-clean-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }',
-      '.fin-clean-table thead tr { background: #1c1d1c; }',
-      '.fin-clean-table th { padding: 12px 16px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: #9ca3af; border: none; }',
+      '.fin-clean-table thead tr { background: #1f140a; }',
+      '.fin-clean-table th { padding: 12px 16px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: #b89f80; border: none; }',
       '.fin-clean-table th:first-child { border-radius: 8px 0 0 8px; }',
       '.fin-clean-table th:last-child { border-radius: 0 8px 8px 0; }',
-      '.fin-clean-table td { padding: 15px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); color: #d1d5db; vertical-align: middle; }',
-      '.fin-clean-table tbody tr:hover { background: rgba(255,255,255,0.025); }',
+      '.fin-clean-table td { padding: 15px 16px; border-bottom: 1px solid rgba(200,130,42,0.1); color: #e2d1bc; vertical-align: middle; }',
+      '.fin-clean-table tbody tr:hover { background: rgba(232,165,53,0.04); }',
       '.fin-ref-code { font-weight: 700; color: #ffffff; letter-spacing: 0.2px; }',
-      '.fin-mode-label { font-size: 12px; color: #d1d5db; text-transform: lowercase; font-weight: 600; }',
-      '.fin-reconcile { color: #051b07; background: #53b74c; padding: 7px 13px; border-radius: 999px; text-decoration: none; font-size: 12px; font-weight: 800; white-space: nowrap; display: inline-block; transition: filter 0.15s; }',
+      '.fin-mode-label { font-size: 12px; color: #e8a535; text-transform: lowercase; font-weight: 700; }',
+      '.fin-reconcile { color: #160d04; background: linear-gradient(135deg, #e8a535 0%, #c8822a 100%); padding: 7px 14px; border-radius: 999px; text-decoration: none; font-size: 12px; font-weight: 800; white-space: nowrap; display: inline-block; transition: filter 0.15s; }',
       '.fin-reconcile:hover { filter: brightness(1.1); }',
-      /* Simple & Easy-to-Use AI Assistant Bar & Panel */
-      '.fin-ai-strip { background: linear-gradient(145deg, #111914 0%, #0e120f 100%); border: 1px solid rgba(83,183,76,0.22); border-radius: 20px; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }',
+      /* Simple & Easy-to-Use AI Assistant Bar & Panel — Brown & Black */
+      '.fin-ai-strip { background: linear-gradient(145deg, #1c1209 0%, #110b05 100%); border: 1px solid rgba(232,165,53,0.28); border-radius: 20px; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }',
       '.fin-ai-strip-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }',
       '.fin-ai-badge { display: inline-flex; align-items: center; gap: 10px; }',
-      '.fin-ai-icon { width: 34px; height: 34px; border-radius: 50%; background: #134e32; color: #53b74c; display: inline-flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 800; }',
+      '.fin-ai-icon { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, #e8a535 0%, #c8822a 100%); color: #160d04; display: inline-flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 800; }',
       '.fin-ai-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }',
-      '.chip { background: #18221b; border: 1px solid rgba(83,183,76,0.28); border-radius: 999px; padding: 6px 13px; font-size: 12px; font-weight: 600; cursor: pointer; color: #d1fae5; white-space: nowrap; transition: all 0.15s; }',
-      '.chip:hover { background: #134e32; color: #fff; }',
+      '.chip { background: #26180c; border: 1px solid rgba(232,165,53,0.32); border-radius: 999px; padding: 6px 13px; font-size: 12px; font-weight: 600; cursor: pointer; color: #f5ece0; white-space: nowrap; transition: all 0.15s; }',
+      '.chip:hover { background: #3b2511; border-color: #e8a535; color: #ffdfa8; }',
       '.fin-ai-prompt-row { display: flex; gap: 10px; align-items: center; }',
-      '.fin-ai-prompt-row input { flex: 1; background: #0a0c0a; border: 1px solid rgba(255,255,255,0.09); color: #fff; padding: 11px 16px; border-radius: 12px; font-size: 13px; outline: none; }',
-      '.fin-ai-prompt-row input:focus { border-color: #53b74c; }',
-      '.fin-ai-prompt-row button { background: #53b74c; color: #041606; border: none; padding: 11px 20px; border-radius: 12px; cursor: pointer; font-weight: 800; font-size: 13px; }',
+      '.fin-ai-prompt-row input { flex: 1; background: #0b0704; border: 1px solid rgba(200,130,42,0.24); color: #f5ece0; padding: 11px 16px; border-radius: 12px; font-size: 13px; outline: none; }',
+      '.fin-ai-prompt-row input:focus { border-color: #e8a535; }',
+      '.fin-ai-prompt-row button { background: linear-gradient(135deg, #e8a535 0%, #c8822a 100%); color: #160d04; border: none; padding: 11px 20px; border-radius: 12px; cursor: pointer; font-weight: 800; font-size: 13px; }',
       '.ai-msgs { max-height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }',
-      '.ai-bubble { background: rgba(19,78,50,0.28); border-left: 3px solid #53b74c; border-radius: 0 12px 12px 0; padding: 12px 14px; font-size: 13px; color: #ecfdf5; line-height: 1.55; white-space: pre-line; }',
-      '.user-bubble { background: #1f2421; border-radius: 12px 12px 0 12px; padding: 10px 14px; font-size: 13px; color: #fff; align-self: flex-end; max-width: 85%; }',
+      '.ai-bubble { background: rgba(232,165,53,0.11); border-left: 3px solid #e8a535; border-radius: 0 12px 12px 0; padding: 12px 14px; font-size: 13px; color: #f5ece0; line-height: 1.55; white-space: pre-line; }',
+      '.user-bubble { background: #26180c; border: 1px solid rgba(200,130,42,0.25); border-radius: 12px 12px 0 12px; padding: 10px 14px; font-size: 13px; color: #ffdfa8; align-self: flex-end; max-width: 85%; }',
       '.ai-typing { display: flex; gap: 4px; padding: 8px 12px; align-items: center; }',
-      '.ai-typing span { width: 7px; height: 7px; background: #53b74c; border-radius: 50%; animation: aidot 1.2s infinite; }',
+      '.ai-typing span { width: 7px; height: 7px; background: #e8a535; border-radius: 50%; animation: aidot 1.2s infinite; }',
       '.ai-typing span:nth-child(2) { animation-delay: 0.2s; }',
       '.ai-typing span:nth-child(3) { animation-delay: 0.4s; }',
       '@keyframes aidot { 0%,80%,100%{opacity:0.3;transform:scale(0.8)} 40%{opacity:1;transform:scale(1)} }',
@@ -231,8 +234,8 @@ export class FinanceView {
       '      <div class="fin-ai-badge">',
       '        <span class="fin-ai-icon">✨</span>',
       '        <div>',
-      '          <div style="font-weight:700;font-size:15px;color:#fff;">Finance &amp; AI Assistant</div>',
-      '          <div style="font-size:12px;color:#8a8f8c;" id="fin-source">Instant summary of collections, M-Pesa vs cash, unpaid table tabs, and staff performance.</div>',
+      '          <div style="font-weight:700;font-size:15px;color:#f5ece0;">Finance &amp; AI Assistant</div>',
+      '          <div style="font-size:12px;color:#a89074;" id="fin-source">Instant summary of collections, M-Pesa vs cash, unpaid table tabs, and staff performance.</div>',
       '        </div>',
       '      </div>',
       '      <div class="fin-ai-chips">',
@@ -270,10 +273,10 @@ export class FinanceView {
       '          </div>',
       '          <button type="button" class="fin-dark-btn" id="fin-tx-refresh">Refresh</button>',
       '          <div class="fin-tender-summary">',
-      '            <span class="fin-tender-pill">M-Pesa: <strong id="fin-mpesa" style="color:#53b74c;">0 KES</strong></span>',
-      '            <span class="fin-tender-pill">Cash: <strong id="fin-cash" style="color:#fff;">0 KES</strong></span>',
-      '            <span class="fin-tender-pill">Bank: <strong id="fin-bank" style="color:#fff;">0 KES</strong></span>',
-      '            <span class="fin-tender-pill">Card: <strong id="fin-other" style="color:#fff;">0 KES</strong></span>',
+      '            <span class="fin-tender-pill">M-Pesa: <strong id="fin-mpesa" style="color:#e8a535;">0 KES</strong></span>',
+      '            <span class="fin-tender-pill">Cash: <strong id="fin-cash" style="color:#f5ece0;">0 KES</strong></span>',
+      '            <span class="fin-tender-pill">Bank: <strong id="fin-bank" style="color:#f5ece0;">0 KES</strong></span>',
+      '            <span class="fin-tender-pill">Card: <strong id="fin-other" style="color:#f5ece0;">0 KES</strong></span>',
       '          </div>',
       '        </div>',
       '      </div>',
@@ -289,7 +292,7 @@ export class FinanceView {
       '        </div>',
       '        <div class="fin-surface-actions">',
       '          <label class="fin-tender-pill" style="cursor:pointer;">',
-      '            <input type="checkbox" id="fin-consolidate-tables" checked style="width:16px;height:16px;accent-color:#53b74c;" />',
+      '            <input type="checkbox" id="fin-consolidate-tables" checked style="width:16px;height:16px;accent-color:#e8a535;" />',
       '            <span>Consolidate bills under each table into 1 bill</span>',
       '          </label>',
       '        </div>',
@@ -321,7 +324,7 @@ export class FinanceView {
       '            </tr>',
       '          </thead>',
       '          <tbody id="cashier-report-body">',
-      '            <tr><td colspan="6" style="text-align:center;color:#6b7280;padding:20px;">No staff activity in this date range.</td></tr>',
+      '            <tr><td colspan="6" style="text-align:center;color:#a89074;padding:20px;">No staff activity in this date range.</td></tr>',
       '          </tbody>',
       '        </table>',
       '      </div>',
@@ -557,7 +560,7 @@ export class FinanceView {
       if (reportBody) {
         const rows = report.staffRundown;
         if (rows.length === 0) {
-          reportBody.innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:#6b7280;">No staff sales or payments recorded in this date range.</td></tr>';
+          reportBody.innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:#a89074;">No staff sales or payments recorded in this date range.</td></tr>';
         } else {
           reportBody.innerHTML = rows.map(row => `
             <tr>
@@ -565,8 +568,8 @@ export class FinanceView {
               <td>${row.salesCount}</td>
               <td>${fmtKes(row.sales)}</td>
               <td>${row.receivedCount}</td>
-              <td style="font-weight:700;color:#53b74c;">${fmtKes(row.received)}</td>
-              <td style="color:${row.unpaid > 0 ? '#f59e0b' : '#9ca3af'};">${fmtKes(row.unpaid)}${row.unpaidCount ? ` (${row.unpaidCount})` : ''}</td>
+              <td style="font-weight:700;color:#e8a535;">${fmtKes(row.received)}</td>
+              <td style="color:${row.unpaid > 0 ? '#f59e0b' : '#a89074'};">${fmtKes(row.unpaid)}${row.unpaidCount ? ` (${row.unpaidCount})` : ''}</td>
             </tr>
           `).join('');
         }
@@ -624,7 +627,7 @@ export class FinanceView {
           + '<td class="fin-mode-label">' + escape(mode) + (p.status && p.status !== 'SUCCESS' ? ` (${escape(paymentAttemptLabel(p))})` : '') + '</td>'
           + '</tr>';
       }).join('')
-      + (transactions.length ? '' : '<tr><td colspan="6" style="text-align:center;color:#6b7280;padding:24px;">No payment transactions match this filter.</td></tr>')
+      + (transactions.length ? '' : '<tr><td colspan="6" style="text-align:center;color:#a89074;padding:24px;">No payment transactions match this filter.</td></tr>')
       + '</tbody></table>';
   }
 
@@ -634,7 +637,7 @@ export class FinanceView {
     const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
     const rows = (this.currentMetrics.consolidatedUnpaidOrders || this.currentMetrics.unpaidOrdersOnly || []).slice(0, 4);
     if (!rows.length) {
-      listEl.innerHTML = '<div style="color:#6b7280;font-size:12px;text-align:center;padding:14px 0;">All table bills settled</div>';
+      listEl.innerHTML = '<div style="color:#a89074;font-size:12px;text-align:center;padding:14px 0;">All table bills settled</div>';
       return;
     }
     listEl.innerHTML = rows.map((order) => {
@@ -648,7 +651,7 @@ export class FinanceView {
       return `<div class="fin-side-item">
         <span class="fin-side-ref">${escape(label)}</span>
         <span class="fin-side-time">${escape(timeStr)}</span>
-        <a class="fin-side-amt" href="${href}" style="color:#53b74c;">${Math.round(Number(order.amount || 0)).toLocaleString()} KES →</a>
+        <a class="fin-side-amt" href="${href}" style="color:#e8a535;">${Math.round(Number(order.amount || 0)).toLocaleString()} KES →</a>
       </div>`;
     }).join('');
   }
@@ -669,11 +672,11 @@ export class FinanceView {
       + rows.map(order => {
         const isConsolidated = (order.roundCount || 1) > 1;
         const tableBadge = order.table_no
-          ? `<span style="display:inline-block;background:#134e32;color:#86efac;border:1px solid rgba(83,183,76,0.35);padding:3px 10px;border-radius:999px;font-size:11px;font-weight:800;margin-right:8px;">Table ${escape(order.table_no)}</span>`
+          ? `<span style="display:inline-block;background:#3a2410;color:#ffdfa8;border:1px solid rgba(232,165,53,0.45);padding:3px 10px;border-radius:999px;font-size:11px;font-weight:800;margin-right:8px;">Table ${escape(order.table_no)}</span>`
           : '';
-        const refLabel = `${tableBadge}<span class="fin-ref-code">${escape(order.reference)}</span>${order.customer_name ? ` · <span style="color:#9ca3af;">${escape(order.customer_name)}</span>` : ''}`;
+        const refLabel = `${tableBadge}<span class="fin-ref-code">${escape(order.reference)}</span>${order.customer_name ? ` · <span style="color:#a89074;">${escape(order.customer_name)}</span>` : ''}`;
         const billsInfo = isConsolidated
-          ? `<strong style="color:#86efac;">${order.roundCount} bills combined</strong> <span style="color:#8a8f8c;font-size:11px;">(${escape((order.references || [order.reference]).join(', '))})</span>`
+          ? `<strong style="color:#e8a535;">${order.roundCount} bills combined</strong> <span style="color:#a89074;font-size:11px;">(${escape((order.references || [order.reference]).join(', '))})</span>`
           : 'Single bill';
         const actionHref = `/orders?order=${encodeURIComponent(order.reference)}`;
         const actionText = isConsolidated ? `Pay Combined Bill (${order.roundCount})` : 'Pay Bill';
@@ -686,7 +689,7 @@ export class FinanceView {
           + '<td><a class="fin-reconcile" href="' + actionHref + '">' + actionText + '</a></td>'
           + '</tr>';
       }).join('')
-      + (rows.length ? '' : '<tr><td colspan="6" style="text-align:center;color:#6b7280;padding:24px;">No unpaid table or counter bills in this period. Formal Proforma Invoices are under the Proforma Invoices tab.</td></tr>')
+      + (rows.length ? '' : '<tr><td colspan="6" style="text-align:center;color:#a89074;padding:24px;">No unpaid table or counter bills in this period. Formal Proforma Invoices are under the Proforma Invoices tab.</td></tr>')
       + '</tbody></table>';
   }
 

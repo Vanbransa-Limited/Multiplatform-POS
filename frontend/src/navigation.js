@@ -90,28 +90,32 @@ export function groupForTab(tab) {
   return group ? group.id : NAV_GROUPS[0].id;
 }
 
-/** Modules absent from this map are reachable by every signed-in role. */
+/**
+ * Role-aligned module permissions:
+ * - Cashier: can only sell -> sees only Till, Orders Viewer, Tab Management, Shift Management.
+ * - Barman (Bar Staff): can sell + request and accept new stock in House Stock -> sees Till, Orders, Tabs, Shifts, House Stock.
+ * - Storeman (Store Keeper): can only receive stock into Store and dispatch to House Stock after Supervisor approval -> sees Store Stock (and House Stock transfer view), cannot sell.
+ * - Supervisor: oversees floor, sells, approves stock requests for Storeman to dispatch.
+ * - Owner: sees and does all.
+ */
 export const RESTRICTED_TABS = {
-  // Settings now carries staff management, so it keeps the old users rule.
-  'settings': ['Owner', 'Store Manager'],
-  'inventory': ['Owner', 'Store Manager', 'Supervisor', 'Store Keeper'],
-  'store-stock': ['Owner', 'Store Manager', 'Supervisor', 'Store Keeper'],
-  // Waiters request stock in from here, so they need the screen too.
-  'house-stock': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Cashier', 'Store Keeper'],
-  'orders': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Cashier', 'Store Keeper'],
-  // The same people who settle a table in Orders; this screen hands off there.
-  'tabs': ['Owner', 'Store Manager', 'Supervisor', 'Bar Staff', 'Cashier', 'Store Keeper'],
-  // The station runs on the one machine holding the printer, but a cashier
-  // needs to see the queue to know whether paper is actually coming - and to
-  // force a receipt through by hand when it is not.
-  'print-station': ['Owner', 'Store Manager', 'Supervisor', 'Cashier', 'Bar Staff', 'Store Keeper'],
-  // A customer record carries a credit limit and a running tab, so who may
-  // create one is a decision about who can let somebody walk out owing money.
+  'till': ['Owner', 'Supervisor', 'Cashier', 'Bar Staff'],
+  'orders': ['Owner', 'Supervisor', 'Cashier', 'Bar Staff'],
+  'tabs': ['Owner', 'Supervisor', 'Cashier', 'Bar Staff'],
+  'shifts': ['Owner', 'Supervisor', 'Cashier', 'Bar Staff'],
+  'house-stock': ['Owner', 'Supervisor', 'Bar Staff', 'Store Keeper', 'Store Manager'],
+  'store-stock': ['Owner', 'Supervisor', 'Store Keeper', 'Store Manager'],
+  'inventory': ['Owner', 'Supervisor', 'Store Manager'],
   'customers': ['Owner', 'Supervisor'],
+  'print-station': ['Owner', 'Supervisor'],
+  'mpesa': ['Owner', 'Supervisor'],
   'finance': ['Owner', 'Store Manager'],
-  'qrtools': ['Owner', 'Store Manager', 'Supervisor'],
-  'audit-logs': ['Owner', 'Store Manager']
+  'qrtools': ['Owner', 'Supervisor', 'Store Manager'],
+  'audit-logs': ['Owner', 'Store Manager'],
+  'settings': ['Owner', 'Store Manager'],
 };
+
+export const DEFAULT_SELL_ROLES = ['Owner', 'Supervisor', 'Cashier', 'Bar Staff'];
 
 /**
  * The owner's per-role switches (tenant_settings.moduleAccess, cached by
@@ -135,11 +139,19 @@ export function canViewTab(role, tab) {
   return !allowed || allowed.includes(role);
 }
 
-/** Whether this role may ring up a sale. Everyone may until the owner says otherwise. */
+/** Whether this role may ring up a sale. Storeman (Store Keeper / Store Manager) cannot sell by default. */
 export function canSell(role) {
   if (role === 'Owner') return true;
-  const allowed = ownerAccess('sell');
-  return !allowed || allowed.includes(role);
+  const allowed = ownerAccess('sell') || DEFAULT_SELL_ROLES;
+  return allowed.includes(role);
 }
 
 export const DEFAULT_TAB = 'till';
+
+/** The landing module for a role right after sign-in. */
+export function defaultTabForRole(role) {
+  if (canViewTab(role, DEFAULT_TAB)) return DEFAULT_TAB;
+  const first = MOBILE_PRIORITY.find((tab) => canViewTab(role, tab));
+  return first || DEFAULT_TAB;
+}
+

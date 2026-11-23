@@ -68,19 +68,21 @@ export function SignIn() {
             {/* Quick-Tap Tablet Role Presets for Fast Counter Switching */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, marginTop: 14, width: "100%" }}>
               {[
-                { label: "Owner", email: "owner@kpos.co.ke", sub: "Vanbransa Owner" },
-                { label: "Supervisor", email: "mwende@kpos.co.ke", sub: "Jane Mwende" },
-                { label: "Cashier", email: "wanjiku@kpos.co.ke", sub: "Wanjiku Kamau" },
-                { label: "Bar Staff", email: "mercy@kpos.co.ke", sub: "Mercy Wanjala" },
+                { label: "Owner (All Access)", email: "owner@kpos.co.ke", pin: "0000", sub: "Vanbransa Owner · Full Platform" },
+                { label: "Supervisor", email: "mwende@kpos.co.ke", pin: "9999", sub: "Jane Mwende · Approve Stock & Sales" },
+                { label: "Cashier (Sell Only)", email: "wanjiku@kpos.co.ke", pin: "1234", sub: "Wanjiku Kamau · Till, Tabs & Orders" },
+                { label: "Barman (Bar Staff)", email: "mercy@kpos.co.ke", pin: "5678", sub: "Mercy Wanjala · Sell, Request & Accept Stock" },
+                { label: "Storeman (Store Only)", email: "john@kpos.co.ke", pin: "8765", sub: "John Mutua · Receive & Dispatch Stock", fullWidth: true },
               ].map((preset) => (
                 <button
                   key={preset.email}
                   type="button"
                   onClick={() => {
                     setEmail(preset.email);
-                    if (!password) setPassword("1111");
+                    setPassword(preset.pin);
                   }}
                   style={{
+                    gridColumn: preset.fullWidth ? "span 2" : undefined,
                     padding: "8px 10px",
                     borderRadius: 8,
                     border: email === preset.email ? "1px solid var(--accent-amber)" : "1px solid var(--border-color)",

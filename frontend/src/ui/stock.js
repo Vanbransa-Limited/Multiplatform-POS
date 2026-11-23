@@ -43,16 +43,19 @@ export class StockView {
    * are theirs as well as the owner's. Mirrors STOCK_ROLES.adjust on the
    * server, which is what actually enforces it.
    */
-  get canCount() { return ['Owner', 'Store Manager'].includes(state.currentUser?.role); }
-  /** Booking a delivery is a goods-received decision; pulling stock is service. */
+  get canCount() { return ['Owner', 'Store Manager', 'Supervisor'].includes(state.currentUser?.role); }
+  /** Booking a delivery is Storeman's job; requesting stock into House is Barman's job. */
   get canWrite() {
     const role = state.currentUser?.role;
-    // Anyone on the floor may ask; the store manager decides (canApprove).
-    if (this.action === 'request') return Boolean(role);
+    if (this.action === 'request') return ['Owner', 'Supervisor', 'Bar Staff'].includes(role);
     return ['Owner', 'Store Manager', 'Store Keeper'].includes(role);
   }
-  /** Who answers House requests. Mirrors STOCK_ROLES.approve on the server. */
-  get canApprove() { return ['Owner', 'Store Manager'].includes(state.currentUser?.role); }
+  /** Supervisor (or Owner) approves House requests before Storeman can dispatch. */
+  get canApprove() { return ['Owner', 'Supervisor', 'Store Manager'].includes(state.currentUser?.role); }
+  /** Storeman (or Owner) dispatches stock from Store to House after Supervisor approval. */
+  get canDispatch() { return ['Owner', 'Store Keeper', 'Store Manager'].includes(state.currentUser?.role); }
+  /** Barman (or Supervisor/Owner) accepts dispatched stock into House Stock. */
+  get canAccept() { return ['Owner', 'Bar Staff', 'Supervisor'].includes(state.currentUser?.role); }
   get canReceiveImport() { return this.action === 'receive' && ['Owner', 'Store Manager', 'Store Keeper'].includes(state.currentUser?.role); }
   get canImport() { return this.canReceiveImport || this.canCount; }
 
@@ -482,14 +485,46 @@ export class StockView {
     const list = this.requests;
     if (!storeIsEnabled() || list === undefined || (Array.isArray(list) && !list.length)) return '<section id="stk-requests" hidden></section>';
     if (list === null) return '<section id="stk-requests" class="stk-card"><p class="stk-empty">Pending requests could not be read. Refresh when connected.</p></section>';
+    const stageBadge = (status) => {
+      if (status === 'approved_for_dispatch') {
+        return '<span style="display:inline-block;background:rgba(232,165,53,0.18);color:#e8a535;border:1px solid rgba(232,165,53,0.45);padding:3px 9px;border-radius:999px;font-size:11px;font-weight:800;">2 · Approved by Supervisor · Ready for Storeman Dispatch</span>';
+      }
+      if (status === 'dispatched') {
+        return '<span style="display:inline-block;background:rgba(16,185,129,0.18);color:#6ee7b7;border:1px solid rgba(16,185,129,0.4);padding:3px 9px;border-radius:999px;font-size:11px;font-weight:800;">3 · Dispatched by Storeman · Ready for Barman to Accept</span>';
+      }
+      return '<span style="display:inline-block;background:rgba(255,255,255,0.07);color:#d1c3b0;border:1px solid rgba(200,130,42,0.28);padding:3px 9px;border-radius:999px;font-size:11px;font-weight:700;">1 · Awaiting Supervisor Approval</span>';
+    };
+    const actionCell = (r) => {
+      const id = esc(r.id);
+      if (r.status === 'pending') {
+        return this.canApprove
+          ? `<button type="button" class="primary-btn" style="padding:6px 12px;font-size:12px;" data-decide="approve" data-request="${id}">✓ Supervisor Approve</button> <button type="button" class="stk-edit" data-decide="reject" data-request="${id}">Reject</button>`
+          : '<span style="font-size:12px;color:var(--text-secondary);">Waiting for Supervisor approval</span>';
+      }
+      if (r.status === 'approved_for_dispatch') {
+        return this.canDispatch
+          ? `<button type="button" class="primary-btn" style="padding:6px 12px;font-size:12px;" data-decide="dispatch" data-request="${id}">📦 Dispatch to House</button>`
+          : '<span style="font-size:12px;color:var(--text-secondary);">Approved — waiting for Storeman to dispatch</span>';
+      }
+      if (r.status === 'dispatched') {
+        return this.canAccept
+          ? `<button type="button" class="primary-btn" style="padding:6px 12px;font-size:12px;" data-decide="accept" data-request="${id}">✓ Accept New Stock into House</button>`
+          : '<span style="font-size:12px;color:var(--text-secondary);">Dispatched — waiting for Barman to accept in House</span>';
+      }
+      return '';
+    };
     return `<section id="stk-requests" class="stk-card">
-      <h3>Pending requests (${list.length})</h3>
-      <p class="stk-hint">${this.canApprove ? 'Approve to move the stock from the Store into the House, or reject it.' : 'Waiting for the store manager to approve.'}</p>
+      <h3>Stock Transfer Queue — Store → House (${list.length})</h3>
+      <p class="stk-hint">Workflow: 1) Barman requests stock → 2) Supervisor approves → 3) Storeman dispatches from Store → 4) Barman accepts new stock into House.</p>
       <div class="stk-table-wrap"><table class="stk-table">
-        <thead><tr><th>Item</th><th class="num">Qty</th><th>Asked by</th><th>Note</th>${this.canApprove ? '<th></th>' : ''}</tr></thead>
+        <thead><tr><th>Item</th><th class="num">Qty</th><th>Requested by</th><th>Stage</th><th>Note</th><th style="text-align:right">Action</th></tr></thead>
         <tbody>${list.map((r) => `<tr>
-          <td>${esc(r.productName || r.productId)}</td><td class="num">${Number(r.qty)}</td><td>${esc(r.who)}</td><td>${esc(r.note || '')}</td>
-          ${this.canApprove ? `<td style="text-align:right;white-space:nowrap"><button type="button" class="stk-edit" data-decide="approve" data-request="${esc(r.id)}">Approve</button> <button type="button" class="stk-edit" data-decide="reject" data-request="${esc(r.id)}">Reject</button></td>` : ''}
+          <td><strong>${esc(r.productName || r.productId)}</strong></td>
+          <td class="num">${Number(r.qty)}</td>
+          <td>${esc(r.who)}</td>
+          <td>${stageBadge(r.status)}</td>
+          <td>${esc(r.note || '—')}</td>
+          <td style="text-align:right;white-space:nowrap">${actionCell(r)}</td>
         </tr>`).join('')}</tbody>
       </table></div>
     </section>`;
@@ -617,26 +652,37 @@ export class StockView {
     // Delegated, because a refresh swaps the list without re-binding.
     this.container.onclick = async (event) => {
       const button = event.target.closest('[data-decide]');
-      if (!button || !this.canApprove) return;
+      if (!button) return;
       const decision = button.dataset.decide;
+      const allowed =
+        (decision === 'approve' || decision === 'reject') ? this.canApprove
+        : decision === 'dispatch' ? this.canDispatch
+        : decision === 'accept' ? this.canAccept
+        : false;
+      if (!allowed) return;
       const reason = decision === 'reject' ? window.prompt('Why is this request rejected? (shown in the audit trail)') : '';
       if (reason === null) return;
       button.disabled = true;
       try {
         const result = await decideStockRequest(button.dataset.request, decision, reason || undefined);
         const refreshes = await Promise.allSettled([this.loadRequests(), this.loadMovements()]);
-        if (Array.isArray(this.requests)) this.requests = this.requests.filter(row => row.id !== button.dataset.request);
         const search = this.search;
         await this.render();
         this.search = search;
-        const outcome = result.status === 'approved'
+        const outcome = result.status === 'approved_for_dispatch'
+          ? 'Approved by Supervisor. Ready for Storeman to dispatch from Store Stock.'
+          : result.status === 'dispatched'
+          ? `Dispatched from Store (Store now ${result.storeQty}). Waiting for Barman to accept into House Stock.`
+          : result.status === 'accepted'
+          ? `Accepted into House Stock. House now ${result.qty}, Store ${result.storeQty}.`
+          : result.status === 'approved'
           ? Number.isFinite(result.qty) ? `Approved. House now ${result.qty}, Store ${result.storeQty}.` : 'This request was already approved.'
           : 'Request rejected.';
         const warning = result.refreshWarning || (refreshes.some(read => read.status === 'rejected') ? 'Saved, but some stock details could not refresh. Refresh when connected.' : '');
         this.say([outcome, warning].filter(Boolean).join(' '), true);
       } catch (error) {
         button.disabled = false;
-        this.say(error.message || 'That request could not be decided.', false);
+        this.say(error.message || 'That request could not be processed.', false);
       }
     };
     const search = this.container.querySelector('#stk-search');
@@ -711,7 +757,7 @@ export class StockView {
       return;
     }
     button.disabled = true;
-    const body = { ...payload, branchId: state.currentBranch.id };
+    const body = { ...payload, branchId: state.currentBranch.id, requestedByStaffId: state.currentUser?.id };
     const signature = JSON.stringify(body);
     if (this.attempt?.signature !== signature) this.attempt = { signature, requestId: crypto.randomUUID() };
     try {
@@ -723,7 +769,7 @@ export class StockView {
       this.search = search;
       this.say(
         (payload.action === 'request' && result.status === 'pending'
-          ? 'Requested. Waiting for the store manager to approve it before the stock moves.'
+          ? 'Requested. Waiting for the Supervisor to approve before Storeman dispatches.'
           : payload.action === 'request'
           ? `Moved into the House. House now ${result.qty}, Store ${result.storeQty}.`
           : `Saved. ${this.location === 'STORE' ? 'Store' : 'House'} now ${result.qty}.`)

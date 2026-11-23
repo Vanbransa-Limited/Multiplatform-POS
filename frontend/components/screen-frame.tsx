@@ -3,7 +3,7 @@
 import { useEffect, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
-import { canViewTab, DEFAULT_TAB } from "@/navigation";
+import { canViewTab, defaultTabForRole } from "@/navigation";
 import { showNotification } from "@/context";
 
 import { usePosSession } from "./pos-session";
@@ -21,9 +21,12 @@ export function useScreenGuard(tab: string) {
 
   useEffect(() => {
     if (!ready || !user || allowed) return;
-    showNotification("Access Denied: Your access level does not permit viewing this module.", "error");
-    router.replace(`/${DEFAULT_TAB}`);
-  }, [ready, user, allowed, router]);
+    const target = defaultTabForRole(user.role);
+    if (tab !== "till") {
+      showNotification("Redirected to your assigned workspace module.", "warning");
+    }
+    router.replace(`/${target}`);
+  }, [ready, user, allowed, router, tab]);
 
   return { ready, user, allowed };
 }

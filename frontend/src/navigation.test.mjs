@@ -10,14 +10,21 @@ globalThis.localStorage = {
 const { canViewTab, canSell } = await import('./navigation.js');
 const setAccess = (map) => localStorage.setItem('pos_module_access', JSON.stringify(map));
 
-test('without an owner map, the built-in table decides and everyone sells', () => {
+test('without an owner map, the built-in table decides role visibility and selling permissions', () => {
   store.clear();
   assert.equal(canViewTab('Cashier', 'tabs'), true);
   assert.equal(canViewTab('Cashier', 'settings'), false);
+  assert.equal(canViewTab('Cashier', 'house-stock'), false);
   assert.equal(canViewTab('Cashier', 'till'), true);
-  for (const role of ['Owner', 'Store Manager', 'Supervisor', 'Cashier', 'Bar Staff', 'Store Keeper']) {
+  assert.equal(canViewTab('Bar Staff', 'till'), true);
+  assert.equal(canViewTab('Bar Staff', 'house-stock'), true);
+  assert.equal(canViewTab('Bar Staff', 'store-stock'), false);
+  assert.equal(canViewTab('Store Keeper', 'store-stock'), true);
+  assert.equal(canViewTab('Store Keeper', 'till'), false);
+  for (const role of ['Owner', 'Supervisor', 'Cashier', 'Bar Staff']) {
     assert.equal(canSell(role), true);
   }
+  assert.equal(canSell('Store Keeper'), false);
 });
 
 test("the owner's map overrides the table, in role codes, and never locks the owner out", () => {

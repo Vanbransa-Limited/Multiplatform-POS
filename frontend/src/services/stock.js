@@ -82,13 +82,32 @@ export async function pullStockMovements(branchId, max = 60) {
   return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 }
 
+function readLocalStockRequests() {
+  try {
+    const list = JSON.parse(tenantStorage.getItem('pos_stock_requests') || '[]');
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+}
+
+function writeLocalStockRequests(list) {
+  try { tenantStorage.setItem('pos_stock_requests', JSON.stringify(list)); } catch { /* ignore */ }
+}
+
 /**
- * House requests still waiting on the store manager, oldest first.
- * Equality filters only, so no composite index is needed.
+ * Active stock transfer requests between Store and House:
+ * - 'pending': Requested by Barman -> awaiting Supervisor approval
+ * - 'approved_for_dispatch': Approved by Supervisor -> awaiting Storeman dispatch from Store
+ * - 'dispatched': Dispatched by Storeman -> awaiting Barman acceptance into House
  */
 export async function pullStockRequests(branchId) {
   const fb = await getFirebase(); const claims = await currentClaims();
-  if (!fb || !claims?.tenant_id || !branchId) return [];
+  if (!fb || !claims?.tenant_id) {
+    const activeStatuses = new Set(['pending', 'approved_for_dispatch', 'dispatched']);
+    return readLocalStockRequests()
+      .filter((r) => activeStatuses.has(r.status) && (!branchId || !r.branchId || r.branchId === branchId))
+      .sort((a, b) => (a.createdAtMs || 0) - (b.createdAtMs || 0));
+  }
+  if (!branchId) return [];
   const snapshot = await fb.firestore.getDocs(fb.firestore.query(
     fb.firestore.collection(fb.dbInstance, 'stock_requests'),
     fb.firestore.where('tenantId', '==', claims.tenant_id),
@@ -100,6 +119,74 @@ export async function pullStockRequests(branchId) {
 }
 
 export async function decideStockRequest(requestId, decision, reason) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    const requests = readLocalStockRequests();
+    const idx = requests.findIndex((r) => r.id === requestId);
+    if (idx === -1) throw new Error('Stock request not found.');
+    const req = requests[idx];
+    const branchId = req.branchId || 'default-branch';
+    const productId = req.productId;
+    const qty = Number(req.qty || 0);
+    const now = new Date().toISOString();
+
+    const movements = (await db.stock_movements.toArray()).filter(
+      (m) => (!m.branch_id || String(m.branch_id) === String(branchId)) && String(m.product_id) === String(productId)
+    );
+    const houseQty = movements.filter((m) => m.location === 'HOUSE').reduce((s, m) => s + Number(m.qty || 0), 0);
+    const storeQty = movements.filter((m) => m.location === 'STORE').reduce((s, m) => s + Number(m.qty || 0), 0);
+
+    if (decision === 'reject') {
+      requests.splice(idx, 1);
+      writeLocalStockRequests(requests);
+      return { status: 'rejected', reason: reason || '' };
+    }
+    if (decision === 'approve') {
+      requests[idx] = { ...req, status: 'approved_for_dispatch', approvedAt: now };
+      writeLocalStockRequests(requests);
+      return { status: 'approved_for_dispatch', qty: houseQty, storeQty };
+    }
+    if (decision === 'dispatch') {
+      if (req.status !== 'approved_for_dispatch') {
+        throw new Error('Supervisor must approve this request before Storeman can dispatch.');
+      }
+      if (storeQty < qty) {
+        throw new Error(`Store only has ${storeQty} in stock (cannot dispatch ${qty}).`);
+      }
+      await db.stock_movements.add({
+        id: crypto.randomUUID(),
+        branch_id: branchId,
+        product_id: productId,
+        location: 'STORE',
+        type: 'request',
+        qty: -qty,
+        reference_id: req.note || `DISPATCH-${requestId.slice(0, 6)}`,
+        created_at: now,
+      });
+      requests[idx] = { ...req, status: 'dispatched', dispatchedAt: now };
+      writeLocalStockRequests(requests);
+      return { status: 'dispatched', qty: houseQty, storeQty: storeQty - qty };
+    }
+    if (decision === 'accept') {
+      if (req.status !== 'dispatched') {
+        throw new Error('Storeman must dispatch this stock from Store before it can be accepted into House.');
+      }
+      await db.stock_movements.add({
+        id: crypto.randomUUID(),
+        branch_id: branchId,
+        product_id: productId,
+        location: 'HOUSE',
+        type: 'request',
+        qty,
+        reference_id: req.note || `ACCEPT-${requestId.slice(0, 6)}`,
+        created_at: now,
+      });
+      requests.splice(idx, 1);
+      writeLocalStockRequests(requests);
+      return { status: 'accepted', qty: houseQty + qty, storeQty };
+    }
+    throw new Error('Unknown stock request action.');
+  }
   const result = await callFunction('decideStockRequest', { requestId, decision, reason });
   return refreshAfterStockCommit(result);
 }
@@ -169,11 +256,21 @@ export async function changeStock(input) {
     const qty = Number(input.qty || 0);
 
     if (input.action === 'request') {
-      await db.stock_movements.bulkAdd([
-        { id: crypto.randomUUID(), branch_id: branchId, product_id: productId, location: 'STORE', type: 'request', qty: -qty, reference_id: input.reason || 'REQUEST', created_at: now },
-        { id: crypto.randomUUID(), branch_id: branchId, product_id: productId, location: 'HOUSE', type: 'request', qty, reference_id: input.reason || 'REQUEST', created_at: now },
-      ]);
-      return { status: 'approved', qty: houseQty + qty, storeQty: storeQty - qty };
+      const product = await db.products.get(productId);
+      const requests = readLocalStockRequests();
+      requests.push({
+        id: input.requestId || crypto.randomUUID(),
+        branchId,
+        productId,
+        productName: product?.name || productId,
+        qty,
+        note: input.reason || '',
+        requestedByStaffId: input.requestedByStaffId || 'user-bar-staff',
+        status: 'pending',
+        createdAtMs: Date.now(),
+      });
+      writeLocalStockRequests(requests);
+      return { status: 'pending', qty: houseQty, storeQty };
     }
 
     const location = input.location || receivingLocation();

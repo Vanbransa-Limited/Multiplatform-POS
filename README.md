@@ -1,5 +1,10 @@
 # Multiplatform POS
 
+Current verification instructions: [test commands and environment contract](docs/testing.md).
+The [system stabilization plan](docs/system-stabilization-plan.md) tracks the ongoing audit.
+The migration audit linked below is a dated historical assessment; its feature matrix
+does not describe the current operational application.
+
 Multiplatform POS is now structured as a tenant-aware Next.js and Firebase platform. The active frontend is an independent Next.js App Router project; privileged financial mutations run in Firebase Cloud Functions.
 
 > **Migration status:** this is a partial-parity foundation, not yet a production

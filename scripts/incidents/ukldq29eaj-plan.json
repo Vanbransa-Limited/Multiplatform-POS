@@ -1,0 +1,216 @@
+{
+  "tenantId": "tenant-01",
+  "branchId": "branch-nai-01",
+  "reference": "UKLDQ29EAJ",
+  "amountMinor": 6265000,
+  "previouslyAllocatedMinor": 3443000,
+  "originalAllocationId": "checkout:80c91b8b-b560-4201-968a-ec382bb13ee8",
+  "archiveId": "multi-bill-UKLDQ29EAJ-20261121",
+  "orderTotals": {
+    "ORD-50-276837": 3443000,
+    "ORD-200-102537": 205000,
+    "ORD-2-694504": 1815000,
+    "ORD-54-525048": 110000,
+    "ORD-980-369673": 220000,
+    "ORD-988-404996": 368000,
+    "ORD-6-734680": 104000
+  },
+  "sales": [
+    {
+      "id": "sale-59d00aaf2aba03098428ce7223aceaef5351f4168d3f82e8",
+      "invoiceNumber": "INV-BH001-002514",
+      "orderReference": "ORD-54-525048",
+      "totalMinor": 110000,
+      "staffId": "staff-de4eb312ca4ef474516705b1d9592ec10dd3d1765c6f5b8a",
+      "idempotencyKey": "0b2021c5-fb9b-41a8-8390-d1342cb57a37",
+      "alreadyPaid": false
+    },
+    {
+      "id": "sale-ca91acb303a323a03f7600eab7d6160bb43c96162e7d32db",
+      "invoiceNumber": "INV-BH001-002721",
+      "orderReference": "ORD-980-369673",
+      "totalMinor": 30000,
+      "staffId": "staff-6ca0f1778ce752e79122c252d76b0ffc90cfa26228a86c81",
+      "idempotencyKey": "378b35ad-4558-48cb-9645-923700085122",
+      "alreadyPaid": false
+    },
+    {
+      "id": "sale-484add25314b21b4432634f7becd95d414822a8cf1060093",
+      "invoiceNumber": "INV-BH001-002722",
+      "orderReference": "ORD-980-369673",
+      "totalMinor": 190000,
+      "staffId": "staff-6ca0f1778ce752e79122c252d76b0ffc90cfa26228a86c81",
+      "idempotencyKey": "69636294-70e2-42be-bb9b-e9b23265b3c6",
+      "alreadyPaid": false
+    },
+    {
+      "id": "sale-339560c10ef03e0a55d92a2e0ff8683783c7437053f3f297",
+      "invoiceNumber": "INV-BH001-002880",
+      "orderReference": "ORD-6-734680",
+      "totalMinor": 104000,
+      "staffId": "staff-8735cb9d772eecaadcc5744fcb933a0558e9d3ea3b2f1875",
+      "idempotencyKey": "b7658ea2-32d8-478c-9188-07d847a0932f",
+      "alreadyPaid": false
+    },
+    {
+      "id": "sale-fbb629cf0b9287b90c99b51c56f19e45fdde200407a728c5",
+      "invoiceNumber": "INV-BH001-002960",
+      "orderReference": "ORD-50-276837",
+      "totalMinor": 1400000,
+      "staffId": "staff-6fc10bf06ad622e004f2056af83b1ef72fc1a1b4a0a9f983",
+      "idempotencyKey": "9d6ff386-b962-4674-b448-3471782eccd5",
+      "alreadyPaid": true
+    },
+    {
+      "id": "sale-aa1564e4ca9c98deef9d86b05f0a4baa9e78760baedec13c",
+      "invoiceNumber": "INV-BH001-002967",
+      "orderReference": "ORD-50-276837",
+      "totalMinor": 10000,
+      "staffId": "staff-6fc10bf06ad622e004f2056af83b1ef72fc1a1b4a0a9f983",
+      "idempotencyKey": "302b315a-1087-4121-9507-c5cc4763df90",
+      "alreadyPaid": true
+    },
+    {
+      "id": "sale-7f8f1972ea3948ef2e7a40f656652436f536335e765b160a",
+      "invoiceNumber": "INV-BH001-002979",
+      "orderReference": "ORD-50-276837",
+      "totalMinor": 80000,
+      "staffId": "staff-6fc10bf06ad622e004f2056af83b1ef72fc1a1b4a0a9f983",
+      "idempotencyKey": "65e87126-26a4-45e8-a9f1-a9143e05bc49",
+      "alreadyPaid": true
+    },
+    {
+      "id": "sale-0c7779f7ac746877e7121f36500c6071f56fab695e3369ff",
+      "invoiceNumber": "INV-BH001-002980",
+      "orderReference": "ORD-50-276837",
+      "totalMinor": 70000,
+      "staffId": "staff-6fc10bf06ad622e004f2056af83b1ef72fc1a1b4a0a9f983",
+      "idempotencyKey": "19b8826b-3aa7-40b1-bac4-89b17f6d9485",
+      "alreadyPaid": true
+    },
+    {
+      "id": "sale-761f97e31c8950c9cb1ee64d1ae9c06a1429f4940f8e6b53",
+      "invoiceNumber": "INV-BH001-002988",
+      "orderReference": "ORD-200-102537",
+      "totalMinor": 205000,
+      "staffId": "staff-6fc10bf06ad622e004f2056af83b1ef72fc1a1b4a0a9f983",
+      "idempotencyKey": "d447f3f2-1b42-4117-b5f2-1bfafc728c26",
+      "alreadyPaid": false
+    },
+    {
+      "id": "sale-62f263fd253d7efb06a9cd94d236e8c8749c1c294c5933d4",
+      "invoiceNumber": "INV-BH001-002990",
+      "orderReference": "ORD-988-404996",
+      "totalMinor": 368000,
+      "staffId": "staff-29daa5549e2ec2cb22279f50781ff785739b82a4c1bcba66",
+      "idempotencyKey": "44144a56-0081-48c5-a905-3f068faa9900",
+      "alreadyPaid": false
+    },
+    {
+      "id": "sale-25231fbc9b5ae12cb1c180b37b42861d7756a2b7b577c735",
+      "invoiceNumber": "INV-BH001-003003",
+      "orderReference": "ORD-50-276837",
+      "totalMinor": 1568000,
+      "staffId": "staff-6fc10bf06ad622e004f2056af83b1ef72fc1a1b4a0a9f983",
+      "idempotencyKey": "21d12292-5ad8-413a-8ad5-454d035bca8b",
+      "alreadyPaid": true
+    },
+    {
+      "id": "sale-b551ad3e5742b413cedfb4186ec912c79ea7bd6d7e7a13aa",
+      "invoiceNumber": "INV-BH001-003006",
+      "orderReference": "ORD-50-276837",
+      "totalMinor": 58000,
+      "staffId": "staff-6fc10bf06ad622e004f2056af83b1ef72fc1a1b4a0a9f983",
+      "idempotencyKey": "9ad26a0d-d78e-4f68-8473-4b97d8cf69d2",
+      "alreadyPaid": true
+    },
+    {
+      "id": "sale-97541a6e2849fdb4a5ef134e7ca716f2497b4123da3b1345",
+      "invoiceNumber": "INV-BH001-003007",
+      "orderReference": "ORD-50-276837",
+      "totalMinor": 29000,
+      "staffId": "staff-6fc10bf06ad622e004f2056af83b1ef72fc1a1b4a0a9f983",
+      "idempotencyKey": "b1e45a85-b0cc-4045-8fc0-33d124afd39c",
+      "alreadyPaid": true
+    },
+    {
+      "id": "sale-5b849b58fcf6a65cc7c2d5fc7a61ddfbc80511f4076a20bc",
+      "invoiceNumber": "INV-BH001-003008",
+      "orderReference": "ORD-50-276837",
+      "totalMinor": 49000,
+      "staffId": "staff-6fc10bf06ad622e004f2056af83b1ef72fc1a1b4a0a9f983",
+      "idempotencyKey": "bef90947-eb7e-4838-8d0e-bb666dc89dd8",
+      "alreadyPaid": true
+    },
+    {
+      "id": "sale-3e2eb86db6eb04a7fd5384216900e2c08cb2a19e8e09f957",
+      "invoiceNumber": "INV-BH001-003010",
+      "orderReference": "ORD-2-694504",
+      "totalMinor": 410000,
+      "staffId": "staff-b35a2f6d7a7c828167318d20894ceb28586977fba34b0320",
+      "idempotencyKey": "fd87d8f8-f26f-4467-a546-cec2bf6be19d",
+      "alreadyPaid": false
+    },
+    {
+      "id": "sale-3be58ae148e65b9b2d739ae5fa700d2e477dabe698ed6221",
+      "invoiceNumber": "INV-BH001-003020",
+      "orderReference": "ORD-50-276837",
+      "totalMinor": 100000,
+      "staffId": "staff-6fc10bf06ad622e004f2056af83b1ef72fc1a1b4a0a9f983",
+      "idempotencyKey": "5bb3111c-0838-4a01-8029-50325df45979",
+      "alreadyPaid": true
+    },
+    {
+      "id": "sale-9de9cb569000d1d8a75fadd6cd10f9b8fdf083b9d5a1a55f",
+      "invoiceNumber": "INV-BH001-003021",
+      "orderReference": "ORD-2-694504",
+      "totalMinor": 70000,
+      "staffId": "staff-b35a2f6d7a7c828167318d20894ceb28586977fba34b0320",
+      "idempotencyKey": "cea7ef4e-47b6-4a92-a852-4b2ca3dfd09d",
+      "alreadyPaid": false
+    },
+    {
+      "id": "sale-a23a1a56c56f242d829dd9414460c5ebd6836609579af57b",
+      "invoiceNumber": "INV-BH001-003025",
+      "orderReference": "ORD-2-694504",
+      "totalMinor": 1200000,
+      "staffId": "staff-b35a2f6d7a7c828167318d20894ceb28586977fba34b0320",
+      "idempotencyKey": "6f090f5f-eb6d-49e6-b723-bce869b10132",
+      "alreadyPaid": false
+    },
+    {
+      "id": "sale-16480455498ad233cc000b1558632f9cc491f11fa53940f1",
+      "invoiceNumber": "INV-BH001-003027",
+      "orderReference": "ORD-2-694504",
+      "totalMinor": 100000,
+      "staffId": "staff-b35a2f6d7a7c828167318d20894ceb28586977fba34b0320",
+      "idempotencyKey": "d1655317-3083-4abd-9169-25b4ee6ba756",
+      "alreadyPaid": false
+    },
+    {
+      "id": "sale-72c08397fbadf942be1088b0a53ba87a9a89bebdf0959265",
+      "invoiceNumber": "INV-BH001-003033",
+      "orderReference": "ORD-50-276837",
+      "totalMinor": 79000,
+      "staffId": "staff-6fc10bf06ad622e004f2056af83b1ef72fc1a1b4a0a9f983",
+      "idempotencyKey": "7ee29902-ee5c-4e05-bee3-a1abb08cd1fe",
+      "alreadyPaid": true
+    },
+    {
+      "id": "sale-2dcc022961650e49503f5d1b7d27a65537e9531bd2bde92b",
+      "invoiceNumber": "INV-BH001-003041",
+      "orderReference": "ORD-2-694504",
+      "totalMinor": 35000,
+      "staffId": "staff-b35a2f6d7a7c828167318d20894ceb28586977fba34b0320",
+      "idempotencyKey": "36fe2e72-5bdd-4672-bbcf-ffdb88325172",
+      "alreadyPaid": false
+    }
+  ],
+  "preservedHistoricalPrompt": {
+    "id": "mpesa-attempt-c0211315529969bd88f663a193846a02923f209f60ffaede",
+    "status": "ambiguous",
+    "amountMinor": 110000,
+    "requestedAtMillis": 1794662768213,
+    "invoiceNumber": "INV-BH001-002514"
+  }
+}

@@ -4,6 +4,7 @@ const { createSale } = require('../lib/modules/sales/create-sale');
 const { claimSalePayment, settleSale } = require('../lib/modules/sales/settle');
 const { db } = require('../lib/lib/firebase');
 const { deterministicId } = require('../lib/shared/identifiers');
+const { printedSnapshotData } = require('./fixtures/printed-bill.cjs');
 
 const auth = { uid: 'cashier-login', token: { tenant_id: 'tenant', staff_id: 'cashier', staff_role: 'cashier' } };
 const input = {
@@ -26,7 +27,7 @@ function harness() {
     ['stock_balances/branch_meal_HOUSE', { tenantId: 'tenant', branchId: 'branch', productId: 'meal', location: 'HOUSE', qty: 5 }],
   ]);
   const original = { collection: db.collection, runTransaction: db.runTransaction };
-  const snapshot = ref => ({ id: ref.id, ref, exists: docs.has(ref.path), data: () => docs.get(ref.path) });
+  const snapshot = ref => ({ id: ref.id, ref, exists: docs.has(ref.path), data: () => printedSnapshotData(docs, ref.path) });
   let sequence = 0;
   db.collection = name => ({
     doc: (id = `auto-${++sequence}`) => ({ id, path: `${name}/${id}` }),
@@ -50,19 +51,13 @@ function harness() {
   return { docs, restore: () => { Object.assign(db, original); } };
 }
 
-test('a legacy offline sale with a conflicting typed receipt uploads for review and replays without another stock movement', async () => {
+test('an unprinted offline paid sale is refused without moving stock or recording its receipt', async () => {
   const { docs, restore } = harness();
   try {
     docs.set('payments/original', { tenantId: 'tenant', saleId: 'original-sale', method: 'mpesa', reference: 'REUSEDCODE', amountMinor: 136000, status: 'completed' });
     const data = { ...input, payments: [{ method: 'mpesa', reference: 'REUSEDCODE', amountMinor: 136000, unverified: true }] };
-    const result = await createSale.run({ auth, data });
-    assert.equal(result.sale.paymentReviewRequired, true);
-    assert.equal(result.payments[0].status, 'receipt_conflict');
-    assert.equal(result.payments[0].verified, false);
-    assert.equal(result.payments[0].receiptConflict, true);
-    assert.equal(docs.get('stock_balances/branch_meal_HOUSE').qty, 4);
-    assert.equal((await createSale.run({ auth, data })).replayed, true);
-    assert.equal(docs.get('stock_balances/branch_meal_HOUSE').qty, 4);
+    await assert.rejects(createSale.run({ auth, data }), /Print the receipt/);
+    assert.equal(docs.get('stock_balances/branch_meal_HOUSE').qty, 5);
     assert.equal([...docs.keys()].filter(key => key.startsWith('payment_receipt_claims/')).length, 0);
   } finally { restore(); }
 });
@@ -92,10 +87,11 @@ test('a KES925 table publishes its 30% service and 20% staff round, then one typ
     const checkoutId = 'table925-checkout';
     const claim = await claimSalePayment.run({ auth, data: { saleUuids: [firstInput.idempotencyKey, roundInput.idempotencyKey], checkoutId, expectedMinor: 92500, method: 'mpesa' } });
     assert.equal(claim.dueMinor, 92500);
+    docs.set(`mpesa_c2b_events/${deterministicId('c2b', 'confirmation:TEST925COD')}`, { tenantId: 'tenant', payload: { amountMinor: 92500 } });
     for (const [index, sale] of [firstInput, roundInput].entries()) {
-      const data = { saleUuid: sale.idempotencyKey, checkoutId, requestId: `925-${index}`, method: 'mpesa', reference: 'TEST925CODE' };
+      const data = { saleUuid: sale.idempotencyKey, checkoutId, requestId: `925-${index}`, method: 'mpesa', reference: 'TEST925COD' };
       const settled = await settleSale.run({ auth, data });
-      assert.equal(settled.verified, false);
+      assert.equal(settled.verified, true);
       assert.deepEqual(await settleSale.run({ auth, data }), settled);
     }
     const receipts = [...docs.values()].filter(row => row.source === 'sale_settlement');
@@ -125,11 +121,12 @@ for (const method of ['typed-code', 'stk']) {
         docs.set(`mpesa_payments/${attemptId}`, { tenantId: 'tenant', branchId: 'branch', status: 'paid', receipt: 'TESTSTAFFRECEIPT', amountMinor: 136000 });
         docs.set(`payment_intents/${deterministicId('intent', 'tenant:TESTSTAFFRECEIPT')}`, { tenantId: 'tenant', attemptId, status: 'verified', amountMinor: 136000 });
       }
+      if (method === 'typed-code') docs.set(`mpesa_c2b_events/${deterministicId('c2b', 'confirmation:STAFFCODE1')}`, { tenantId: 'tenant', payload: { amountMinor: 136000 } });
       const payment = { saleUuid: input.idempotencyKey, checkoutId, requestId: 'payment-651015', method: 'mpesa',
-        ...(method === 'stk' ? { attemptId } : { reference: 'TYPEDSTAFFCODE' }) };
+        ...(method === 'stk' ? { attemptId } : { reference: 'STAFFCODE1' }) };
       const settled = await settleSale.run({ auth, data: payment });
       assert.equal(settled.settledMinor, 136000);
-      assert.equal(settled.verified, method === 'stk');
+      assert.equal(settled.verified, true);
       assert.deepEqual(await settleSale.run({ auth, data: payment }), settled);
       assert.equal([...docs.keys()].filter(path => path.startsWith('sales/')).length, 1);
       assert.equal([...docs.values()].filter(row => row.source === 'sale_settlement').length, 1);
@@ -139,7 +136,7 @@ for (const method of ['typed-code', 'stk']) {
   });
 }
 
-test('a confirmed staff-discount receipt can upload without being mistaken for a membership discount', async () => {
+test('provider payment proof does not bypass the requirement to save and print the bill first', async () => {
   const { docs, restore } = harness();
   try {
     docs.set(`payment_intents/${deterministicId('intent', 'tenant:STAFFPAIDRECEIPT')}`, {
@@ -149,11 +146,10 @@ test('a confirmed staff-discount receipt can upload without being mistaken for a
       membershipDiscountMinor: 0, lines: [{ productId: 'meal', qty: 1 }],
       lineDiscounts: [{ productId: 'meal', discountMinor: 0 }],
     });
-    const saved = await createSale.run({ auth, data: { ...input,
+    await assert.rejects(createSale.run({ auth, data: { ...input,
       payments: [{ method: 'mpesa', amountMinor: 136000, reference: 'STAFFPAIDRECEIPT' }],
-    } });
-    assert.equal(saved.sale.totalMinor, 136000);
-    assert.equal(docs.get(`payment_intents/${deterministicId('intent', 'tenant:STAFFPAIDRECEIPT')}`).consumedSaleId, saved.sale.id);
+    } }), /Print the receipt/);
+    assert.equal(docs.get(`payment_intents/${deterministicId('intent', 'tenant:STAFFPAIDRECEIPT')}`).consumedSaleId, undefined);
   } finally { restore(); }
 });
 

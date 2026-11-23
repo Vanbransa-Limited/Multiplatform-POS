@@ -3,10 +3,10 @@ import { writeFileSync } from 'node:fs';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
+import { assertSafeEmulatorTarget } from '../../../scripts/lib/emulator-safety.cjs';
 
-process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8380';
-process.env.FIREBASE_AUTH_EMULATOR_HOST = '127.0.0.1:9399';
-initializeApp({ projectId: 'vanbransa-pos' });
+const target = assertSafeEmulatorTarget();
+initializeApp({ projectId: target.projectId });
 const db = getFirestore();
 
 const complete = (tenantId, methods) => ({

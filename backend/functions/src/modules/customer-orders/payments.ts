@@ -8,6 +8,8 @@ import { MPESA_SECRETS, normalizePhone, parseMpesaConfig, sanitizeAccountReferen
 import { startReservedMpesa, verifyAttempt, type Reservation } from '../mpesa';
 import { serviceStaff } from './domain';
 import { readReceiptUsage, receiptAllocation } from '../../shared/mpesa-receipt';
+import { readReceiptBalance, allocateReceiptBalance } from '../sales/receipt-balance';
+import { assertCustomerReceiptPrinted } from '../sales/printed-receipt';
 
 /**
  * Payment for a table-menu order is driven from the counter, not the customer's
@@ -21,6 +23,7 @@ function payableOrder(order: Record<string, unknown> | undefined, tenantId: stri
   if (!order || order.tenantId !== tenantId) throw new HttpsError('not-found', 'Order not found.');
   if (order.status === 'cancelled') throw new HttpsError('failed-precondition', 'This order was cancelled.');
   if (order.paymentStatus === 'paid') throw new HttpsError('failed-precondition', 'This order is already paid.');
+  assertCustomerReceiptPrinted(order);
   return order;
 }
 
@@ -128,6 +131,29 @@ export const settleCustomerOrderByCode = onCall({ region: FUNCTION_REGION }, asy
     const [orderDoc, eventDoc] = await tx.getAll(orderRef, eventRef);
     const order = payableOrder(orderDoc.data(), actor.tenantId);
     const event = eventDoc.data();
+
+    if (input.receiptAmountMinor !== undefined) {
+      const branchId = documentId(order.branchId, 'branchId');
+      const balance = await readReceiptBalance(tx, actor.tenantId, code, branchId, undefined, input.receiptAmountMinor);
+      const dueMinor = Number(order.totalMinor || 0);
+      if (balance.availableMinor < dueMinor) throw new HttpsError('failed-precondition', 'The unused receipt balance is less than the order total.');
+      const now = Timestamp.now();
+      const allocation = allocateReceiptBalance(tx, balance, { tenantId: actor.tenantId, branchId,
+        staffId: actor.staffId, reference: code, target: `customer_order:${orderId}`, amountMinor: dueMinor, now });
+      tx.update(orderRef, { paymentStatus: 'paid', paymentMethod: 'mpesa', paymentReference: code, paidAt: now,
+        settledByStaffId: actor.staffId, status: order.status === 'received' ? 'awaiting_print' : order.status });
+      tx.set(db.collection('payments').doc(`web_${orderId}`), { tenantId: actor.tenantId, branchId,
+        customerOrderId: orderId, method: 'mpesa', amountMinor: dueMinor, receivedMinor: balance.amountMinor,
+        reference: code, status: 'completed', paidAt: balance.paidAt || now, receivedByStaffId: actor.staffId,
+        source: 'customer_menu_code', verified: balance.verified,
+        receiptAllocationId: allocation.allocationId, receiptLimitMinor: allocation.limitMinor });
+      tx.create(db.collection('audit_logs').doc(), { tenantId: actor.tenantId, actorStaffId: actor.staffId,
+        action: 'customer_order.code_settled', entityId: orderId,
+        metadata: { ref: order.ref, code, dueMinor, receivedMinor: balance.amountMinor,
+          verified: balance.verified, receiptAllocationId: allocation.allocationId }, createdAt: now });
+      return { orderId, paymentStatus: 'paid', receivedMinor: balance.amountMinor,
+        availableMinor: balance.availableMinor - dueMinor, changeMinor: 0 };
+    }
 
     if (!eventDoc.exists || event?.tenantId !== actor.tenantId || event?.disposition === 'quarantined') {
       throw new HttpsError('not-found', 'No M-Pesa payment with that code has reached this business. Check the code, or take another payment method.');

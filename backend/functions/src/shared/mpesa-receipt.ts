@@ -3,20 +3,21 @@ import type { DocumentData, DocumentReference, Timestamp, Transaction } from 'fi
 import { db } from '../lib/firebase';
 import { deterministicId } from './identifiers';
 
-export type ReceiptUsage = { ref: DocumentReference; claim: DocumentData | undefined; payments: DocumentData[] };
+export type ReceiptUsage = { ref: DocumentReference; claim: DocumentData | undefined; payments: DocumentData[]; foreignPaymentExists?: boolean };
 export async function readReceiptUsage(tx: Transaction, tenantId: string, reference: string): Promise<ReceiptUsage> {
   const code = reference.trim().toUpperCase();
   const ref = db.collection('payment_receipt_claims').doc(deterministicId('mpesa-receipt', `${tenantId}:${code}`));
-  const claim = await tx.get(ref);
   // A single-field lookup also catches receipts recorded before claims existed.
-  const [ledger, providerLedger] = await Promise.all([
+  const [claim, ledger, providerLedger] = await Promise.all([
+    tx.get(ref),
     tx.get(db.collection('payments').where('reference', '==', code)),
     tx.get(db.collection('payments').where('providerTransactionId', '==', code)),
   ]);
   const payments = [...new Map([...ledger.docs, ...providerLedger.docs].map(row => [row.id, row.data()])).values()].filter(row => row.tenantId === tenantId
     && String(row.method).toLowerCase() === 'mpesa'
     && ['completed', 'paid', 'success'].includes(String(row.status || 'completed').toLowerCase()));
-  return { ref, claim: claim.data(), payments };
+  const foreignPaymentExists = [...ledger.docs, ...providerLedger.docs].some(row => row.data().tenantId !== tenantId);
+  return { ref, claim: claim.data(), payments, foreignPaymentExists };
 }
 
 export const receiptTarget = (row: DocumentData) => row.proformaId ? `proforma:${row.proformaId}`

@@ -35,7 +35,7 @@ function setup(local = false) {
     payments: [{ id: 'credit', saleId: 'server', method: 'credit', amountMinor: 10000 }],
     sale_lines: [{ id: 'line', saleId: 'server', productName: 'Tea', qty: 2, lineTotalMinor: 10000 }],
   };
-  const db = { sales: table(local ? [{ id: 'local', sale_uuid: 'uuid' }] : []), payments: table(local ? [{ id: 'local-credit', sale_id: 'local', method: 'PROFORMA', amount: 100 }] : []), sale_lines: table() };
+  const db = { sales: table(local ? [{ id: 'local', sale_uuid: 'uuid' }] : []), payments: table(local ? [{ id: 'local-credit', sale_id: 'local', method: 'PROFORMA', amount: 100 }] : []), sale_lines: table(), tabs: table() };
   db.transaction = async (_mode, _tables, run) => run();
   const fb = { firestore: { collection: (_, name) => name, where: (field, op, value) => ({ field, op, value }), query: (name, ...constraints) => ({ name, constraints }),
     getDocsFromServer: async ({ name, constraints }) => ({ docs: records[name]
@@ -76,6 +76,18 @@ test('selling device refresh preserves local ids without duplicating tender', as
   assert.equal(db.payments.rows.get('settlement').sale_id, 'local');
 });
 
+test('a partial payment from another device reduces the original local debt without duplicating credit', async () => {
+  const { db, records, pull } = setup(true);
+  records.payments[0].amountMinor = 6000;
+  records.payments.push({ id: 'portion', saleId: 'server', source: 'sale_settlement', method: 'mpesa', amountMinor: 4000 });
+  await pull('2026-09-09');
+  await pull('2026-09-09');
+  assert.equal(db.payments.rows.size, 2);
+  assert.equal(db.payments.rows.get('local-credit').amount, 60);
+  assert.equal(db.payments.rows.get('local-credit').settled_at, null);
+  assert.equal(db.payments.rows.get('portion').amount, 40);
+});
+
 test('targeted shared-order refresh imports old unpaid rounds and retains table identity', async () => {
   const { db, records, pull } = setup();
   Object.assign(records.sales[0], { soldAt: '2025-01-01T00:00:00Z', tabId: 'judy-tab', orderReference: 'ORD-709', tableNumber: '709' });
@@ -83,6 +95,27 @@ test('targeted shared-order refresh imports old unpaid rounds and retains table 
   assert.equal(db.sales.rows.get('server').tab_id, 'judy-tab');
   assert.equal(db.sales.rows.get('server').order_reference, 'ORD-709');
   assert.equal(db.payments.rows.get('credit').amount, 100);
+});
+
+test('a server consolidation moves the selling till round and retires its empty old header', async () => {
+  const { db, records, pull } = setup(true);
+  await db.sales.update('local', { tab_id: 'split', order_reference: 'OLD', table_no: '50' });
+  await db.tabs.bulkPut([{ id: 'split', status: 'OPEN' }]);
+  Object.assign(records.sales[0], { tabId: 'canonical', orderReference: 'ORD-50', tableNumber: '50' });
+  await pull('2026-09-09');
+  assert.equal(db.sales.rows.size, 1);
+  assert.equal(db.sales.rows.get('local').tab_id, 'canonical');
+  assert.equal(db.sales.rows.get('local').order_reference, 'ORD-50');
+  assert.equal(db.tabs.rows.get('split').status, 'MERGED');
+});
+
+test('table refresh imports old unpaid rounds without the history date limit or another branch', async () => {
+  const { db, records, pull } = setup();
+  Object.assign(records.sales[0], { branchId: 'b1', tableNumber: '50', soldAt: '2025-01-01T00:00:00Z' });
+  records.sales.push({ ...records.sales[0], id: 'other', idempotencyKey: 'other', branchId: 'b2' });
+  await pull(undefined, undefined, { branchId: 'b1', tableNumber: '50' });
+  assert.equal(db.sales.rows.size, 1);
+  assert.equal(db.sales.rows.get('server').status, 'PENDING_PAYMENT');
 });
 
 test('old sales and their children are excluded before local writes', async () => {

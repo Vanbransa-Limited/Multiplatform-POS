@@ -6,6 +6,7 @@ import { deterministicId } from '../../shared/identifiers';
 import { asRecord, documentId, minorUnits, optionalText } from '../../shared/validation';
 import { settlingStaff, outstandingMinor, attemptBlocks } from '../sales/settle';
 import { readReceiptUsage, receiptAllocation } from '../../shared/mpesa-receipt';
+import { readReceiptBalance, allocateReceiptBalance, receiptCode } from '../sales/receipt-balance';
 
 const ISSUERS = new Set(['owner', 'store_manager', 'supervisor']);
 const required = (value: unknown, name: string, max = 160) => {
@@ -144,7 +145,12 @@ export const payProforma = onCall({ region: FUNCTION_REGION }, async request => 
       }
       linkedCredit = ledger.docs.filter(row => row.data().method === 'credit' && !row.data().settledAt);
     }
-    if (method === 'mpesa') {
+    const manualBalance = method === 'mpesa' && input.receiptAmountMinor !== undefined
+      ? await readReceiptBalance(tx, actor.tenantId, receiptCode(reference), String(record.branchId), undefined, input.receiptAmountMinor) : null;
+    if (manualBalance && manualBalance.availableMinor < dueMinor) {
+      throw new HttpsError('failed-precondition', 'The unused receipt balance is less than the invoice total.');
+    }
+    if (method === 'mpesa' && !manualBalance) {
       const confirmation = event.data();
       if (!event.exists || confirmation?.tenantId !== actor.tenantId || confirmation.disposition === 'quarantined'
         || confirmation.settledSaleId || confirmation.settledCustomerOrderId || confirmation.settledProformaId
@@ -155,7 +161,12 @@ export const payProforma = onCall({ region: FUNCTION_REGION }, async request => 
       if (confirmation.payload?.amountMinor !== dueMinor) throw new HttpsError('failed-precondition', 'The confirmed M-Pesa amount must match the full invoice amount.');
     }
     const now = Timestamp.now();
-    if (method === 'mpesa') {
+    let allocation;
+    if (manualBalance) {
+      allocation = allocateReceiptBalance(tx, manualBalance, { tenantId: actor.tenantId,
+        branchId: String(record.branchId), staffId: actor.staffId, reference,
+        target: `proforma:${id}`, amountMinor: dueMinor, now });
+    } else if (method === 'mpesa') {
       const usage = await readReceiptUsage(tx, actor.tenantId, reference);
       tx.set(usage.ref, receiptAllocation(usage, { tenantId: actor.tenantId, reference,
         allocationId: `proforma:${id}`, target: `proforma:${id}`, amountMinor: dueMinor,
@@ -166,10 +177,11 @@ export const payProforma = onCall({ region: FUNCTION_REGION }, async request => 
     tx.create(paymentRef, { tenantId: actor.tenantId, branchId: record.branchId, proformaId: id,
       ...(record.linkedSaleId ? { saleId: record.linkedSaleId } : {}),
       method, amountMinor: dueMinor, reference, status: 'completed', paidAt: now,
-      receivedByStaffId: actor.staffId, verified: method === 'mpesa', source: 'proforma' });
+      receivedByStaffId: actor.staffId, verified: manualBalance ? manualBalance.verified : method === 'mpesa', source: 'proforma',
+      ...(allocation ? { receiptAllocationId: allocation.allocationId, receiptLimitMinor: allocation.limitMinor } : {}) });
     for (const credit of linkedCredit) tx.update(credit.ref, { settledAt: now, settledByStaffId: actor.staffId,
       settledMethod: method, settledReference: reference || null, settledProformaId: id });
-    if (method === 'mpesa') {
+    if (method === 'mpesa' && !manualBalance) {
       tx.update(eventRef, { settledProformaId: id, settledAt: now, settlementStatus: 'settled_proforma' });
       if (intent.exists) tx.update(intentRef, { status: 'consumed', consumedProformaId: id, consumedAt: now });
     }

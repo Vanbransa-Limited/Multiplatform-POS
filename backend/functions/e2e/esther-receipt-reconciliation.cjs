@@ -11,6 +11,7 @@ const claimRef = db.doc(`payment_receipt_claims/${deterministicId('mpesa-receipt
 const originalPaidAt = Timestamp.fromDate(new Date('2026-11-19T16:47:51.390Z'));
 
 async function main() {
+  const movementsBefore = (await db.collection('stock_movements').where('tenantId', '==', tenantId).get()).size;
   const batch = db.batch();
   batch.set(claimRef, { tenantId, reference, verified: false, allocatedMinor: 70000, limitMinor: 70000,
     allocationId: 'checkout:f6be1c26-1e0e-4dbb-af57-2362768eaff9', targets: rounds.slice(0, 2).map(([id]) => `sale:${id}`) });
@@ -58,7 +59,7 @@ async function main() {
   assert.equal(claim.allocatedMinor, 80000); assert.equal(claim.limitMinor, 80000);
   assert.equal(claim.targets.length, 3); assert.equal(claim.verified, false);
   assert.equal((await db.doc('stock_balances/unchanged').get()).data().qty, 7);
-  assert.equal((await db.collection('stock_movements').get()).size, 0);
+  assert.equal((await db.collection('stock_movements').where('tenantId', '==', tenantId).get()).size, movementsBefore);
   const archived = (await db.doc(`reconciliation_archives/${archiveId}`).get()).data();
   assert.ok(archived.records.length >= 9);
   assert.equal((await db.doc(`audit_logs/${archiveId}`).get()).data().metadata.additionalAmountMinor, 10000);

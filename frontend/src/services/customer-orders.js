@@ -1,6 +1,8 @@
 import { getFirebase, currentClaims, callFunction } from './firebase.js';
 import { escapeHtml } from './print-receipt.js';
 import { isReceivable } from './takings.js';
+import { state } from '../context.js';
+import { createReceiptLookup } from './receipt-lookup.js';
 
 const LOCAL_QR_ORDERS_KEY = 'pos_local_customer_orders';
 
@@ -572,7 +574,7 @@ export async function settleCustomerOrderCash(orderId) {
 }
 
 /** Settles against a payment M-Pesa has already confirmed to this business. */
-export async function settleCustomerOrderByCode(orderId, code) {
+export async function settleCustomerOrderByCode(orderId, code, receiptAmountMinor) {
   const fb = await getFirebase(); const claims = await currentClaims();
   if (!fb || !claims?.tenant_id) {
     await mutateLocalQrOrder(orderId, (o) => ({
@@ -585,9 +587,9 @@ export async function settleCustomerOrderByCode(orderId, code) {
     }));
     return { changeMinor: 0 };
   }
-  return callFunction('settleCustomerOrderByCode', { orderId, code });
+  return callFunction('settleCustomerOrderByCode', { orderId, code,
+    ...(receiptAmountMinor !== undefined ? { receiptAmountMinor } : {}) });
 }
-
 /** Records a bank transfer against an order, with the statement reference. */
 export async function settleCustomerOrderBank(orderId, reference) {
   const fb = await getFirebase(); const claims = await currentClaims();
@@ -626,6 +628,10 @@ export async function settleCustomerOrderCard(orderId, reference) {
  * sent this business, so settling on one means the money actually arrived.
  */
 export const settleSale = (input) => callFunction('settleSale', input);
+export const lookupMpesaReceipt = createReceiptLookup(
+  input => callFunction('lookupMpesaReceipt', input, { timeout: 10000 }),
+  () => JSON.stringify([state.currentTenant?.id, state.currentUser?.id]),
+);
 export const claimSalePayment = (input) => callFunction('claimSalePayment', input);
 export const voidSale = (input) => callFunction('voidSale', input);
 

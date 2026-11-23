@@ -6,6 +6,7 @@ import { FUNCTION_REGION } from '../../config/runtime';
 import { db } from '../../lib/firebase';
 import { asRecord, documentId } from '../../shared/validation';
 import { deterministicId } from '../../shared/identifiers';
+import { standardReceiptPolicy } from '../../shared/receipt-policy';
 
 const ADMIN_EMAIL = 'tech@vanbransa2.com';
 type AuthContext = { uid: string; token: Record<string, unknown> } | undefined;
@@ -140,11 +141,16 @@ export const createPlatformTenant = onCall({ region: FUNCTION_REGION, timeoutSec
       tx.create(tenantRef, { ...fields, id: tenantId, legalName: input.businessName, tradingName: input.businessName, businessName: input.businessName, slug: input.slug, ownerEmail: input.ownerEmail, logoUrl: input.logoUrl, status: 'active', defaultBranchId: branchId, defaultDeviceId: deviceId, walkInCustomerId: customerId });
       tx.create(db.collection('tenant_settings').doc(tenantId), { ...fields, establishmentName: input.businessName, receiptFooter: 'Thank you for your business.', locale: 'en-KE', timezone: 'Africa/Nairobi', cashEnabled: true, acceptedPaymentMethods: ['cash'], lowStockThresholdQty: 10, storeEnabled: false, updatedByStaffId: staffId });
       tx.create(db.collection('branches').doc(branchId), { ...fields, id: branchId, name: input.branchName, code: 'BH001', etimsBranchId: '00', status: 'active' });
+      tx.create(db.collection('mpesa_receipt_controls').doc(tenantId), {
+        ...standardReceiptPolicy(tenantId, [branchId], `${tenantId}-onboarding`),
+        enabledAt: now, enabledBy: 'platform_onboarding', enabledByPlatformAdminUid: actorUid,
+      });
       tx.create(db.collection('devices').doc(deviceId), { ...fields, id: deviceId, branchId, label: 'Main Till', status: 'active' });
       tx.create(db.collection('customers').doc(customerId), { ...fields, id: customerId, name: 'Walk-In Guest', phone: '', kraPin: '', priceTier: 'RETAIL', membershipDiscountBasisPoints: 0, isActive: true, isWalkIn: true });
       tx.create(db.collection('staff').doc(staffId), { ...fields, id: staffId, authUid: reservation.authUid, email: input.ownerEmail, name: input.ownerName, phone: null, role: 'owner', status: 'active', createdByStaffId: null, createdByPlatformAdminUid: actorUid });
       tx.create(db.collection('platform_tenants').doc(tenantId), { ...result, logoUrl: input.logoUrl, createdAt: now });
-      tx.create(db.collection('audit_logs').doc(`${tenantId}-onboarding`), { ...fields, actorPlatformAdminUid: actorUid, action: 'tenant.created', entityId: tenantId, metadata: { ownerEmail: input.ownerEmail, branchId } });
+      tx.create(db.collection('audit_logs').doc(`${tenantId}-onboarding`), { ...fields, actorPlatformAdminUid: actorUid, action: 'tenant.created', entityId: tenantId,
+        metadata: { ownerEmail: input.ownerEmail, branchId, receiptPolicyVersion: 3, receiptEntryMode: 'staff_entry' } });
       tx.update(requestRef, { status: 'provisioned', result, provisionedAt: now });
     });
   }

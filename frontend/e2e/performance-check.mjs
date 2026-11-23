@@ -7,6 +7,10 @@ import { chromium } from '@playwright/test';
 import { saleAsOrder } from '../src/services/customer-orders.js';
 import { tabsWithTotals } from '../src/services/tabs.js';
 import { isReceivable } from '../src/services/takings.js';
+import { toMinor } from '../src/services/tender.js';
+
+const checkoutSource = (await readFile(new URL('../src/services/checkout-rounds.js', import.meta.url), 'utf8'))
+  .replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '');
 
 const schema = (await readFile(new URL('../src/db/schema.js', import.meta.url), 'utf8'))
   .replace(/\r\n/g, '\n').replace(/^import .*;\n/gm, '').replace('export const db', 'const db')
@@ -30,7 +34,11 @@ try {
   page.setDefaultTimeout(60_000);
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.addScriptTag({ path: new URL('../node_modules/dexie/dist/dexie.js', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1') });
-  const result = await page.evaluate(async ({ schema, heldBody, tabBody, asOrderSource, tabTotalsSource, receivableSource }) => {
+  const result = await page.evaluate(async ({ schema, heldBody, tabBody, asOrderSource, tabTotalsSource, receivableSource, checkoutSource, minorSource }) => {
+    const receivable = new Function('RECEIVABLE_METHODS', `return (${receivableSource});`)(new Set(['CREDIT', 'PROFORMA']));
+    const billableCheckoutRounds = new Function('isReceivable', 'toMinor', `${checkoutSource}; return billableCheckoutRounds;`)(
+      receivable, new Function(`return (${minorSource});`)(),
+    );
     const asOrder = new Function('SALE_STATUS', 'isReceivable', `return (${asOrderSource});`)(
       new Map([['PENDING_PAYMENT', 'awaiting_payment'], ['VOIDED', 'cancelled']]),
       new Function('RECEIVABLE_METHODS', `return (${receivableSource});`)(new Set(['CREDIT', 'PROFORMA'])),
@@ -98,7 +106,7 @@ try {
     const tabAfter = await timed(() => readOpenTabs('b1'));
     const openTabs = await readOpenTabs('b1');
     if (openTabs[0]?.dueMinor !== 1000 || openTabs[0]?.items !== 2) throw new Error('Open tab totals changed');
-    const localHeldOrders = new Function('db', 'saleAsOrder', `${heldBody}; return localHeldOrders;`)(db, asOrder);
+    const localHeldOrders = new Function('db', 'saleAsOrder', 'billableCheckoutRounds', `${heldBody}; return localHeldOrders;`)(db, asOrder, billableCheckoutRounds);
     const held = await localHeldOrders();
     console.log('Verifying queue drain...');
     await db.sales.where('sync_pending').equals(1).modify({ synced_at: '2026-11-07' });
@@ -107,7 +115,7 @@ try {
     db.close();
     await Dexie.delete('POS_DB');
     return { total, migrated, inserted, synced, replaced, unrelatedUpdate, imported, cleared, migrationMs, before, after, tabBefore, tabAfter, held, empty };
-  }, { schema, heldBody, tabBody, asOrderSource: saleAsOrder.toString(), tabTotalsSource: tabsWithTotals.toString(), receivableSource: isReceivable.toString() });
+  }, { schema, heldBody, tabBody, asOrderSource: saleAsOrder.toString(), tabTotalsSource: tabsWithTotals.toString(), receivableSource: isReceivable.toString(), checkoutSource, minorSource: toMinor.toString() });
   assert.equal(result.total, 20_003);
   assert.equal(result.migrated, 3);
   assert.equal(result.inserted, 1);

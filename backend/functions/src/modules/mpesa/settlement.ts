@@ -3,6 +3,7 @@ import type { Transaction } from 'firebase-admin/firestore';
 import { db } from '../../lib/firebase';
 import { deterministicId } from '../../shared/identifiers';
 import { outstandingMinor } from '../sales/settle';
+import { assertSaleReceiptPrinted } from '../sales/printed-receipt';
 
 /** A payment on a saved bill uses its locked ledger, never today's menu prices. */
 export async function claimedBillAmount(tx: Transaction, actor: { tenantId: string; staffId: string },
@@ -21,6 +22,7 @@ export async function claimedBillAmount(tx: Transaction, actor: { tenantId: stri
       throw new HttpsError('failed-precondition', 'Reserve this bill before starting payment. Refresh orders and retry.');
     }
     const payments = await tx.get(db.collection('payments').where('saleId', '==', doc.id));
+    await assertSaleReceiptPrinted(tx, doc.id, sale);
     dueMinor += outstandingMinor(payments.docs.map(row => row.data()));
   }
   if (!Number.isSafeInteger(dueMinor) || dueMinor <= 0) throw new HttpsError('failed-precondition', 'This bill is already paid. Refresh orders.');

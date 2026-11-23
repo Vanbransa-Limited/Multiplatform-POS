@@ -11,6 +11,8 @@ async function setup(page: import('@playwright/test').Page, file: string, classN
     .replace('export function getCanonicalCategoryName', 'function getCanonicalCategoryName')
     .replace(`export class ${className}`, `window.Screen = class ${className}`);
   const filters = readFileSync('src/ui/mobile-filters.js', 'utf8').replace('export function', 'function');
+  const receiptLookup = readFileSync('src/services/receipt-lookup.js', 'utf8').replace('export function', 'function');
+  const receiptMessages = readFileSync('src/ui/receipt-messages.js', 'utf8').replace(/^export /gm, '');
   await page.addScriptTag({ content: `
     const state = { currentUser:{role:'Owner'}, currentBranch:{id:'b1'}, currentTenant:{id:'t1'} };
     const MpesaService = class {};
@@ -19,6 +21,11 @@ async function setup(page: import('@playwright/test').Page, file: string, classN
     const unavailableMpesaCapability = () => ({available:false,status:'unconfigured',message:'Unavailable'});
     const WALK_IN_CUSTOMER_ID = 'cust-walkin';
     const showNotification = () => {};
+    ${receiptLookup}
+    ${receiptMessages}
+    const lookupMpesaReceipt = createReceiptLookup(input => window.receiptLookup(input), () => JSON.stringify([state.currentTenant?.id,state.currentUser?.id]));
+    const mpesaConfirmationCode = value => /^[A-Z0-9]{10}$/.test(String(value).trim().toUpperCase()) ? String(value).trim().toUpperCase() : null;
+    const toMinor = value => Math.round(value * 100);
     const escapeHtml = value => String(value ?? '');
     const db = {};
     let sequence = 0;
@@ -55,6 +62,140 @@ test('cart button toggles the sale; tab checkout waits for a tender and reveals 
   await expect(page.locator('#pay-card-reference')).toBeHidden();
   await expect(page.locator('#pay-confirm-btn')).toBeEnabled();
 });
+
+for (const width of [390, 1440]) {
+  test(`Orders receipt lookup shows 1700 less 500 and rejects unknown codes at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await setup(page, 'orders', 'OrdersView');
+    await page.evaluate(`
+      view.render(); view.bindEvents();
+      view.posOrders=[{id:'sale1',ref:'ORD-55-861692',customerName:'Walk-In',cashierName:'Linda',dueMinor:120000}];
+      view.openSettleModal('sale1');
+      window.receiptLookup=async ({reference})=>{
+        if(reference==='UNKNOWN123') throw new Error('No confirmed M-Pesa payment with that code has reached this business.');
+        return {reference,receivedMinor:170000,allocatedMinor:50000,availableMinor:120000,verified:true};
+      };
+    `);
+    await page.locator('[data-settle-method=mpesa]').click();
+    await expect(page.locator('#settle-confirm')).toBeDisabled();
+    await page.locator('#settle-reference').fill('UKL6537WE3');
+    await page.locator('#settle-check-code').click();
+    await expect(page.locator('#settle-receipt-balance')).toHaveText('Amount: KES 1700.00. Available: KES 1200.00.');
+    await expect(page.locator('#settle-confirm')).toHaveText('Apply KES 1200.00');
+    await expect(page.locator('#settle-confirm')).toBeEnabled();
+    await page.locator('#settle-modal').screenshot({ path: `../tmp/receipt-checkout-${width}.png` });
+    await page.locator('#settle-reference').fill('UNKNOWN123');
+    await expect(page.locator('#settle-confirm')).toBeDisabled();
+    await page.locator('#settle-check-code').click();
+    await expect(page.locator('#settle-receipt-balance')).toHaveText('Payment not found. Check the code and try again.');
+    await expect(page.locator('#settle-confirm')).toBeDisabled();
+  });
+}
+
+test('receipt responses arriving after a changed code cannot enable payment', async ({ page }) => {
+  await setup(page, 'orders', 'OrdersView');
+  await page.evaluate(`view.render();view.bindEvents();view.posOrders=[{id:'sale1',ref:'BILL',customerName:'Guest',dueMinor:100000}];view.openSettleModal('sale1');window.receiptLookup=()=>new Promise(resolve=>window.resolveReceipt=resolve);`);
+  await page.locator('[data-settle-method=mpesa]').click();
+  await page.locator('#settle-reference').fill('CODE400ABC');
+  await page.locator('#settle-check-code').click();
+  await page.locator('#settle-reference').fill('CODE600ABC');
+  await page.evaluate(`resolveReceipt({reference:'CODE400ABC',receivedMinor:40000,allocatedMinor:0,availableMinor:40000,verified:true})`);
+  await expect(page.locator('#settle-confirm')).toBeDisabled();
+  await expect(page.locator('#settle-receipt-balance')).toBeHidden();
+});
+
+for (const screen of ['orders', 'till']) {
+  test(`${screen} exits a stuck receipt check, ignores the late response and allows retry`, async ({ page }) => {
+    await setup(page, screen, screen === 'orders' ? 'OrdersView' : 'TillView');
+    await page.clock.install();
+    if (screen === 'orders') {
+      await page.evaluate(`view.render();view.bindEvents();view.posOrders=[{id:'sale1',ref:'BILL',customerName:'Guest',dueMinor:100000}];view.openSettleModal('sale1');`);
+      await page.locator('[data-settle-method=mpesa]').click();
+    } else {
+      await page.evaluate(`view.selectedCustomer={id:'guest'};view.activeTabId='tab';view.totals={total:1000};view.render();view.refreshMpesaCapability=async()=>{};view.openCheckoutModal();`);
+      await page.locator('[data-method=MPESA_CODE]').click();
+    }
+    const input = page.locator(screen === 'orders' ? '#settle-reference' : '#pay-mpesa-code');
+    const check = page.locator(screen === 'orders' ? '#settle-check-code' : '#pay-check-mpesa-code');
+    const summary = page.locator(screen === 'orders' ? '#settle-receipt-balance' : '#pay-receipt-balance');
+    const confirm = page.locator(screen === 'orders' ? '#settle-confirm' : '#pay-confirm-btn');
+    await page.evaluate(`window.receiptLookup=()=>new Promise(resolve=>window.resolveStuckReceipt=resolve);`);
+    await input.fill('CODE400ABC');
+    if (screen === 'orders') await check.click();
+    else await page.evaluate('void view.checkTillReceipt()');
+    await expect(check).toBeDisabled();
+    await page.clock.fastForward(12001);
+    await expect(summary).toHaveText('Could not check payment. Try again.');
+    await expect(check).toBeEnabled();
+    await expect(confirm).toBeDisabled();
+    await page.evaluate(`resolveStuckReceipt({reference:'CODE400ABC',receivedMinor:40000,allocatedMinor:0,availableMinor:40000,verified:true});`);
+    await expect(confirm).toBeDisabled();
+    await expect(summary).toHaveText('Could not check payment. Try again.');
+    await page.evaluate(`window.receiptLookup=async({reference})=>({reference,receivedMinor:40000,allocatedMinor:0,availableMinor:40000,verified:true});`);
+    if (screen === 'orders') await check.click();
+    else await page.evaluate('view.checkTillReceipt()');
+    await expect(summary).toContainText('Available: KES 400.00');
+    await expect(confirm).toBeEnabled();
+  });
+}
+
+test('Till checks the receipt before enabling partial payment', async ({ page }) => {
+  await setup(page, 'till', 'TillView');
+  await page.evaluate(`view.selectedCustomer={id:'guest'};view.activeTabId='tab';view.totals={total:1000};view.render();view.refreshMpesaCapability=async()=>{};view.openCheckoutModal();window.receiptLookup=async({reference})=>({reference,receivedMinor:40000,allocatedMinor:0,availableMinor:40000,verified:true});`);
+  await page.locator('[data-method=MPESA_CODE]').click();
+  await expect(page.locator('#pay-confirm-btn')).toBeDisabled();
+  await page.locator('#pay-mpesa-code').fill('CODE400ABC');
+  // The rendering harness binds only controls used by its tests.
+  await page.evaluate('view.checkTillReceipt()');
+  await expect(page.locator('#pay-receipt-balance')).toContainText('Available: KES 400.00');
+  await expect(page.locator('#pay-confirm-btn')).toHaveText('Apply KES 400.00');
+  await expect(page.locator('#pay-confirm-btn')).toBeEnabled();
+});
+
+for (const [screen, width] of [['orders', 390], ['orders', 1440], ['till', 390], ['till', 1440]] as const) {
+  test(`${screen} loads a saved internal amount by code without amount entry at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await setup(page, screen, screen === 'orders' ? 'OrdersView' : 'TillView');
+    if (screen === 'orders') {
+      await page.evaluate(`view.render();view.bindEvents();view.posOrders=[{id:'sale1',ref:'ORD-6-023885',customerName:'Guest',cashierName:'Kester',dueMinor:95000}];view.openSettleModal('sale1');`);
+      await page.locator('[data-settle-method=mpesa]').click();
+    } else {
+      await page.evaluate(`view.selectedCustomer={id:'guest'};view.activeTabId='tab';view.totals={total:950};view.render();view.refreshMpesaCapability=async()=>{};view.openCheckoutModal();`);
+      await page.locator('[data-method=MPESA_CODE]').click();
+    }
+    const code = page.locator(screen === 'orders' ? '#settle-reference' : '#pay-mpesa-code');
+    const amount = page.locator(screen === 'orders' ? '#settle-receipt-amount' : '#pay-receipt-amount');
+    await expect(amount).toHaveCount(0);
+    const confirm = page.locator(screen === 'orders' ? '#settle-confirm' : '#pay-confirm-btn');
+    const summary = page.locator(screen === 'orders' ? '#settle-receipt-balance' : '#pay-receipt-balance');
+    await page.evaluate(`window.receiptLookup=async input=>{
+      window.checkedInternalInput=input;
+      if(input.reference==='EXISTING01')return {reference:input.reference,receivedMinor:50000,allocatedMinor:50000,availableMinor:0,verified:false,internalOnly:true};
+      if(input.reference==='UNKNOWN123')throw new Error('No saved M-Pesa payment matches this code.');
+      return {reference:input.reference,receivedMinor:170000,allocatedMinor:50000,availableMinor:120000,verified:false,internalOnly:true,registerOnPayment:false};
+    };`);
+    await code.fill('UNKNOWN123');
+    if (screen === 'orders') await page.locator('#settle-check-code').click();
+    else await page.evaluate('view.checkTillReceipt()');
+    await expect(summary).toHaveText('Payment not found. Check the code and try again.');
+    await expect(confirm).toBeDisabled();
+    await code.fill('UKL6537WE3');
+    if (screen === 'orders') await page.locator('#settle-check-code').click();
+    else await page.evaluate('view.checkTillReceipt()');
+    await expect(summary).toHaveText('Amount: KES 1700.00. Available: KES 1200.00.');
+    await expect(confirm).toHaveText('Apply KES 950.00');
+    await expect(confirm).toBeEnabled();
+    await confirm.scrollIntoViewIfNeeded();
+    await expect(confirm).toBeInViewport();
+    expect(await page.evaluate('window.checkedInternalInput.receiptAmountMinor')).toBeUndefined();
+    await page.locator(screen === 'orders' ? '#settle-modal' : '#payment-modal').screenshot({ path: `../tmp/code-only-receipts-${screen}-${width}.png` });
+    await code.fill('EXISTING01');
+    if (screen === 'orders') await page.locator('#settle-check-code').click();
+    else await page.evaluate('view.checkTillReceipt()');
+    await expect(summary).toHaveText('This code has already been fully used.');
+    await expect(confirm).toBeDisabled();
+  });
+}
 
 test('Orders tab settlement shows no inputs until a method is picked and resets on reopen', async ({ page }) => {
   await setup(page, 'orders', 'OrdersView');

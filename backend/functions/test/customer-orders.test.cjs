@@ -1,4 +1,5 @@
 const test = require('node:test');
+const { printedSnapshotData } = require('./fixtures/printed-bill.cjs');
 const assert = require('node:assert/strict');
 const { parseCustomerOrder, publicProduct, priceCustomerOrder } = require('../lib/modules/customer-orders/domain');
 const { db } = require('../lib/lib/firebase');
@@ -49,7 +50,7 @@ test('menu submission reaches shared orders, retries do not duplicate, staff can
     ['devices/d1', { tenantId: 't1', branchId: 'b1', status: 'active' }],
     ['tenant_settings/t1', { cashEnabled: false, acceptedPaymentMethods: ['mpesa'] }],
   ]);
-  const snapshot = (ref) => ({ id: ref.id, exists: docs.has(ref.path), data: () => docs.get(ref.path) });
+  const snapshot = (ref) => ({ id: ref.id, exists: docs.has(ref.path), data: () => printedSnapshotData(docs, ref.path) });
   const originalCollection = db.collection;
   const originalTransaction = db.runTransaction;
   db.collection = (name) => ({

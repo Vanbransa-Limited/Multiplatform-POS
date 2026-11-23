@@ -80,6 +80,13 @@ test('onboarding creates an isolated blank business and replay is idempotent; Ti
     assert.equal(bench.docs.get(`devices/${result.deviceId}`).branchId, result.branchId);
     assert.equal(bench.docs.get(`customers/${result.customerId}`).tenantId, result.tenantId);
     assert.equal(bench.docs.get(`tenant_settings/${result.tenantId}`).acceptedPaymentMethods.join(), 'cash');
+    const receiptPolicy = bench.docs.get(`mpesa_receipt_controls/${result.tenantId}`);
+    assert.equal(receiptPolicy.tenantId, result.tenantId);
+    assert.equal(receiptPolicy.entryMode, 'staff_entry'); assert.equal(receiptPolicy.duration, 'ongoing');
+    assert.equal(receiptPolicy.policyVersion, 3); assert.equal(receiptPolicy.until, null);
+    assert.equal(receiptPolicy.branchScope, 'tenant'); assert.deepEqual(receiptPolicy.branchIds, [result.branchId]);
+    assert.equal(receiptPolicy.authorizationId, `${result.tenantId}-onboarding`);
+    assert.equal(bench.docs.has('mpesa_receipt_controls/tenant-01'), false, 'onboarding must not modify another tenant policy');
     assert.equal(JSON.stringify([...bench.docs]).includes(input.ownerPassword), false);
     assert.deepEqual(await createPlatformTenant.run({ auth: admin, data: input }), result);
     assert.equal(bench.calls.created.length, 1);

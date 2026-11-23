@@ -38,3 +38,7 @@ frontend/visual/report/
 frontend/test-results/
 frontend/visual/**/*-actual.png
 frontend/visual/**/*-diff.png
+
+# Local logs and editor state
+*.log
+.vscode/

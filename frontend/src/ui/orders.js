@@ -16,8 +16,11 @@ import { isReceivable } from '../services/takings';
 import { mergeTabLines } from '../services/tabs';
 import { removeTabLine, freeSettledTab } from '../services/tab-edit';
 import { MpesaService } from '../services/mpesa';
+import { recordReceiptSettlement } from '../services/receipt-settlement';
+import { manualReceipt } from '../services/manual-receipt';
 import { DEVICE_ID } from '../services/firebase';
 import { enqueuePrintJob, isStationOnline } from '../services/print-queue';
+import { requirePrintedReceipt } from './checkout-print';
 import { escapeHtml, renderEtrBlock } from '../services/print-receipt';
 import { etrFor, generateEtr } from '../services/etr';
 import { cashIsEnabled } from '../services/payment-settings';
@@ -242,11 +245,13 @@ export class OrdersView {
 
               <div class="checkout-inputs" data-pay-pane="code" hidden>
                 <label for="pay-code" style="font-size:13px;color:var(--text-secondary)">M-Pesa Confirmation Code</label>
-                <input id="pay-code" type="text" maxlength="32" placeholder="e.g. QGH4T21XZ9" autocapitalize="characters" spellcheck="false">
+                <input id="pay-code" type="text" maxlength="10" placeholder="e.g. QGH4T21XZ9" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
+                <label for="pay-code-amount">Amount on receipt (KES)</label>
+                <input id="pay-code-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="Enter receipt amount">
                 <p style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin:0;">
-                  Matched against payments M-Pesa has confirmed to this business. A code with no matching payment will not settle the order.
+                  Enter the code and amount from the payment message.
                 </p>
-                <button type="button" id="pay-code-settle" class="primary-btn">Verify code and settle</button>
+                <button type="button" id="pay-code-settle" class="primary-btn">Record payment</button>
               </div>
 
               <div class="checkout-inputs" data-pay-pane="card" hidden>
@@ -338,7 +343,7 @@ export class OrdersView {
 
               <div class="checkout-inputs" id="settle-stk-inputs">
                 <label for="settle-phone" style="font-size:13px;color:var(--text-secondary)">Customer phone</label>
-                <input id="settle-phone" type="tel" maxlength="15" placeholder="07XX XXX XXX" spellcheck="false">
+                <input id="settle-phone" type="tel" maxlength="15" placeholder="07XX XXX XXX" autocomplete="off" autocorrect="off" spellcheck="false">
                 <p style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin:0;">
                   Sends an M-Pesa prompt for the full outstanding amount. The invoice settles only when M-Pesa confirms it.
                 </p>
@@ -349,9 +354,13 @@ export class OrdersView {
 
               <div class="checkout-inputs hidden" id="settle-reference-inputs">
                 <label for="settle-reference" style="font-size:13px;color:var(--text-secondary)">Reference</label>
-                <input id="settle-reference" type="text" maxlength="60" placeholder="M-Pesa code, e.g. QGH4T21XZ9" autocapitalize="characters" spellcheck="false">
+                <input id="settle-reference" class="receipt-code-input" type="text" maxlength="60" placeholder="M-Pesa code, e.g. QGH4T21XZ9" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" aria-describedby="settle-note">
+                <div id="settle-receipt-amount-wrap" class="hidden">
+                  <label for="settle-receipt-amount">Amount on receipt (KES)</label>
+                  <input id="settle-receipt-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="Enter receipt amount">
+                </div>
                 <p id="settle-note" style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin:0;">
-                  Matched against payments M-Pesa has confirmed to this business. A code with no matching payment will not settle the invoice.
+                  Enter the code from the payment message.
                 </p>
               </div>
 
@@ -423,8 +432,30 @@ export class OrdersView {
     // who billed a table was looking at a third of the night.
     // Read the snapshot first, then history. A snapshot removed during upload
     // must already have its canonical sale when history is read afterwards.
-    const [remote] = refresh ? await Promise.allSettled([pullOpenOrders(DEVICE_ID)]) : [];
-    const [sync] = refresh ? await Promise.allSettled([pullSales(), pullStaff()]) : [];
+    // One server read at a time. The 60s timer, settlements and item edits all
+    // call this; each used to start its own 90-day download and discard the
+    // one before it, so on a busy till the board could stop updating at all.
+    // After the first full read, only what can have changed is fetched: sales
+    // since the last read, plus every bill still unpaid here (payments taken
+    // on another till land on old sales). pullSales only adds and updates.
+    if (refresh) {
+      this.serverPull ||= (async () => {
+        const [remote] = await Promise.allSettled([pullOpenOrders(DEVICE_ID)]);
+        const startedAt = Date.now();
+        const last = this.lastServerPullAt;
+        const unpaid = last ? [...new Set((this.posOrders || []).filter(order => order.paymentStatus === 'unpaid')
+          .flatMap(order => order.roundUuids || [order.saleUuid]).filter(Boolean))] : [];
+        const [sync] = await Promise.allSettled([last ? (async () => {
+          const count = await pullSales(new Date(last - 15 * 60_000).toISOString());
+          // pullSales reads children by id up to 120 sales; past that it reads whole collections.
+          for (let at = 0; count !== null && at < unpaid.length; at += 120) await pullSales(undefined, unpaid.slice(at, at + 120));
+          return count;
+        })() : pullSales(), pullStaff()]);
+        if (sync.status === 'fulfilled' && sync.value !== null) this.lastServerPullAt = startedAt;
+        return [remote, sync];
+      })().finally(() => { this.serverPull = null; });
+    }
+    const [remote, sync] = refresh ? await this.serverPull : [];
     if (this.disposed || generation !== this.posReadGeneration) return;
     // A board silently missing every other till is exactly the complaint this
     // was meant to answer, so a failed read says so instead of looking empty.
@@ -469,6 +500,12 @@ export class OrdersView {
       const productById = new Map(products.map((entry) => [entry.id, entry]));
 
       const linesBySale = new Map();
+      // Raw rows per sale. Filtering every line for every sale was 3,000 sales
+      // x 7,000 lines on each refresh - seconds of frozen screen on a tablet.
+      const rawLinesBySale = new Map();
+      for (const line of saleLines) {
+        rawLinesBySale.set(line.sale_id, [...(rawLinesBySale.get(line.sale_id) || []), line]);
+      }
       for (const line of saleLines) {
         const rows = linesBySale.get(line.sale_id) || [];
         rows.push({
@@ -504,7 +541,7 @@ export class OrdersView {
       if (remote?.status === 'rejected') this.syncWarning += ' Running tables from other tills could not refresh; showing the last available list.';
 
       this.posOrders = mergeTabRounds(sales.filter(sale => !sale.proforma_id
-        && !isNonBillableAdjustment(sale, saleLines.filter(line => line.sale_id === sale.id), ledgerBySale.get(sale.id) || [])).map((sale) => {
+        && !isNonBillableAdjustment(sale, rawLinesBySale.get(sale.id) || [], ledgerBySale.get(sale.id) || [])).map((sale) => {
         const order = saleAsOrder(sale, {
           payment: paymentBySale.get(sale.id),
           payments: ledgerBySale.get(sale.id),
@@ -697,8 +734,15 @@ export class OrdersView {
       return;
     }
     if (order.source === 'pos' && this.editLinked) void this.openTabEditor(order.id);
-    else if (order.source === 'pos') this.openSettleModal(order.id);
-    else this.openPayModal(order.id);
+    else if (order.source === 'pos') void this.startPrintedSettlement(order.id);
+    else this.startPrintedCustomerPayment(order.id);
+  }
+
+  startPrintedCustomerPayment(orderId) {
+    requirePrintedReceipt({ customerOrderId: orderId }, {
+      isActive: () => this.container.isConnected && !this.disposed,
+      onReady: () => this.openPayModal(orderId),
+    });
   }
 
   openPayModal(orderId) {
@@ -711,8 +755,8 @@ export class OrdersView {
       `${order.ref} · ${(order.lines || []).reduce((sum, line) => sum + line.qty, 0)} item(s)`;
     this.container.querySelector('#pay-message').textContent = '';
     this.container.querySelector('#pay-message').className = 'pay-message';
-    for (const id of ['#pay-phone', '#pay-code', '#pay-card-ref', '#pay-bank-ref']) this.container.querySelector(id).value = '';
-    this.selectPayMethod(typeof cashIsEnabled === 'function' && !cashIsEnabled() ? 'stk' : 'cash');
+    for (const id of ['#pay-phone', '#pay-code', '#pay-code-amount', '#pay-card-ref', '#pay-bank-ref']) this.container.querySelector(id).value = '';
+    this.selectPayMethod(null);
     this.showModal('#pay-modal');
   }
 
@@ -807,9 +851,9 @@ export class OrdersView {
       const print = event.target.closest('[data-print-order]');
       if (print) return void this.printTicket(print);
       const pay = event.target.closest('[data-pay-order]');
-      if (pay) return this.openPayModal(pay.dataset.payOrder);
+      if (pay) return this.startPrintedCustomerPayment(pay.dataset.payOrder);
       const settle = event.target.closest('[data-settle-sale]');
-      if (settle) return this.openSettleModal(settle.dataset.settleSale);
+      if (settle) return void this.startPrintedSettlement(settle.dataset.settleSale);
 
       const edit = event.target.closest('[data-edit-tab]');
       if (edit) return void this.openTabEditor(edit.dataset.editTab);
@@ -856,13 +900,14 @@ export class OrdersView {
     });
 
     this.container.querySelector('#pay-code-settle').addEventListener('click', (event) => {
-      const code = this.container.querySelector('#pay-code').value.trim();
-      if (!code) { this.container.querySelector('#pay-message').textContent = 'Enter the code from the customer’s M-Pesa message.'; return; }
+      let receipt;
+      try { receipt = manualReceipt(this.container.querySelector('#pay-code').value, this.container.querySelector('#pay-code-amount').value); }
+      catch (error) { this.container.querySelector('#pay-message').textContent = error.message; return; }
       void this.payAction(event.target, async (orderId) => {
-        const result = await settleCustomerOrderByCode(orderId, code);
-        const change = result.changeMinor > 0 ? ` Customer overpaid by KES ${(result.changeMinor / 100).toFixed(2)}.` : '';
-        return `Payment matched and settled.${change} Print the kitchen ticket.`;
-      }, 'Checking the code against received payments…');
+        const result = await settleCustomerOrderByCode(orderId, receipt.reference, receipt.receiptAmountMinor);
+        const balance = result.availableMinor > 0 ? ` KES ${(result.availableMinor / 100).toFixed(2)} remains on this code.` : '';
+        return `Payment recorded.${balance} Print the kitchen ticket.`;
+      }, 'Recording payment…');
     });
 
     this.container.querySelector('#pay-card').addEventListener('click', (event) => {
@@ -1028,6 +1073,26 @@ export class OrdersView {
     return this.allOrders().find((order) => order.id === this.settlingSaleId) || null;
   }
 
+  async startPrintedSettlement(saleId) {
+    if (this.preparingPrintedCheckout) return;
+    this.preparingPrintedCheckout = true;
+    try {
+      this.settlingSaleId = saleId;
+      const order = this.settleTarget();
+      if (!order) return;
+      const rounds = await this.settleRounds(order, { forPayment: true });
+      if (!rounds.length) throw new Error('Refresh orders before printing the receipt.');
+      requirePrintedReceipt({ saleUuids: rounds.map(round => round.sale_uuid) }, {
+        isActive: () => this.container.isConnected && !this.disposed,
+        onReady: () => this.openSettleModal(saleId),
+      });
+    } catch (error) {
+      showNotification(error.message || 'The receipt could not be prepared.', 'error');
+    } finally {
+      this.preparingPrintedCheckout = false;
+    }
+  }
+
   openSettleModal(saleId) {
     this.settlingSaleId = saleId;
     const order = this.settleTarget();
@@ -1047,6 +1112,7 @@ export class OrdersView {
       `Invoice ${order.ref} · ${order.customerName}${order.cashierName ? ` · billed by ${order.cashierName}` : ''}`;
     this.container.querySelector('#settle-message').textContent = '';
     this.container.querySelector('#settle-reference').value = '';
+    this.container.querySelector('#settle-receipt-amount').value = '';
     // One key per opening of this modal: a retried push must not raise a
     // second prompt for a payment the backend may already have taken.
     this.settleStkKey = `mpesa_${crypto.randomUUID()}`;
@@ -1108,6 +1174,7 @@ export class OrdersView {
 
   selectSettleMethod(method) {
     this.settleMethod = method;
+    this.container.querySelector('#settle-receipt-amount-wrap').classList.toggle('hidden', method !== 'mpesa');
     this.container.querySelectorAll('[data-settle-method]').forEach((card) => {
       const chosen = card.dataset.settleMethod === method;
       card.classList.toggle('selected', chosen);
@@ -1133,7 +1200,7 @@ export class OrdersView {
     const note = this.container.querySelector('#settle-note');
 
     const copy = {
-      mpesa: ['M-Pesa code, e.g. QGH4T21XZ9', 'Recorded as typed. Where M-Pesa has confirmed the code it is marked verified; otherwise Financials shows it as unverified.'],
+      mpesa: ['M-Pesa code, e.g. QGH4T21XZ9', 'Enter the code and amount from the payment message.'],
       bank_transfer: ['Bank reference on the transfer (optional)', 'Recorded exactly as typed, so the transfer on the statement can be matched back to this invoice. Nothing verifies it here.'],
       cash: ['Who received it, or a note (optional)', 'Recorded as cash taken at the counter, on the word of whoever is signed in.'],
       card: ['Terminal approval code (optional)', 'Records money the card terminal already took. There is no card integration.'],
@@ -1345,7 +1412,7 @@ export class OrdersView {
     this.settlingInFlight = true;
     button.disabled = true;
     try { return await this.performSettlement(button); }
-    finally { this.settlingInFlight = false; button.disabled = false; }
+    finally { this.settlingInFlight = false; button.disabled = !this.settleMethod; }
   }
 
   async performSettlement(button) {
@@ -1366,11 +1433,12 @@ export class OrdersView {
       this.container.querySelector('#settle-message').textContent = 'Reconnect and save every round to the server before taking M-Pesa payment.';
       return;
     }
-    const reference = this.container.querySelector('#settle-reference').value.trim();
+    const reference = this.container.querySelector('#settle-reference').value.trim().toUpperCase();
     const message = this.container.querySelector('#settle-message');
-    if (method === 'mpesa' && !reference) {
-      message.textContent = 'Enter the M-Pesa code from the payment message.';
-      return;
+    let receipt;
+    if (method === 'mpesa') {
+      try { receipt = manualReceipt(reference, this.container.querySelector('#settle-receipt-amount').value); }
+      catch (error) { message.textContent = error.message; return; }
     }
     if (method === 'cash' && !cashIsEnabled()) return;
 
@@ -1403,18 +1471,27 @@ export class OrdersView {
       // the tender that actually paid - never quietly relabelled - so the
       // rounds still sum to the money that arrived.
       let result = null;
+      let appliedMinor = 0;
+      let availableMinor = Infinity;
       for (const [index, round] of rounds.entries()) {
         // A round on this tab that owes nothing is already paid for. Settling
         // it again wrote a zero-amount payment, and a zero is not money: the
         // server refused the whole sale on it, so a part-paid tab could never
         // be finished off and the takings stayed on the till.
-        if (await this.roundOutstandingMinor(round) <= 0) continue;
+        const roundDue = await this.roundOutstandingMinor(round);
+        if (roundDue <= 0) continue;
+        if (availableMinor <= 0) break;
         result = round.synced_at
           ? await settleSale({
-            saleUuid: round.sale_uuid, checkoutId: this.settleRequestId, requestId: `${this.settleRequestId}-${index}`, method, reference,
+            saleUuid: round.sale_uuid, checkoutId: this.settleRequestId,
+            requestId: method === 'mpesa' ? `${this.settleRequestId}-${reference}-${round.sale_uuid}` : `${this.settleRequestId}-${index}`,
+            method, reference,
+            ...(receipt ? { receiptAmountMinor: receipt.receiptAmountMinor } : {}),
           })
           : await this.settleRoundLocally(round, { method, reference });
         await this.recordSettlementLocally(round, result, index);
+        appliedMinor += result.settledMinor;
+        availableMinor = result.availableMinor ?? Infinity;
       }
       if (!result) {
         message.textContent = 'Nothing on this order is outstanding — it has already been paid for.';
@@ -1430,18 +1507,21 @@ export class OrdersView {
       await this.loadPosOrders();
       this.renderCustomerBoard();
       const freed = freedTable ? ` Table ${freedTable} is now free.` : '';
-      message.textContent = (result.verified
-        ? `Settled. M-Pesa confirmed KES ${(result.receivedMinor / 100).toFixed(2)} against this invoice.`
-        : reached.ok
-          ? 'Recorded and sent to the business. It now shows as paid in Financials.'
-          // Never "it now shows as paid" when only this device can see it.
-          : `Recorded on this till, but it has NOT reached the business yet, so it will not appear in Financials: ${reached.reason}`) + freed;
-      this.hideModal('#settle-modal');
-      if (rounds[0]?.id) void this.openInvoiceModal(rounds[0].id);
+      const remainingMinor = Math.max(0, order.dueMinor - appliedMinor);
+      this.container.querySelector('#settle-due').textContent = `KES ${(remainingMinor / 100).toFixed(2)}`;
+      message.textContent = `Applied KES ${(appliedMinor / 100).toFixed(2)}. `
+        + (remainingMinor > 0 ? `KES ${(remainingMinor / 100).toFixed(2)} still due. Enter the next code or choose another payment method.` : 'Bill fully paid.')
+        + (reached.ok ? '' : ` Sync warning: ${reached.reason}`) + freed;
+      this.container.querySelector('#settle-reference').value = '';
+      this.container.querySelector('#settle-receipt-amount').value = '';
+      if (remainingMinor <= 0) {
+        this.hideModal('#settle-modal');
+        if (rounds[0]?.id) void this.openInvoiceModal(rounds[0].id);
+      }
     } catch (error) {
       message.textContent = error.message || 'That payment could not be recorded.';
     } finally {
-      button.disabled = false;
+      button.disabled = !this.settleMethod;
     }
   }
 
@@ -1521,14 +1601,21 @@ export class OrdersView {
    * reporting itself outstanding here until the next pull.
    */
   async recordSettlementLocally(round, result, index = 0) {
+    if (result.paymentId) return await recordReceiptSettlement(round, result, { reduceCustomerBalance: true });
     const now = new Date().toISOString();
     // Keyed on the round, never on the card: a merged tab card carries the tab's
     // id, and no payment row is filed under that, so the receivable rows stayed
     // outstanding and the tab kept reappearing as unpaid.
     const owing = await db.payments.where('sale_id').equals(round.id).toArray();
+    let toApply = result.settledMinor || 0;
     for (const row of owing) {
-      if (row.settled_at || !isReceivable(row.method)) continue;
-      await db.payments.update(row.id, { settled_at: now, settled_reference: result.reference || '' });
+      if (row.settled_at || !isReceivable(row.method) || toApply <= 0) continue;
+      const minor = Math.round(Number(row.amount) * 100);
+      const applied = Math.min(toApply, minor);
+      toApply -= applied;
+      await db.payments.update(row.id, applied < minor
+        ? { amount: (minor - applied) / 100 }
+        : { settled_at: now, settled_reference: result.reference || '' });
     }
 
     // Never a zero row: it is not a payment, and the server refuses a sale

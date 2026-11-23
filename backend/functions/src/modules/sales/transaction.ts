@@ -1,4 +1,6 @@
 import { Timestamp } from "firebase-admin/firestore";
+import { HttpsError } from 'firebase-functions/v2/https';
+import { PRINT_FIRST_MESSAGE } from './printed-receipt';
 
 import { db } from "../../lib/firebase";
 import { deterministicId } from "../../shared/identifiers";
@@ -16,6 +18,7 @@ import { writeSaleRecords } from "./persistence";
 import { buildSaleRecords } from "./records";
 import { replaySale } from "./replay";
 import { newSaleResponse } from "./response";
+import { resolveSharedTab } from "./tab-identity";
 import type { ParsedSaleInput } from "./types";
 
 export async function executeCreateSale(
@@ -39,6 +42,11 @@ export async function executeCreateSale(
       );
     }
 
+    // Replays above preserve historical paid sales. New sales first save the
+    // unpaid bill, print it, then settle through the guarded payment routes.
+    if (input.payments.some(payment => payment.method !== 'credit')) {
+      throw new HttpsError('failed-precondition', PRINT_FIRST_MESSAGE);
+    }
     const context = await loadBaseSaleContext(transaction, input);
     const preparedLines = prepareSaleLines(
       input.lines,
@@ -65,6 +73,7 @@ export async function executeCreateSale(
         dependencies.paymentIntentDocuments,
       ),
     );
+    const sharedTab = await resolveSharedTab(transaction, input);
     const records = buildSaleRecords({
       saleId,
       requestFingerprint,
@@ -75,6 +84,10 @@ export async function executeCreateSale(
       dependencies,
       timestamp,
     });
+    if (sharedTab) {
+      Object.assign(records.sale, { tabId: sharedTab.data.tabId, orderReference: sharedTab.data.orderReference });
+      transaction.set(sharedTab.ref, { ...sharedTab.data, updatedAt: timestamp });
+    }
     writeSaleRecords({
       transaction,
       input,

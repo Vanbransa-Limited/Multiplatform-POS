@@ -223,6 +223,7 @@ service cloud.firestore {
         && request.auth.token.staff_id is string
         && request.resource.data.id == documentId
         && request.resource.data.status == 'queued'
+        && !request.resource.data.keys().hasAny(['checkoutReceipt'])
         && request.resource.data.createdByStaffId == request.auth.token.staff_id
         && request.resource.data.createdAt == request.time
         && request.resource.data.branchId is string
@@ -232,6 +233,7 @@ service cloud.firestore {
       // The only permitted change is one station claiming a waiting job, so a
       // printed receipt can never be edited or re-queued from a browser.
       allow update: if canReadTenantDocument()
+        && !resource.data.keys().hasAny(['checkoutReceipt'])
         && resource.data.status == 'queued'
         && request.resource.data.status == 'printed'
         && request.resource.data.printedAt == request.time

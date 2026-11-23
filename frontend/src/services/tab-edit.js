@@ -247,7 +247,7 @@ export async function readOpenTabs(branchId) {
     tabs.push({
       id: round.tabId, status: OPEN, branch_id: sale.branch_id,
       table_no: sale.table_no, opened_at: header?.opened_at || sale.sold_at,
-      order_no: sale.invoice_no || sale.id, opened_by: sale.staff_id || sale.created_by,
+      order_no: sale.order_reference || header?.order_no || sale.invoice_no || sale.id, opened_by: sale.staff_id || sale.created_by,
       readOnly: true, recoveryRequired: true,
     });
     openIds.add(round.tabId);

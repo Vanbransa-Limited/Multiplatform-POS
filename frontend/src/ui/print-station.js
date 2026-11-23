@@ -386,6 +386,11 @@ export class PrintStationView {
     if (!job || this.claimed.has(job.id)) return false;
     const html = renderReceiptHtml(job.receipt);
     if (!html) {
+      if (job.checkoutReceipt) {
+        this.attempts.set(job.id, MAX_ATTEMPTS);
+        this.log(`Receipt ${job.id} could not be rendered. Payment stays locked.`);
+        return false;
+      }
       // Unprintable payload: retire it rather than blocking the queue. Logged
       // loudly, because silently retiring a job looks exactly like printing it.
       this.log(`Job ${job.id} has no printable receipt; retiring it unprinted.`);
@@ -404,9 +409,15 @@ export class PrintStationView {
       window.print();
       this.log(`Print dialog returned for ${job.id}.`);
       if (job.test) return true;
+      if (job.checkoutReceipt && !window.confirm('Did the receipt print successfully? Confirm only after checking the paper.')) {
+        this.claimed.delete(job.id);
+        this.attempts.set(job.id, MAX_ATTEMPTS);
+        this.log(`Receipt ${job.id} was not confirmed. Payment stays locked. Use Print now to retry.`);
+        return false;
+      }
       // Claimed only once the print call returned, so a crashed station leaves
       // the job queued for the next one rather than losing it.
-      await markJobPrinted(job.id);
+      await markJobPrinted(job.id, Boolean(job.checkoutReceipt));
       this.log(`Marked ${job.id} printed.`);
       this.printed += 1;
       this.attempts.delete(job.id);

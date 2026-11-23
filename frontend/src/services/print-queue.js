@@ -11,7 +11,7 @@
  * promises a cashier that paper is coming.
  */
 
-import { DEVICE_ID, currentClaims, getFirebase } from './firebase.js';
+import { DEVICE_ID, currentClaims, getFirebase, callFunction } from './firebase.js';
 
 const JOBS = 'print_jobs';
 const STATIONS = 'print_stations';
@@ -95,7 +95,8 @@ export async function subscribeQueuedJobs(branchId, onJobs, onError) {
 }
 
 /** Claims a job so a second station cannot print the same receipt. */
-export async function markJobPrinted(jobId) {
+export async function markJobPrinted(jobId, checkoutReceipt = false) {
+  if (checkoutReceipt) return callFunction('confirmCheckoutReceiptPrinted', { jobId, deviceId: DEVICE_ID, confirmed: true });
   const fb = await getFirebase();
   if (!fb || !jobId) return false;
   await fb.firestore.updateDoc(fb.firestore.doc(fb.dbInstance, JOBS, jobId), {

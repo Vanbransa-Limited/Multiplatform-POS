@@ -2,12 +2,13 @@
   "name": "vanbransa-pos-frontend",
   "private": true,
   "version": "1.0.0",
+  "engines": { "node": "22.x" },
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"src/**/*.test.mjs\"",
+    "test": "node ../scripts/run-node-tests.cjs src",
     "visual": "npm run build && playwright test",
     "visual:update": "npm run build && playwright test --update-snapshots",
     "visual:report": "playwright show-report visual/report"

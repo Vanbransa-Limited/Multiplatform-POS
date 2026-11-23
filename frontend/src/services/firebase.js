@@ -206,10 +206,10 @@ export async function signOutTill() {
 }
 
 /** Invokes a callable and returns its data payload. */
-export async function callFunction(name, payload) {
+export async function callFunction(name, payload, options = {}) {
   const fb = await getFirebase();
   if (!fb) throw new Error('Firebase is not configured on this till.');
-  const call = fb.functions.httpsCallable(fb.fnInstance, name, { timeout: name === 'importStaff' ? 360000 : 70000 });
+  const call = fb.functions.httpsCallable(fb.fnInstance, name, { timeout: options.timeout ?? (name === 'importStaff' ? 360000 : 70000) });
   const { data } = await call(payload);
   return data;
 }

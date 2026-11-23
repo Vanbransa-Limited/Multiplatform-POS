@@ -3,8 +3,8 @@
 const EXPECTED_PROJECT_ID = "demo-tokgut-pos";
 const EXPECTED_TENANT_ID = "demo-tenant";
 
-function parseLoopbackEndpoint(variableName) {
-  const value = process.env[variableName]?.trim();
+function parseLoopbackEndpoint(variableName, environment = process.env) {
+  const value = environment[variableName]?.trim();
   if (!value || value.includes("://")) {
     throw new Error(`${variableName} must be set to a local host:port value.`);
   }
@@ -20,22 +20,24 @@ function parseLoopbackEndpoint(variableName) {
   const isLoopback = hostname === "localhost"
     || hostname === "::1"
     || /^127(?:\.\d{1,3}){3}$/.test(hostname);
-  if (!isLoopback || !endpoint.port || endpoint.pathname !== "/") {
+  if (!isLoopback || !endpoint.port || endpoint.pathname !== "/"
+    || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
     throw new Error(`${variableName} must point to a loopback host and explicit port.`);
   }
 
   return value;
 }
 
-function configuredProjectIds() {
+function configuredProjectIds(environment = process.env) {
   const candidates = [
-    ["GCLOUD_PROJECT", process.env.GCLOUD_PROJECT],
-    ["GOOGLE_CLOUD_PROJECT", process.env.GOOGLE_CLOUD_PROJECT],
+    ["GCLOUD_PROJECT", environment.GCLOUD_PROJECT],
+    ["GOOGLE_CLOUD_PROJECT", environment.GOOGLE_CLOUD_PROJECT],
+    ["FIREBASE_PROJECT", environment.FIREBASE_PROJECT],
   ];
 
-  if (process.env.FIREBASE_CONFIG) {
+  if (environment.FIREBASE_CONFIG) {
     try {
-      const config = JSON.parse(process.env.FIREBASE_CONFIG);
+      const config = JSON.parse(environment.FIREBASE_CONFIG);
       candidates.push(["FIREBASE_CONFIG.projectId", config.projectId]);
     } catch {
       throw new Error("FIREBASE_CONFIG must be valid JSON when it is set.");
@@ -45,10 +47,10 @@ function configuredProjectIds() {
   return candidates.filter(([, value]) => typeof value === "string" && value.trim());
 }
 
-function assertSafeEmulatorTarget() {
-  const firestoreHost = parseLoopbackEndpoint("FIRESTORE_EMULATOR_HOST");
-  const authHost = parseLoopbackEndpoint("FIREBASE_AUTH_EMULATOR_HOST");
-  const projects = configuredProjectIds();
+function assertSafeEmulatorTarget(environment = process.env) {
+  const firestoreHost = parseLoopbackEndpoint("FIRESTORE_EMULATOR_HOST", environment);
+  const authHost = parseLoopbackEndpoint("FIREBASE_AUTH_EMULATOR_HOST", environment);
+  const projects = configuredProjectIds(environment);
 
   if (projects.length === 0) {
     throw new Error("GCLOUD_PROJECT must identify the demo emulator project.");
@@ -74,4 +76,5 @@ module.exports = {
   EXPECTED_PROJECT_ID,
   EXPECTED_TENANT_ID,
   assertSafeEmulatorTarget,
+  parseLoopbackEndpoint,
 };

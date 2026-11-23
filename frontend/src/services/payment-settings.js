@@ -54,8 +54,12 @@ export async function pullAcceptedMethods() {
 export async function saveAcceptedMethods(methods) {
   const fb = await getFirebase();
   const claims = await currentClaims();
-  if (!fb || !claims?.tenant_id) throw new Error('Sign in and connect to change accepted payments.');
   const wanted = new Set(TENDERS.map((tender) => tender.id).filter((id) => methods.includes(id)));
+  if (!fb || !claims?.tenant_id) {
+    if (!wanted.size && !cashIsEnabled()) throw new Error('Leave at least one payment method enabled.');
+    tenantStorage.setItem('pos_accepted_methods', JSON.stringify([...wanted]));
+    return [...wanted];
+  }
 
   const ref = fb.firestore.doc(fb.dbInstance, 'tenant_settings', String(claims.tenant_id));
   await fb.firestore.runTransaction(fb.dbInstance, async (transaction) => {
@@ -78,7 +82,10 @@ export async function saveAcceptedMethods(methods) {
 export async function saveCashEnabled(enabled) {
   const fb = await getFirebase();
   const claims = await currentClaims();
-  if (!fb || !claims?.tenant_id) throw new Error('Sign in and connect to save business payment settings.');
+  if (!fb || !claims?.tenant_id) {
+    tenantStorage.setItem('pos_cash_enabled', String(Boolean(enabled)));
+    return;
+  }
   const ref = fb.firestore.doc(fb.dbInstance, 'tenant_settings', claims.tenant_id);
   await fb.firestore.runTransaction(fb.dbInstance, async (transaction) => {
     const doc = await transaction.get(ref);
@@ -93,3 +100,4 @@ export async function saveCashEnabled(enabled) {
   });
   tenantStorage.setItem('pos_cash_enabled', String(enabled));
 }
+

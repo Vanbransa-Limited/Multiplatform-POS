@@ -123,16 +123,32 @@ export class StockView {
       ]);
       const names = new Map(users.map((user) => [user.id, user.name]));
       const items = new Map(products.map((product) => [product.id, product.name]));
-      this.movements = moves.map((move) => ({
-        when: move.createdAt?.toDate?.() || null,
-        item: items.get(move.productId) || move.productId,
-        location: move.location,
-        qty: Number(move.qty || 0),
-        type: MOVEMENT_LABELS[move.type] || move.type,
-        who: names.get(move.createdByStaffId) || move.createdByStaffId || '—',
-      }));
+      if (moves && moves.length) {
+        this.movements = moves.map((move) => ({
+          when: move.createdAt?.toDate?.() || null,
+          item: items.get(move.productId) || move.productId,
+          location: move.location,
+          qty: Number(move.qty || 0),
+          type: MOVEMENT_LABELS[move.type] || move.type,
+          who: names.get(move.createdByStaffId) || move.createdByStaffId || '—',
+        }));
+      } else {
+        const localMoves = await db.stock_movements.toArray();
+        this.movements = localMoves
+          .filter((m) => !state.currentBranch?.id || !m.branch_id || m.branch_id === state.currentBranch.id)
+          .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+          .slice(0, 60)
+          .map((move) => ({
+            when: move.created_at ? new Date(move.created_at) : null,
+            item: items.get(move.product_id) || move.product_id,
+            location: move.location,
+            qty: Number(move.qty || 0),
+            type: MOVEMENT_LABELS[move.type] || move.type,
+            who: names.get(move.created_by) || move.created_by || '—',
+          }));
+      }
     } catch {
-      this.movements = null;
+      this.movements = [];
     }
   }
 
@@ -141,12 +157,25 @@ export class StockView {
       .filter((p) => !p.is_service && !p.retired_at)
       .toArray();
     const balances = await db.stock_balances.where('branchId').equals(state.currentBranch?.id || '').toArray();
-    const here = new Map(balances.filter((b) => b.location === this.location).map((b) => [b.productId, b]));
-    const store = new Map(balances.filter((b) => b.location === 'STORE').map((b) => [b.productId, b]));
+    const here = new Map(balances.filter((b) => b.location === this.location).map((b) => [b.productId, Number(b.qty || 0)]));
+    const store = new Map(balances.filter((b) => b.location === 'STORE').map((b) => [b.productId, Number(b.qty || 0)]));
+
+    if (balances.length === 0) {
+      const branchId = state.currentBranch?.id;
+      const movements = await db.stock_movements.toArray();
+      for (const m of movements) {
+        if (branchId && m.branch_id && String(m.branch_id) !== String(branchId)) continue;
+        const pid = String(m.product_id);
+        const qty = Number(m.qty || 0);
+        if (m.location === this.location) here.set(pid, (here.get(pid) || 0) + qty);
+        if (m.location === 'STORE') store.set(pid, (store.get(pid) || 0) + qty);
+      }
+    }
+
     return products.map((product) => ({
       product,
-      qty: Number(here.get(product.id)?.qty || 0),
-      storeQty: Number(store.get(product.id)?.qty || 0),
+      qty: Number(here.get(product.id) || 0),
+      storeQty: Number(store.get(product.id) || 0),
     })).sort((a, b) => compareNames(a.product.name, b.product.name));
   }
 

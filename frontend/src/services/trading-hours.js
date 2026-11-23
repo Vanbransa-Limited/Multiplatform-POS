@@ -34,9 +34,6 @@ export async function pullTradingHours() {
 }
 
 export async function saveTradingHours({ dayStartHour, nightStartHour }) {
-  const fb = await getFirebase();
-  const claims = await currentClaims();
-  if (!fb || !claims?.tenant_id) throw new Error('Sign in and connect to save trading hours.');
   // Refused here as well as in the rules, so the cashier gets a sentence rather
   // than a permission error, and an inverted pair never reaches the books.
   if (!Number.isInteger(dayStartHour) || !Number.isInteger(nightStartHour)
@@ -47,17 +44,22 @@ export async function saveTradingHours({ dayStartHour, nightStartHour }) {
     throw new Error('The night session has to start after the trading day opens.');
   }
 
-  const ref = fb.firestore.doc(fb.dbInstance, 'tenant_settings', String(claims.tenant_id));
-  await fb.firestore.runTransaction(fb.dbInstance, async (transaction) => {
-    const doc = await transaction.get(ref);
-    if (!doc.exists()) throw new Error('Business settings are unavailable.');
-    transaction.update(ref, {
-      dayStartHour, nightStartHour,
-      updatedAt: fb.firestore.serverTimestamp(), updatedByStaffId: claims.staff_id,
+  const fb = await getFirebase();
+  const claims = await currentClaims();
+  if (fb && claims?.tenant_id) {
+    const ref = fb.firestore.doc(fb.dbInstance, 'tenant_settings', String(claims.tenant_id));
+    await fb.firestore.runTransaction(fb.dbInstance, async (transaction) => {
+      const doc = await transaction.get(ref);
+      if (!doc.exists()) throw new Error('Business settings are unavailable.');
+      transaction.update(ref, {
+        dayStartHour, nightStartHour,
+        updatedAt: fb.firestore.serverTimestamp(), updatedByStaffId: claims.staff_id,
+      });
     });
-  });
+  }
   try {
     tenantStorage.setItem(CACHE_KEY, JSON.stringify({ dayStartHour, nightStartHour }));
   } catch { /* private window */ }
   return { dayStartHour, nightStartHour };
 }
+

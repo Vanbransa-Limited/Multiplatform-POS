@@ -1,5 +1,5 @@
 import { tenantStorage } from './tenant-cache.js';
-import { callFunction } from './firebase';
+import { getFirebase, currentClaims, callFunction } from './firebase';
 import { storeIsEnabled } from './stock.js';
 import { NAV_ITEMS, canViewTab, canSell } from '../navigation.js';
 import { ROLE_LABELS } from './roles.js';
@@ -26,9 +26,15 @@ export function currentAccess() {
 export async function saveModuleAccess(changes) {
   let previous = {};
   try { previous = JSON.parse(tenantStorage.getItem('pos_module_access') || '{}') || {}; } catch { /* corrupt cache */ }
-  const { moduleAccess } = await callFunction('setModuleAccess', { moduleAccess: { ...previous, ...changes } });
+  const fb = await getFirebase();
+  const claims = await currentClaims();
+  const merged = { ...previous, ...changes };
+  const moduleAccess = (fb && claims?.tenant_id)
+    ? (await callFunction('setModuleAccess', { moduleAccess: merged })).moduleAccess
+    : merged;
   tenantStorage.setItem('pos_module_access', JSON.stringify(moduleAccess));
   // The sidebar and mobile nav already redraw on this event.
   window.dispatchEvent(new Event('stock-policy-changed'));
   return moduleAccess;
 }
+

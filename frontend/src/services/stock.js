@@ -15,7 +15,10 @@ export const receivingLocation = () => storeIsEnabled() ? 'STORE' : 'HOUSE';
 
 export async function pullStock() {
   const fb = await getFirebase(); const claims = await currentClaims();
-  if (!fb || !claims?.tenant_id) throw new Error('Connect to the business to load stock.');
+  if (!fb || !claims?.tenant_id) {
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('stock-policy-changed'));
+    return;
+  }
   const [settings, balances] = await Promise.all([
     fb.firestore.getDoc(fb.firestore.doc(fb.dbInstance, 'tenant_settings', claims.tenant_id)),
     fb.firestore.getDocs(fb.firestore.query(fb.firestore.collection(fb.dbInstance, 'stock_balances'), fb.firestore.where('tenantId', '==', claims.tenant_id))),
@@ -43,7 +46,10 @@ export async function pullStock() {
  */
 export async function pullStockAudits(max = 100) {
   const fb = await getFirebase(); const claims = await currentClaims();
-  if (!fb || !claims?.tenant_id) throw new Error('Sign in to read the stock audit trail.');
+  if (!fb || !claims?.tenant_id) {
+    const logs = await db.audit_log?.toArray?.() || [];
+    return logs.slice(-max).reverse();
+  }
   const snapshot = await fb.firestore.getDocs(fb.firestore.query(
     fb.firestore.collection(fb.dbInstance, 'audit_logs'),
     fb.firestore.where('tenantId', '==', claims.tenant_id),
@@ -105,9 +111,101 @@ async function refreshAfterStockCommit(result) {
 
 /** Books a whole delivery note or stock take from a spreadsheet. */
 export async function importStock(payload) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    const products = await db.products.toArray();
+    const movements = await db.stock_movements.toArray();
+    const branchId = payload.branchId || 'default-branch';
+    const location = payload.location || receivingLocation();
+    const now = new Date().toISOString();
+    let imported = 0;
+    const rejected = [];
+    const toAdd = [];
+
+    for (const row of payload.rows || []) {
+      const product = products.find((p) =>
+        (row.productId && String(p.id) === String(row.productId))
+        || (row.sku && String(p.sku || '').toLowerCase() === String(row.sku).trim().toLowerCase())
+        || (row.name && String(p.name || '').toLowerCase() === String(row.name).trim().toLowerCase())
+      );
+      if (!product) {
+        rejected.push({ sku: row.sku || row.name || 'Item', message: 'Not found in catalogue' });
+        continue;
+      }
+      const current = movements
+        .filter((m) => (!m.branch_id || String(m.branch_id) === String(branchId)) && String(m.product_id) === String(product.id) && m.location === location)
+        .reduce((sum, m) => sum + Number(m.qty || 0), 0);
+      const delta = payload.mode === 'count' ? Number(row.qty || 0) - current : Number(row.qty || 0);
+      toAdd.push({
+        id: crypto.randomUUID(),
+        branch_id: branchId,
+        product_id: product.id,
+        location,
+        type: payload.mode === 'count' ? 'adjust' : 'receive',
+        qty: delta,
+        reference_id: payload.reason || payload.batchId || 'IMPORT',
+        created_at: now,
+      });
+      imported++;
+    }
+    if (toAdd.length) await db.stock_movements.bulkAdd(toAdd);
+    return { imported, created: 0, rejected };
+  }
   const result = await callFunction('importStock', payload);
   return refreshAfterStockCommit(result);
 }
 
-export async function changeStock(input) { return refreshAfterStockCommit(await callFunction('changeStock', input)); }
-export async function configureStock(storeEnabled) { return refreshAfterStockCommit(await callFunction('configureStock', { storeEnabled })); }
+export async function changeStock(input) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    const branchId = input.branchId || 'default-branch';
+    const productId = input.productId;
+    const movements = (await db.stock_movements.toArray()).filter(
+      (m) => (!m.branch_id || String(m.branch_id) === String(branchId)) && String(m.product_id) === String(productId)
+    );
+    const houseQty = movements.filter((m) => m.location === 'HOUSE').reduce((s, m) => s + Number(m.qty || 0), 0);
+    const storeQty = movements.filter((m) => m.location === 'STORE').reduce((s, m) => s + Number(m.qty || 0), 0);
+    const now = new Date().toISOString();
+    const qty = Number(input.qty || 0);
+
+    if (input.action === 'request') {
+      await db.stock_movements.bulkAdd([
+        { id: crypto.randomUUID(), branch_id: branchId, product_id: productId, location: 'STORE', type: 'request', qty: -qty, reference_id: input.reason || 'REQUEST', created_at: now },
+        { id: crypto.randomUUID(), branch_id: branchId, product_id: productId, location: 'HOUSE', type: 'request', qty, reference_id: input.reason || 'REQUEST', created_at: now },
+      ]);
+      return { status: 'approved', qty: houseQty + qty, storeQty: storeQty - qty };
+    }
+
+    const location = input.location || receivingLocation();
+    const locQty = location === 'STORE' ? storeQty : houseQty;
+    const delta = input.action === 'adjust' ? qty - locQty : qty;
+    await db.stock_movements.add({
+      id: crypto.randomUUID(),
+      branch_id: branchId,
+      product_id: productId,
+      location,
+      type: input.action === 'adjust' ? 'adjust' : 'receive',
+      qty: delta,
+      reference_id: input.reason || input.action.toUpperCase(),
+      created_at: now,
+    });
+    const nextLocQty = locQty + delta;
+    return {
+      status: 'approved',
+      qty: nextLocQty,
+      storeQty: location === 'STORE' ? nextLocQty : storeQty,
+    };
+  }
+  return refreshAfterStockCommit(await callFunction('changeStock', input));
+}
+
+export async function configureStock(storeEnabled) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    tenantStorage.setItem('pos_store_enabled', String(Boolean(storeEnabled)));
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('stock-policy-changed'));
+    return { storeEnabled: Boolean(storeEnabled) };
+  }
+  return refreshAfterStockCommit(await callFunction('configureStock', { storeEnabled }));
+}
+

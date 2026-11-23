@@ -71,14 +71,37 @@ export async function pullCustomers() {
  * still owe. Here it just leaves the directory.
  */
 export async function deleteCustomer(customerId) {
+  const fb = await getFirebase();
+  const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    await db.customers.delete(customerId);
+    return { deleted: true, id: customerId };
+  }
   const result = await callFunction('deleteCustomer', { customerId });
   await db.customers.delete(customerId);
   return result;
 }
 
 export async function saveCustomer(input) {
+  const fb = await getFirebase();
+  const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    const id = input?.id || `cust-${crypto.randomUUID().slice(0, 8)}`;
+    const existing = await db.customers.get(id);
+    const tenant = await db.tenants?.first?.();
+    const row = toLocalRow(id, {
+      ...input,
+      tenantId: input?.tenantId || existing?.tenant_id || tenant?.id || 'default-tenant',
+      creditLimitMinor: input?.creditLimitMinor !== undefined
+        ? input.creditLimitMinor
+        : (input?.credit_limit !== undefined ? Math.round(Number(input.credit_limit) * 100) : undefined),
+    }, existing);
+    await db.customers.put(row);
+    return row;
+  }
   const saved = await callFunction('saveCustomer', input);
   const row = toLocalRow(saved.id, saved, await db.customers.get(saved.id));
   await db.customers.put(row);
   return row;
 }
+

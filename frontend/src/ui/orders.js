@@ -711,7 +711,7 @@ export class OrdersView {
     this.container.querySelector('#pay-message').textContent = '';
     this.container.querySelector('#pay-message').className = 'pay-message';
     for (const id of ['#pay-phone', '#pay-code', '#pay-card-ref', '#pay-bank-ref']) this.container.querySelector(id).value = '';
-    this.selectPayMethod(null);
+    this.selectPayMethod(typeof cashIsEnabled === 'function' && !cashIsEnabled() ? 'stk' : 'cash');
     this.showModal('#pay-modal');
   }
 
@@ -1026,7 +1026,7 @@ export class OrdersView {
     this.container.querySelector('#settle-stk-note').textContent = order.roundIds?.length > 1
       ? `Charges all ${order.roundIds.length} rounds at once`
       : "Send the prompt to the customer's phone";
-    this.selectSettleMethod(null);
+    this.selectSettleMethod(typeof cashIsEnabled === 'function' && !cashIsEnabled() ? 'mpesa' : 'cash');
     this.showModal('#settle-modal');
   }
 

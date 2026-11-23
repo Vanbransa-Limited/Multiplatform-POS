@@ -117,7 +117,8 @@ export class UsersView {
                 <option value="Bar Staff">Barman / Bar Staff (Level 1.5 · Sell, Request &amp; Accept Stock)</option>
                 <option value="Store Keeper">Storeman / Store Keeper (Level 2 · Receive &amp; Dispatch Stock)</option>
                 <option value="Supervisor">Supervisor (Level 2.5 · Approve Stock &amp; Floor)</option>
-                <option value="Store Manager">Store Manager (Level 3)</option>
+                <option value="Store Manager">Store Manager (Level 3 · Run Store &amp; House Stock)</option>
+                <option value="Manager">Manager (Level 3.5 · Staff, Money, Settings &amp; Stock)</option>
                 <option value="Owner">Owner (Level 4 · Full Access)</option>
               </select>
             </div>
@@ -125,7 +126,7 @@ export class UsersView {
             <div style="margin-bottom: 24px;">
               <label style="display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 6px;">Passcode (1–4 digits) or password (8+ characters)</label>
               <input type="password" id="user-password" required maxlength="128" autocomplete="new-password" style="width: 100%; padding: 10px; border-radius: 6px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); color: #fff; font-family: var(--font-main); font-size: 13px;">
-              <p style="margin: 6px 0 0 0; font-size: 11px; color: var(--text-muted);">Hand this to them directly. On an existing user, this sets a new password.</p>
+              <p id="user-password-hint" style="margin: 6px 0 0 0; font-size: 11px; color: var(--text-muted);">Hand this to them directly.</p>
             </div>
 
             <div style="display: flex; gap: 12px; justify-content: flex-end;">
@@ -362,6 +363,8 @@ export class UsersView {
       form.reset();
       document.getElementById('user-email').readOnly = false;
       document.getElementById('user-id').value = '';
+      document.getElementById('user-password').required = true;
+      document.getElementById('user-password-hint').textContent = 'Hand this to them directly.';
       modal.classList.remove('hidden');
     });
 
@@ -382,16 +385,29 @@ export class UsersView {
 
       try {
         if (id) {
+          const existing = await db.users.get(id);
+          const roleChanged = Boolean(existing) && existing.role !== role;
+          const done = [];
           try {
-            await callFunction('resetStaffPassword', { staffId: id, password });
+            // The role lives in the signed sign-in claims, so only the server can
+            // change it; writing it on this device alone changed nothing real.
+            if (roleChanged) {
+              await callFunction('setStaffRole', { staffId: id, role: ROLE_CODES[role] });
+              done.push(`role is now ${role}`);
+            }
+            if (password) {
+              await callFunction('resetStaffPassword', { staffId: id, password });
+              done.push('passcode updated');
+            }
           } catch (err) {
             if (!String(err?.message || '').includes('Firebase is not configured')) throw err;
           }
-          const existing = await db.users.get(id);
           if (existing) {
             await db.users.update(id, { name, role, status: 'ACTIVE' });
           }
-          showNotification('Staff user and passcode updated.', 'success');
+          showNotification(done.length
+            ? `${name}: ${done.join(', ')}. They need to sign in again.`
+            : 'Nothing changed.', done.length ? 'success' : 'warning');
         } else {
           try {
             await callFunction('createStaffUser', {
@@ -438,6 +454,8 @@ export class UsersView {
           document.getElementById('user-email').readOnly = true;
           document.getElementById('user-role').value = user.role || 'Cashier';
           document.getElementById('user-password').value = '';
+          document.getElementById('user-password').required = false;
+          document.getElementById('user-password-hint').textContent = 'Leave blank to keep their current passcode.';
           modal.classList.remove('hidden');
         }
       }

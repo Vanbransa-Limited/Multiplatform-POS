@@ -402,6 +402,75 @@ export const resetStaffPassword = onCall(
 );
 
 /**
+ * Changes a staff member's role. The role lives in two places - the staff
+ * profile and the signed sign-in claims every rule and callable trusts - so
+ * both change together, and their sessions are revoked so the new role takes
+ * effect at their next sign-in rather than whenever the token happens to expire.
+ */
+export const setStaffRole = onCall(
+  { region: FUNCTION_REGION },
+  async (request) => {
+    const actor = requireAdmin(request.auth);
+    const input = asRecord(request.data, "Request data");
+    const staffId = documentId(input.staffId, "staffId");
+    const nextRole = role(input.role);
+
+    if (staffId === actor.staffId) {
+      throw new HttpsError("failed-precondition", "You cannot change your own role.");
+    }
+    if (!canAssignRole(actor.role, nextRole)) {
+      throw new HttpsError("permission-denied", "Your role cannot assign that role.");
+    }
+
+    const staffRef = db.collection("staff").doc(staffId);
+    const snapshot = await staffRef.get();
+    const staff = snapshot.data();
+    if (!snapshot.exists || staff?.tenantId !== actor.tenantId) {
+      throw new HttpsError("not-found", "No such staff member.");
+    }
+    if (staff.role === "owner" && actor.role !== "owner") {
+      throw new HttpsError("permission-denied", "Only an owner can change an owner's role.");
+    }
+    if (typeof staff.authUid !== "string") {
+      throw new HttpsError("failed-precondition", "That staff member has no sign-in account.");
+    }
+    if (staff.role === nextRole) return { staffId, role: nextRole };
+
+    // Demoting the last owner locks everyone out of staff administration for good.
+    if (staff.role === "owner") {
+      const owners = await db.collection("staff")
+        .where("tenantId", "==", actor.tenantId)
+        .where("role", "==", "owner")
+        .where("status", "==", "active")
+        .get();
+      if (owners.size <= 1) {
+        throw new HttpsError("failed-precondition", "This is the last active owner.");
+      }
+    }
+
+    const auth = getAuth();
+    const { customClaims } = await auth.getUser(staff.authUid);
+    await auth.setCustomUserClaims(staff.authUid, { ...(customClaims || {}), staff_role: nextRole });
+    await auth.revokeRefreshTokens(staff.authUid);
+
+    const now = Timestamp.now();
+    await staffRef.update({ role: nextRole, updatedAt: now });
+    await db.collection("audit_logs").add({
+      tenantId: actor.tenantId,
+      branchId: null,
+      actorStaffId: actor.staffId,
+      action: "staff.role_changed",
+      entityType: "staff",
+      entityId: staffId,
+      metadata: { from: staff.role, to: nextRole },
+      createdAt: now,
+    });
+
+    return { staffId, role: nextRole };
+  },
+);
+
+/**
  * Creates the first owner for a tenant that has none.
  *
  * There is no signed-in administrator to authorise the very first account, so

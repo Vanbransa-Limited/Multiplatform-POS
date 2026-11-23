@@ -26,6 +26,7 @@ export {
   importStaff,
   resetStaffPassword,
   setStaffActive,
+  setStaffRole,
   listStaffNames,
   setModuleAccess,
 } from "./modules/staff-admin";

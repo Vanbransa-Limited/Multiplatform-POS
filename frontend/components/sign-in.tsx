@@ -65,41 +65,6 @@ export function SignIn() {
             </div>
             <h2 style={{ margin: 0 }}>Sign In</h2>
 
-            {/* Quick-Tap Tablet Role Presets for Fast Counter Switching */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, marginTop: 14, width: "100%" }}>
-              {[
-                { label: "Owner (All Access)", email: "owner@kpos.co.ke", pin: "0000", sub: "Vanbransa Owner · Full Platform" },
-                { label: "Supervisor", email: "mwende@kpos.co.ke", pin: "9999", sub: "Jane Mwende · Approve Stock & Sales" },
-                { label: "Cashier (Sell Only)", email: "wanjiku@kpos.co.ke", pin: "1234", sub: "Wanjiku Kamau · Till, Tabs & Orders" },
-                { label: "Barman (Bar Staff)", email: "mercy@kpos.co.ke", pin: "5678", sub: "Mercy Wanjala · Sell, Request & Accept Stock" },
-                { label: "Storeman (Store Only)", email: "john@kpos.co.ke", pin: "8765", sub: "John Mutua · Receive & Dispatch Stock", fullWidth: true },
-              ].map((preset) => (
-                <button
-                  key={preset.email}
-                  type="button"
-                  onClick={() => {
-                    setEmail(preset.email);
-                    setPassword(preset.pin);
-                  }}
-                  style={{
-                    gridColumn: preset.fullWidth ? "span 2" : undefined,
-                    padding: "8px 10px",
-                    borderRadius: 8,
-                    border: email === preset.email ? "1px solid var(--accent-amber)" : "1px solid var(--border-color)",
-                    background: email === preset.email ? "rgba(232, 165, 53, 0.14)" : "rgba(255,255,255,0.03)",
-                    color: "#f5ece0",
-                    textAlign: "left",
-                    cursor: "pointer",
-                    fontFamily: "var(--font-main)",
-                    minHeight: 44,
-                  }}
-                >
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--accent-amber)" }}>{preset.label}</div>
-                  <div style={{ fontSize: 10, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{preset.sub}</div>
-                </button>
-              ))}
-            </div>
-
             {/* .modal-content centres its children, which would otherwise
                 shrink the form to its content and leave the fields narrower
                 than the card they sit in. */}
@@ -113,7 +78,7 @@ export function SignIn() {
                   required
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
-                  placeholder="owner@kpos.co.ke"
+                  placeholder="Your work email"
                   style={{ padding: 12, borderRadius: 8, background: "rgba(255,255,255,0.05)", border: "1px solid var(--border-color)", color: "#fff", fontSize: 16, fontFamily: "var(--font-main)" }}
                 />
               </label>

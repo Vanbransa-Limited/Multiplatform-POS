@@ -21,17 +21,20 @@ import {
 import { ACTIVITY_EVENT, state } from "@/context";
 
 /**
- * Idle sign-out after 15 seconds of inactivity so an unattended shared tablet
- * or counter terminal immediately locks back to the Sign-In screen.
+ * Idle sign-out so an unattended shared tablet locks back to the Sign-In screen.
+ *
+ * Not seconds: reading a bill, counting change or waiting while a customer
+ * approves an M-Pesa prompt on their phone all look idle, and 15 seconds
+ * signed cashiers out in the middle of a sale.
  */
-export const IDLE_LIMIT_MS = 15 * 1_000;
+export const IDLE_LIMIT_MS = 5 * 60 * 1_000;
 
 /**
  * What counts as the session still being in use.
  *
  * `touchstart`, `pointermove`, `click`, and `scroll` matter on a tablet: reading
  * down a long order list with a finger or moving across controls resets the
- * 15-second idle timer while someone is actively operating the screen.
+ * idle timer while someone is actively operating the screen.
  *
  * ACTIVITY_EVENT is not a human touching the screen at all - it is a module
  * saying it is deliberately doing work, which is the only reason an untouched
@@ -152,10 +155,12 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
       timer = window.setTimeout(signOut, IDLE_LIMIT_MS);
     };
 
-    for (const event of ACTIVITY_EVENTS) window.addEventListener(event, reset, { passive: true });
+    // Capture, because scroll does not bubble: scrolling the cart, the order
+    // list or a bill panel never reached a window listener, so it looked idle.
+    for (const event of ACTIVITY_EVENTS) window.addEventListener(event, reset, { passive: true, capture: true });
     return () => {
       window.clearTimeout(timer);
-      for (const event of ACTIVITY_EVENTS) window.removeEventListener(event, reset);
+      for (const event of ACTIVITY_EVENTS) window.removeEventListener(event, reset, { capture: true });
     };
   }, [user, signOut]);
 

@@ -41,219 +41,299 @@ export class FinanceView {
   render() {
     this.container.innerHTML = [
       '<style>',
-      '.finance-page { display: flex; flex-direction: column; gap: 16px; padding: 16px; box-sizing: border-box; max-width: 1600px; margin: 0 auto; width: 100%; }',
-      '.fin-top-header h1 { margin: 0; font-family: var(--font-display); font-size: 26px; font-weight: 800; color: #fff; }',
-      '.fin-top-header p { margin: 4px 0 0; font-size: 13px; color: var(--text-secondary); }',
-      '.fin-nav-tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(20, 14, 8, 0.6); border-radius: 10px 10px 0 0; overflow: hidden; }',
-      '@media(min-width: 900px) { .fin-nav-tabs { grid-template-columns: repeat(6, 1fr); } }',
-      '.fin-nav-tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--text-secondary); font-family: var(--font-main); font-size: 13px; font-weight: 600; padding: 12px 8px; cursor: pointer; text-align: center; transition: color 0.2s, border-color 0.2s, background 0.2s; min-height: 44px; }',
-      '.fin-nav-tab:hover { color: #fff; background: rgba(255,255,255,0.03); }',
-      '.fin-nav-tab.active { color: #e8a535; border-bottom-color: #e8a535; font-weight: 700; background: rgba(232, 165, 53, 0.06); }',
-      '.finance-shell { display: flex; gap: 16px; width: 100%; box-sizing: border-box; align-items: flex-start; }',
-      '.finance-left { flex: 2; min-width: 0; display: flex; flex-direction: column; gap: 16px; width: 100%; }',
-      '.finance-right { flex: 1; min-width: 300px; display: flex; flex-direction: column; background: linear-gradient(180deg, rgba(30,22,14,0.98) 0%, rgba(16,11,7,0.98) 100%); border-radius: 16px; border: 1px solid rgba(232,165,53,0.28); overflow: hidden; min-height: 480px; max-height: 720px; }',
-      '.fin-card { background: var(--surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px; }',
-      '.fin-period-card { background: #221509; border: 1px solid rgba(200,130,42,0.22); border-radius: 12px; padding: 16px; }',
-      '.fin-period-summary { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }',
-      '.fin-period-summary strong { font-size: 13px; color: #fff; }',
-      '.fin-period-summary span { font-size: 13px; color: var(--text-secondary); }',
-      '.fin-status-details { font-size: 12px; color: var(--text-secondary); margin: 4px 0; }',
-      '.fin-status-details summary { cursor: pointer; font-weight: 600; color: #c7b399; padding: 4px 0; }',
-      '.fin-overview-hero { padding: 8px 4px; }',
-      '.fin-overview-hero h2 { font-family: var(--font-display); font-size: 22px; font-weight: 800; margin: 0 0 4px; color: #fff; }',
-      '.fin-overview-hero > p { font-size: 13px; color: var(--text-secondary); margin: 0 0 18px; }',
-      '.fin-hero-label { font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }',
-      '.fin-hero-amount { font-family: var(--font-display); font-size: 36px; font-weight: 800; color: #fff; margin: 0 0 16px; letter-spacing: -0.5px; }',
-      '.fin-overview-lines { border-top: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; }',
-      '.fin-overview-line { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 14px; color: var(--text-secondary); cursor: pointer; }',
-      '.fin-overview-line:hover { color: #fff; }',
-      '.fin-overview-line strong { font-family: var(--font-display); font-size: 18px; font-weight: 700; color: #fff; }',
-      '.fin-date-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }',
-      '.fin-date-bar label { font-size: 13px; color: var(--text-secondary); }',
-      '.fin-date-bar input[type=date] { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 13px; }',
-      '.fin-load-btn { background: var(--accent); color: #000; border: none; padding: 9px 20px; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 13px; }',
-      '.fin-quick-ranges { display:flex; gap:6px; flex-wrap:wrap; margin-left:2px; }',
-      '.fin-range-btn { background:rgba(255,255,255,.06); color:var(--text-secondary); border:1px solid rgba(255,255,255,.13); padding:8px 11px; border-radius:8px; cursor:pointer; font-size:12px; font-weight:700; }',
-      '.fin-range-btn:hover,.fin-range-btn.active { color:#111; background:#f1b23c; border-color:#f1b23c; }',
-      '.fin-reconcile { color:#111; background:var(--accent); padding:6px 10px; border-radius:7px; text-decoration:none; font-size:11px; font-weight:800; white-space:nowrap; display:inline-block; }',
-      '.metrics-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }',
-      '.m-card { background: rgba(255,255,255,0.05); border-radius: 10px; padding: 16px; border-left: 4px solid var(--accent); }',
-      '.m-card.green { border-left-color: #4caf50; }',
-      '.m-card.blue { border-left-color: #2196f3; }',
-      '.m-card.orange { border-left-color: #ff9800; }',
-      '.m-card h5 { margin: 0 0 6px 0; font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }',
-      '.m-card .m-val { margin: 0; font-size: 22px; font-weight: 700; }',
-      /* AI Panel */
-      '.ai-header { display: flex; align-items: center; gap: 10px; padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); }',
-      '.ai-logo { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #e8a535, #c8832a); display: flex; align-items: center; justify-content: center; font-size: 16px; color: #1a1008; }',
-      '.ai-title { font-size: 15px; font-weight: 700; color: #f5ece0; }',
-      '.ai-subtitle { font-size: 11px; color: var(--text-secondary); }',
-      '.ai-msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }',
-      '.ai-bubble { background: rgba(232,165,53,0.12); border-left: 3px solid #e8a535; border-radius: 0 8px 8px 0; padding: 10px 12px; font-size: 13px; color: rgba(255,255,255,0.9); line-height: 1.5; white-space: pre-line; }',
-      '.user-bubble { background: rgba(255,255,255,0.08); border-radius: 8px 8px 0 8px; padding: 10px 12px; font-size: 13px; align-self: flex-end; max-width: 85%; }',
+      '.finance-page { display: flex; flex-direction: column; gap: 18px; padding: 20px 24px 32px; box-sizing: border-box; max-width: 1680px; margin: 0 auto; width: 100%; background: #070807; color: #f3f4f6; font-family: var(--font-main, -apple-system, BlinkMacSystemFont, sans-serif); min-height: calc(100vh - 60px); }',
+      /* Top Header Bar matching Image 1 */
+      '.fin-topbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; padding-bottom: 4px; }',
+      '.fin-brand-row { display: flex; align-items: center; gap: 12px; }',
+      '.fin-brand-row h1 { margin: 0; font-size: 26px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; }',
+      '.fin-live-pill { background: #53b74c; color: #041606; font-size: 11px; font-weight: 800; padding: 3px 11px; border-radius: 999px; letter-spacing: 0.2px; display: inline-flex; align-items: center; gap: 5px; }',
+      '.fin-live-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #041606; display: inline-block; }',
+      '.fin-topbar-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }',
+      '.fin-pill-box { background: #141514; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: #e5e7eb; }',
+      '.fin-pill-box input[type=date] { background: transparent; border: none; color: #fff; font-size: 12px; font-weight: 600; outline: none; cursor: pointer; padding: 2px 4px; }',
+      '.fin-pill-box select { background: transparent; border: none; color: #fff; font-size: 12px; font-weight: 600; outline: none; cursor: pointer; }',
+      /* Clean Pill Navigation Tabs */
+      '.fin-nav-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid rgba(255,255,255,0.07); padding-bottom: 12px; }',
+      '.fin-nav-tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }',
+      '.fin-nav-tab { background: #121312; border: 1px solid rgba(255,255,255,0.06); color: #9ca3af; font-size: 13px; font-weight: 600; padding: 9px 16px; border-radius: 999px; cursor: pointer; transition: all 0.18s ease; display: inline-flex; align-items: center; gap: 6px; min-height: 38px; }',
+      '.fin-nav-tab:hover { color: #ffffff; background: #1a1c1a; border-color: rgba(255,255,255,0.14); }',
+      '.fin-nav-tab.active { background: #134e32; color: #ffffff; border-color: rgba(83,183,76,0.45); font-weight: 700; box-shadow: 0 4px 16px rgba(19,78,50,0.35); }',
+      '.fin-nav-tab[data-fin-tab="ai"].active { background: linear-gradient(135deg, #134e32 0%, #1d6b44 100%); }',
+      '.fin-quick-ranges { display: inline-flex; align-items: center; gap: 4px; background: #121312; padding: 4px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.06); }',
+      '.fin-range-btn { background: transparent; color: #9ca3af; border: none; padding: 6px 12px; border-radius: 999px; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.15s; }',
+      '.fin-range-btn:hover { color: #fff; }',
+      '.fin-range-btn.active { background: #262826; color: #fff; font-weight: 700; }',
+      /* Bento KPI Row matching Image 2 */
+      '.fin-bento-grid { display: grid; grid-template-columns: repeat(4, minmax(170px, 1fr)) minmax(280px, 1.3fr); gap: 14px; align-items: stretch; }',
+      '@media(max-width: 1280px) { .fin-bento-grid { grid-template-columns: repeat(2, 1fr); } .fin-bento-side { grid-column: span 2; } }',
+      '@media(max-width: 640px) { .fin-bento-grid { grid-template-columns: 1fr; } .fin-bento-side { grid-column: span 1; } }',
+      '.fin-kpi-card { background: #121312; border: 1px solid rgba(255,255,255,0.05); border-radius: 22px; padding: 22px 24px; display: flex; flex-direction: column; justify-content: space-between; min-height: 148px; cursor: pointer; transition: transform 0.15s ease, border-color 0.15s ease; }',
+      '.fin-kpi-card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.14); }',
+      '.fin-kpi-card.emerald { background: linear-gradient(145deg, #134e32 0%, #0d3622 100%); border-color: rgba(83,183,76,0.22); }',
+      '.fin-kpi-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }',
+      '.fin-kpi-label { font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.72); }',
+      '.fin-kpi-icon { width: 34px; height: 34px; border-radius: 50%; background: rgba(0,0,0,0.32); display: inline-flex; align-items: center; justify-content: center; font-size: 14px; color: rgba(255,255,255,0.85); flex-shrink: 0; }',
+      '.fin-kpi-value { font-size: 34px; font-weight: 800; color: #ffffff; letter-spacing: -1px; margin: 14px 0 2px; line-height: 1.05; }',
+      '.fin-kpi-sub { font-size: 12px; color: rgba(255,255,255,0.55); font-weight: 500; }',
+      /* Right Bento Card: Latest Unpaid / Sessions with green View All pill */
+      '.fin-bento-side { background: #121312; border: 1px solid rgba(255,255,255,0.05); border-radius: 22px; padding: 18px 20px; display: flex; flex-direction: column; justify-content: space-between; gap: 12px; }',
+      '.fin-side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }',
+      '.fin-side-head h3 { margin: 0; font-size: 16px; font-weight: 700; color: #ffffff; }',
+      '.fin-view-all-btn { background: #65a34e; color: #071908; border: none; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 800; cursor: pointer; transition: filter 0.15s; }',
+      '.fin-view-all-btn:hover { filter: brightness(1.1); }',
+      '.fin-side-list { background: #0a0b0a; border-radius: 16px; padding: 6px 14px; display: flex; flex-direction: column; flex: 1; justify-content: center; }',
+      '.fin-side-item { display: grid; grid-template-columns: 1.2fr 0.9fr auto; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 12px; }',
+      '.fin-side-item:last-child { border-bottom: none; }',
+      '.fin-side-ref { font-weight: 700; color: #ffffff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '.fin-side-time { color: #9ca3af; font-size: 11px; text-align: center; }',
+      '.fin-side-amt { color: #e5e7eb; font-weight: 600; text-align: right; text-decoration: none; }',
+      /* Main Table Card matching Image 1 */
+      '.fin-surface-card { background: #101110; border: 1px solid rgba(255,255,255,0.06); border-radius: 22px; padding: 24px 26px; display: flex; flex-direction: column; gap: 16px; }',
+      '.fin-surface-header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 16px; }',
+      '.fin-surface-title h2 { margin: 0; font-size: 20px; font-weight: 700; color: #ffffff; letter-spacing: -0.3px; }',
+      '.fin-surface-title p { margin: 5px 0 0; font-size: 12px; color: #8a8f8c; }',
+      '.fin-surface-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }',
+      '.fin-search-box { background: #171817; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 8px 14px; display: inline-flex; align-items: center; gap: 8px; min-width: 230px; }',
+      '.fin-search-box input { background: transparent; border: none; color: #fff; font-size: 13px; outline: none; width: 100%; }',
+      '.fin-search-box input::placeholder { color: #6b7280; }',
+      '.fin-dark-btn { background: #1c1e1c; border: 1px solid rgba(255,255,255,0.09); color: #e5e7eb; border-radius: 10px; padding: 9px 15px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s; }',
+      '.fin-dark-btn:hover { background: #272a27; color: #fff; }',
+      '.fin-tender-summary { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 13px; color: #d1d5db; font-weight: 600; }',
+      '.fin-tender-pill { background: #171817; border: 1px solid rgba(255,255,255,0.06); padding: 7px 12px; border-radius: 10px; display: inline-flex; align-items: center; gap: 6px; }',
+      /* Clean Minimalist Table matching Image 1 */
+      '.fin-clean-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }',
+      '.fin-clean-table thead tr { background: #1c1d1c; }',
+      '.fin-clean-table th { padding: 12px 16px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: #9ca3af; border: none; }',
+      '.fin-clean-table th:first-child { border-radius: 8px 0 0 8px; }',
+      '.fin-clean-table th:last-child { border-radius: 0 8px 8px 0; }',
+      '.fin-clean-table td { padding: 15px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); color: #d1d5db; vertical-align: middle; }',
+      '.fin-clean-table tbody tr:hover { background: rgba(255,255,255,0.025); }',
+      '.fin-ref-code { font-weight: 700; color: #ffffff; letter-spacing: 0.2px; }',
+      '.fin-mode-label { font-size: 12px; color: #d1d5db; text-transform: lowercase; font-weight: 600; }',
+      '.fin-reconcile { color: #051b07; background: #53b74c; padding: 7px 13px; border-radius: 999px; text-decoration: none; font-size: 12px; font-weight: 800; white-space: nowrap; display: inline-block; transition: filter 0.15s; }',
+      '.fin-reconcile:hover { filter: brightness(1.1); }',
+      /* Simple & Easy-to-Use AI Assistant Bar & Panel */
+      '.fin-ai-strip { background: linear-gradient(145deg, #111914 0%, #0e120f 100%); border: 1px solid rgba(83,183,76,0.22); border-radius: 20px; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }',
+      '.fin-ai-strip-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }',
+      '.fin-ai-badge { display: inline-flex; align-items: center; gap: 10px; }',
+      '.fin-ai-icon { width: 34px; height: 34px; border-radius: 50%; background: #134e32; color: #53b74c; display: inline-flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 800; }',
+      '.fin-ai-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }',
+      '.chip { background: #18221b; border: 1px solid rgba(83,183,76,0.28); border-radius: 999px; padding: 6px 13px; font-size: 12px; font-weight: 600; cursor: pointer; color: #d1fae5; white-space: nowrap; transition: all 0.15s; }',
+      '.chip:hover { background: #134e32; color: #fff; }',
+      '.fin-ai-prompt-row { display: flex; gap: 10px; align-items: center; }',
+      '.fin-ai-prompt-row input { flex: 1; background: #0a0c0a; border: 1px solid rgba(255,255,255,0.09); color: #fff; padding: 11px 16px; border-radius: 12px; font-size: 13px; outline: none; }',
+      '.fin-ai-prompt-row input:focus { border-color: #53b74c; }',
+      '.fin-ai-prompt-row button { background: #53b74c; color: #041606; border: none; padding: 11px 20px; border-radius: 12px; cursor: pointer; font-weight: 800; font-size: 13px; }',
+      '.ai-msgs { max-height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }',
+      '.ai-bubble { background: rgba(19,78,50,0.28); border-left: 3px solid #53b74c; border-radius: 0 12px 12px 0; padding: 12px 14px; font-size: 13px; color: #ecfdf5; line-height: 1.55; white-space: pre-line; }',
+      '.user-bubble { background: #1f2421; border-radius: 12px 12px 0 12px; padding: 10px 14px; font-size: 13px; color: #fff; align-self: flex-end; max-width: 85%; }',
       '.ai-typing { display: flex; gap: 4px; padding: 8px 12px; align-items: center; }',
-      '.ai-typing span { width: 7px; height: 7px; background: #e8a535; border-radius: 50%; animation: aidot 1.2s infinite; }',
+      '.ai-typing span { width: 7px; height: 7px; background: #53b74c; border-radius: 50%; animation: aidot 1.2s infinite; }',
       '.ai-typing span:nth-child(2) { animation-delay: 0.2s; }',
       '.ai-typing span:nth-child(3) { animation-delay: 0.4s; }',
       '@keyframes aidot { 0%,80%,100%{opacity:0.3;transform:scale(0.8)} 40%{opacity:1;transform:scale(1)} }',
-      '.ai-input-row { display: flex; gap: 8px; padding: 12px; border-top: 1px solid rgba(255,255,255,0.08); }',
-      '.ai-input-row input { flex: 1; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 13px; outline: none; }',
-      '.ai-input-row button { background: linear-gradient(135deg,#e8a535,#c8832a); color: #1a1008; border: none; padding: 0 16px; border-radius: 8px; cursor: pointer; font-weight: 800; font-size: 13px; }',
-      '.ai-suggest-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 12px 8px; }',
-      '.chip { background: rgba(232,165,53,0.15); border: 1px solid rgba(232,165,53,0.35); border-radius: 20px; padding: 4px 10px; font-size: 11px; cursor: pointer; color: #f5ece0; white-space: nowrap; }',
-      '.chip:hover { background: rgba(232,165,53,0.3); }',
-      '@media(max-width:768px){ .finance-shell{flex-direction:column;} .finance-right{min-width:unset;width:100%;height:440px;} .fin-period-card .mobile-filter-trigger { width: 100%; } }',
-      '.fin-table th { padding: 10px 12px; border-bottom: 2px solid rgba(255,255,255,0.08); font-size: 11px; text-transform: uppercase; color: var(--text-secondary); }',
-      '.fin-table td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.05); }',
-      '.fin-table tr:hover { background: rgba(255,255,255,0.02); }',
       '</style>',
 
       '<div class="finance-page">',
-      '  <header class="fin-top-header">',
-      '    <h1>Financials &amp; AI</h1>',
-      '    <p>Review payments, sales and outstanding orders.</p>',
+      /* Top Bar matching Image 1 */
+      '  <header class="fin-topbar">',
+      '    <div class="fin-brand-row">',
+      '      <h1 id="fin-page-heading">Payments &amp; Finance</h1>',
+      '      <span class="fin-live-pill">Live</span>',
+      '    </div>',
+      '    <div class="fin-topbar-controls" id="fin-period-toolbar">',
+      '      <div class="fin-date-bar" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">',
+      '        <div class="fin-pill-box">',
+      '          <span>📅</span>',
+      '          <input type="date" id="fin-start" aria-label="Start date" />',
+      '          <span style="color:#6b7280;">—</span>',
+      '          <input type="date" id="fin-end" aria-label="End date" />',
+      '        </div>',
+      '        <div class="fin-pill-box">',
+      '          <select id="fin-session-select" aria-label="Trading session">',
+      '            <option value="full">All Hours (Full Day)</option>',
+      '            <option value="morning">Day Session</option>',
+      '            <option value="night">Night Session</option>',
+      '          </select>',
+      '        </div>',
+      '        <button type="button" class="fin-dark-btn" id="fin-load-btn">Refresh</button>',
+      '        <div style="display:none;">',
+      '          <button type="button" data-fin-session="full" class="active">Full</button>',
+      '          <button type="button" data-fin-session="morning">Morning</button>',
+      '          <button type="button" data-fin-session="night">Night</button>',
+      '        </div>',
+      '      </div>',
+      '    </div>',
       '  </header>',
 
-      '  <nav class="fin-nav-tabs" role="tablist" aria-label="Financials sections">',
-      '    <button type="button" class="fin-nav-tab active" role="tab" aria-selected="true" data-fin-tab="overview">Overview</button>',
-      '    <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="payments">Payments</button>',
-      '    <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="sales">Sales &amp; staff</button>',
-      '    <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="unpaid">Unpaid orders</button>',
-      '    <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="invoices">Invoices</button>',
-      '    <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="ai">AI assistant</button>',
-      '  </nav>',
-
-      '  <div class="fin-period-card" id="fin-period-toolbar">',
-      '    <div class="fin-period-summary">',
-      '      <strong>Report period</strong>',
-      '      <span id="fin-period-display">Today · Full day</span>',
-      '    </div>',
-      '    <div class="fin-date-bar">',
-      '      <label>From:</label>',
-      '      <input type="date" id="fin-start" />',
-      '      <label>To:</label>',
-      '      <input type="date" id="fin-end" />',
-      '      <button class="fin-load-btn" id="fin-load-btn">Load Report</button>',
-      '      <div class="fin-quick-ranges" role="group" aria-label="Quick report period">',
-      '        <button type="button" class="fin-range-btn active" data-fin-range="today">Today</button>',
-      '        <button type="button" class="fin-range-btn" data-fin-range="yesterday">Yesterday</button>',
-      '        <button type="button" class="fin-range-btn" data-fin-range="week">Past week</button>',
-      '        <button type="button" class="fin-range-btn" data-fin-range="month">Past month</button>',
-      '      </div>',
-      '      <div class="fin-quick-ranges" role="group" aria-label="Trading session">',
-      '        <button type="button" class="fin-range-btn active" data-fin-session="full">Full day</button>',
-      '        <button type="button" class="fin-range-btn" data-fin-session="morning">Morning</button>',
-      '        <button type="button" class="fin-range-btn" data-fin-session="night">Night</button>',
-      '      </div>',
+      /* Navigation Tabs + Quick Date Pills */
+      '  <div class="fin-nav-row">',
+      '    <nav class="fin-nav-tabs" role="tablist" aria-label="Finance & AI views">',
+      '      <button type="button" class="fin-nav-tab active" role="tab" aria-selected="true" data-fin-tab="overview">Overview</button>',
+      '      <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="payments">Payments</button>',
+      '      <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="unpaid">Unpaid Table Bills</button>',
+      '      <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="invoices">Proforma Invoices</button>',
+      '      <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="sales">Sales &amp; Staff</button>',
+      '      <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="ai">✨ AI Assistant</button>',
+      '    </nav>',
+      '    <div class="fin-quick-ranges" role="group" aria-label="Quick report period">',
+      '      <button type="button" class="fin-range-btn active" data-fin-range="today">Today</button>',
+      '      <button type="button" class="fin-range-btn" data-fin-range="yesterday">Yesterday</button>',
+      '      <button type="button" class="fin-range-btn" data-fin-range="week">Past Week</button>',
+      '      <button type="button" class="fin-range-btn" data-fin-range="month">Past Month</button>',
       '    </div>',
       '  </div>',
 
-      '  <details class="fin-status-details">',
-      '    <summary id="fin-source-summary">Report up to date</summary>',
-      '    <p id="fin-source" role="status" style="margin:6px 0 0;line-height:1.5;">Loading transaction records...</p>',
-      '  </details>',
-
-      '  <div class="finance-shell">',
-      '    <div class="finance-left" id="fin-main-pane">',
-
-      '      <section class="fin-overview-hero" data-fin-section="overview">',
-      '        <h2>Overview</h2>',
-      '        <p>The selected period at a glance.</p>',
-      '        <div class="fin-hero-label">Payments received</div>',
-      '        <div class="fin-hero-amount" id="fin-hero-collected">KES 0.00</div>',
-      '        <div class="fin-overview-lines">',
-      '          <div class="fin-overview-line" data-jump-tab="sales"><span>Sales after discounts</span><strong id="fin-hero-net">KES 0.00</strong></div>',
-      '          <div class="fin-overview-line" data-jump-tab="unpaid"><span>Unpaid orders (tables &amp; tabs)</span><strong id="fin-hero-unpaid-orders" style="color:#ff9800;">KES 0.00</strong></div>',
-      '          <div class="fin-overview-line" data-jump-tab="invoices"><span>Proforma invoices (outstanding)</span><strong id="fin-hero-unpaid-invoices">KES 0.00</strong></div>',
-      '          <div class="fin-overview-line" data-jump-tab="payments"><span>Confirmed payments</span><strong id="fin-hero-payment-count">0</strong></div>',
-      '        </div>',
-      '      </section>',
-
-      '      <div class="metrics-row" data-fin-section="overview,payments,sales">',
-      '        <div class="m-card" data-fin-card="overview,payments"><h5>Payments Received</h5><p class="m-val" id="fin-collected">KES 0</p></div>',
-      '        <div class="m-card green" data-fin-card="overview,payments"><h5>M-Pesa Received</h5><p class="m-val" id="fin-mpesa">KES 0</p><small id="fin-mpesa-held"></small></div>',
-      '        <div class="m-card blue" data-fin-card="overview,payments"><h5>Cash Received</h5><p class="m-val" id="fin-cash">KES 0</p><small id="fin-cash-held"></small></div>',
-      '        <div class="m-card green" data-fin-card="overview,payments"><h5>Bank Transfers</h5><p class="m-val" id="fin-bank">KES 0</p><small id="fin-bank-held">Statement references, unverified</small></div>',
-      '        <div class="m-card" data-fin-card="overview,payments"><h5>Card &amp; Other</h5><p class="m-val" id="fin-other">KES 0</p><small id="fin-other-held"></small></div>',
-      '        <div class="m-card blue" data-fin-card="overview,payments"><h5>Confirmed Payments</h5><p class="m-val" id="fin-payment-count">0</p></div>',
-      '        <div class="m-card orange" data-fin-card="payments"><h5>Received Without Sale / Order</h5><p class="m-val" id="fin-unmatched">KES 0</p></div>',
-      '        <div class="m-card" data-fin-card="payments"><h5>Failed / Cancelled Attempts</h5><p class="m-val" id="fin-failed">KES 0</p></div>',
-      '        <div class="m-card orange" data-fin-card="payments"><h5>Received Without A Date</h5><p class="m-val" id="fin-undated">KES 0</p><small id="fin-undated-count">Not counted in any period</small></div>',
-      '        <div class="m-card orange" data-fin-card="overview,payments"><h5>Held On A Till</h5><p class="m-val" id="fin-held">KES 0</p><small id="fin-held-count">Settled but not yet reached the business — not counted above</small></div>',
-      '        <div class="m-card orange" data-fin-card="overview"><h5>Unpaid Orders (Tables &amp; Counter)</h5><p class="m-val" id="fin-pending">KES 0</p><small id="fin-pending-count">0 orders · unreceived</small></div>',
-      '        <div class="m-card" data-fin-card="overview"><h5>Outstanding Proforma Invoices</h5><p class="m-val" id="fin-proforma-total">KES 0</p><small id="fin-proforma-count">0 invoices · locked</small></div>',
-      '        <div class="m-card" data-fin-card="overview,sales"><h5>Gross Recorded Sales</h5><p class="m-val" id="fin-gross">KES 0</p></div>',
-      '        <div class="m-card" data-fin-card="overview,sales"><h5>Total Discounts</h5><p class="m-val" id="fin-disc">KES 0</p></div>',
-      '        <div class="m-card green" data-fin-card="overview,sales"><h5>Recorded Sales After Discounts</h5><p class="m-val" id="fin-net">KES 0</p></div>',
-      '        <div class="m-card orange" data-fin-card="sales"><h5>Total Unreceived (Orders + Invoices)</h5><p class="m-val" id="fin-unpaid">KES 0</p><small>Awaiting reconciliation</small></div>',
-      '        <div class="m-card orange" data-fin-card="overview,sales"><h5>Completed Sales</h5><p class="m-val" id="fin-count">0</p></div>',
+      /* Top Bento KPI Cards Row matching Image 2 */
+      '  <section class="fin-bento-grid" data-fin-section="overview,payments,sales,unpaid">',
+      '    <div class="fin-kpi-card emerald" data-jump-tab="payments">',
+      '      <div class="fin-kpi-top"><span class="fin-kpi-label">Collected</span><span class="fin-kpi-icon">↗</span></div>',
+      '      <div>',
+      '        <div class="fin-kpi-value" id="fin-hero-collected">0</div>',
+      '        <div class="fin-kpi-sub"><span id="fin-payment-count">0</span> confirmed payments (KES)</div>',
       '      </div>',
+      '    </div>',
+      '    <div class="fin-kpi-card" data-jump-tab="sales">',
+      '      <div class="fin-kpi-top"><span class="fin-kpi-label">Net Sales</span><span class="fin-kpi-icon">↗</span></div>',
+      '      <div>',
+      '        <div class="fin-kpi-value" id="fin-hero-net">0</div>',
+      '        <div class="fin-kpi-sub"><span id="fin-count">0</span> completed orders · disc <span id="fin-disc">KES 0</span></div>',
+      '      </div>',
+      '    </div>',
+      '    <div class="fin-kpi-card" data-jump-tab="unpaid">',
+      '      <div class="fin-kpi-top"><span class="fin-kpi-label">Unpaid Bills</span><span class="fin-kpi-icon">🍽️</span></div>',
+      '      <div>',
+      '        <div class="fin-kpi-value" id="fin-hero-unpaid-orders">0</div>',
+      '        <div class="fin-kpi-sub" id="fin-pending-count">0 table / counter bills</div>',
+      '      </div>',
+      '    </div>',
+      '    <div class="fin-kpi-card" data-jump-tab="invoices">',
+      '      <div class="fin-kpi-top"><span class="fin-kpi-label">Invoices</span><span class="fin-kpi-icon">📄</span></div>',
+      '      <div>',
+      '        <div class="fin-kpi-value" id="fin-hero-unpaid-invoices">0</div>',
+      '        <div class="fin-kpi-sub" id="fin-proforma-count">0 proforma invoices</div>',
+      '      </div>',
+      '    </div>',
+      '    <div class="fin-bento-side">',
+      '      <div class="fin-side-head">',
+      '        <h3>Latest Unpaid Bills</h3>',
+      '        <button type="button" class="fin-view-all-btn" data-jump-tab="unpaid">View All</button>',
+      '      </div>',
+      '      <div class="fin-side-list" id="fin-latest-unpaid-list">',
+      '        <div style="color:#6b7280;font-size:12px;text-align:center;padding:14px 0;">No unpaid table bills right now.</div>',
+      '      </div>',
+      '    </div>',
+      '  </section>',
 
-      '      <div class="fin-card" data-fin-section="unpaid,overview">',
-      '        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:6px;">',
-      '          <h3 style="margin:0;font-size:16px;color:#fff;">Unpaid orders (Tables, Tabs &amp; Counter)</h3>',
-      '          <label style="display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--accent-amber);font-weight:700;cursor:pointer;">',
-      '            <input type="checkbox" id="fin-consolidate-tables" checked style="width:18px;height:18px;accent-color:#e8a535;" />',
-      '            Consolidate bills by table for 1-payment settlement',
+      /* Simple & Easy-to-Use AI Assistant Section */
+      '  <section class="fin-ai-strip" id="fin-ai-pane" data-fin-section="overview,ai">',
+      '    <div class="fin-ai-strip-top">',
+      '      <div class="fin-ai-badge">',
+      '        <span class="fin-ai-icon">✨</span>',
+      '        <div>',
+      '          <div style="font-weight:700;font-size:15px;color:#fff;">Finance &amp; AI Assistant</div>',
+      '          <div style="font-size:12px;color:#8a8f8c;" id="fin-source">Instant summary of collections, M-Pesa vs cash, unpaid table tabs, and staff performance.</div>',
+      '        </div>',
+      '      </div>',
+      '      <div class="fin-ai-chips">',
+      '        <button type="button" class="chip" data-q="performance">📊 Summary</button>',
+      '        <button type="button" class="chip" data-q="cash vs mpesa">💳 Cash vs M-Pesa</button>',
+      '        <button type="button" class="chip" data-q="unpaid and pending">🍽️ Unpaid Tables</button>',
+      '        <button type="button" class="chip" data-q="proforma invoices">📄 Invoices</button>',
+      '        <button type="button" class="chip" data-q="staff rundown">👥 Staff</button>',
+      '        <button type="button" class="chip" data-q="discount">🏷️ Discounts</button>',
+      '      </div>',
+      '    </div>',
+      '    <div class="ai-msgs" id="ai-msgs">',
+      '      <div class="ai-bubble">Loading your live financial snapshot…</div>',
+      '    </div>',
+      '    <div class="fin-ai-prompt-row">',
+      '      <input type="text" id="ai-inp" placeholder="Ask anything about today\'s collections, M-Pesa, unpaid tables, or staff..." />',
+      '      <button type="button" id="ai-send">Ask AI</button>',
+      '    </div>',
+      '  </section>',
+
+      /* Main Content Stack */
+      '  <div id="fin-main-pane" style="display:flex;flex-direction:column;gap:18px;">',
+
+      /* Payment Transactions Card matching Image 1 */
+      '    <section class="fin-surface-card" data-fin-section="overview,payments">',
+      '      <div class="fin-surface-header">',
+      '        <div class="fin-surface-title">',
+      '          <h2>Payment Transactions (<span id="fin-collected">0 KES</span>)</h2>',
+      '          <p>Date-range totals · <span id="fin-period-display">Today</span></p>',
+      '        </div>',
+      '        <div class="fin-surface-actions">',
+      '          <div class="fin-search-box">',
+      '            <span>🔍</span>',
+      '            <input type="search" id="fin-tx-search" placeholder="Search reference, customer or mode" aria-label="Search payment transactions" />',
+      '          </div>',
+      '          <button type="button" class="fin-dark-btn" id="fin-tx-refresh">Refresh</button>',
+      '          <div class="fin-tender-summary">',
+      '            <span class="fin-tender-pill">M-Pesa: <strong id="fin-mpesa" style="color:#53b74c;">0 KES</strong></span>',
+      '            <span class="fin-tender-pill">Cash: <strong id="fin-cash" style="color:#fff;">0 KES</strong></span>',
+      '            <span class="fin-tender-pill">Bank: <strong id="fin-bank" style="color:#fff;">0 KES</strong></span>',
+      '            <span class="fin-tender-pill">Card: <strong id="fin-other" style="color:#fff;">0 KES</strong></span>',
+      '          </div>',
+      '        </div>',
+      '      </div>',
+      '      <div id="fin-transactions" style="overflow-x:auto;"></div>',
+      '    </section>',
+
+      /* Unpaid Table Bills Card (Consolidated by Table, separated from Invoices) */
+      '    <section class="fin-surface-card" data-fin-section="overview,unpaid">',
+      '      <div class="fin-surface-header">',
+      '        <div class="fin-surface-title">',
+      '          <h2>Unpaid Orders &amp; Table Bills (<span id="fin-pending">0 KES</span>)</h2>',
+      '          <p>Active table tabs and counter orders (separated from Proforma Invoices). All bills under a table consolidate into one payment.</p>',
+      '        </div>',
+      '        <div class="fin-surface-actions">',
+      '          <label class="fin-tender-pill" style="cursor:pointer;">',
+      '            <input type="checkbox" id="fin-consolidate-tables" checked style="width:16px;height:16px;accent-color:#53b74c;" />',
+      '            <span>Consolidate bills under each table into 1 bill</span>',
       '          </label>',
       '        </div>',
-      '        <p style="margin:0 0 12px;color:var(--text-secondary);font-size:12px;">Active unpaid table tabs, customer orders, and counter bills (separated from formal Proforma Invoices). Consolidating by table groups all rounds under a table into one total bill so the cashier can settle the entire table in one payment.</p>',
-      '        <div id="fin-unpaid-orders" style="overflow:auto"></div>',
       '      </div>',
+      '      <div id="fin-unpaid-orders" style="overflow-x:auto;"></div>',
+      '    </section>',
 
-      '      <div class="fin-card" data-fin-section="sales,overview">',
-      '        <h3 style="margin:0 0 6px 0;font-size:15px;color:#fff;">👥 Staff rundown</h3>',
-      '        <p style="margin:0 0 12px;color:var(--text-secondary);font-size:12px;">Everyone who handled money or an order in the selected period: what they completed, what they took, and what is still open against their name.</p>',
-      '        <div style="overflow-x:auto;">',
-      '          <table class="fin-table" style="width:100%; border-collapse:collapse; text-align:left; font-size:13px;">',
-      '            <thead>',
-      '              <tr>',
-      '                <th>Staff member</th>',
-      '                <th style="text-align:center;">Completed sales</th>',
-      '                <th style="text-align:right;">Sales value</th>',
-      '                <th style="text-align:center;">Payments</th>',
-      '                <th style="text-align:right;">Received</th>',
-      '                <th style="text-align:right;">Still unpaid</th>',
-      '              </tr>',
-      '            </thead>',
-      '            <tbody id="cashier-report-body">',
-      '              <tr>',
-      '                <td colspan="6" style="padding:16px;text-align:center;color:var(--text-secondary);">No data loaded yet.</td>',
-      '              </tr>',
-      '            </tbody>',
-      '          </table>',
+      /* Proforma Invoices Card (Separated from Unpaid Table Orders) */
+      '    <section class="fin-surface-card" id="fin-proformas" data-fin-section="invoices"></section>',
+
+      /* Staff & Sales Card */
+      '    <section class="fin-surface-card" data-fin-section="sales">',
+      '      <div class="fin-surface-header">',
+      '        <div class="fin-surface-title">',
+      '          <h2>Sales &amp; Staff Performance (<span id="fin-net">0 KES</span>)</h2>',
+      '          <p>Gross sales: <strong id="fin-gross">0 KES</strong> · Unreceived total: <strong id="fin-unpaid">0 KES</strong></p>',
       '        </div>',
       '      </div>',
+      '      <div style="overflow-x:auto;">',
+      '        <table class="fin-clean-table">',
+      '          <thead>',
+      '            <tr>',
+      '              <th>STAFF MEMBER</th>',
+      '              <th>COMPLETED ORDERS</th>',
+      '              <th>SALES VALUE</th>',
+      '              <th>PAYMENTS TAKEN</th>',
+      '              <th>COLLECTED</th>',
+      '              <th>UNPAID TABS</th>',
+      '            </tr>',
+      '          </thead>',
+      '          <tbody id="cashier-report-body">',
+      '            <tr><td colspan="6" style="text-align:center;color:#6b7280;padding:20px;">No staff activity in this date range.</td></tr>',
+      '          </tbody>',
+      '        </table>',
+      '      </div>',
+      '    </section>',
 
-      '      <div class="fin-card" id="fin-proformas" data-fin-section="invoices,overview"></div>',
-
-      '      <div class="fin-card" data-fin-section="payments,overview"><h3>Payments &amp; transactions in selected period</h3><p style="color:var(--text-secondary);font-size:12px;margin:4px 0 12px;">Payments are filtered by receipt date. Failed and pending attempts are excluded from money received.</p><div id="fin-transactions" style="overflow:auto"></div></div>',
+      /* Hidden diagnostic hooks preserved for compatibility */
+      '    <div style="display:none;">',
+      '      <span id="fin-source-summary"></span><span id="fin-hero-payment-count"></span>',
+      '      <span id="fin-unmatched"></span><span id="fin-failed"></span><span id="fin-undated"></span><span id="fin-undated-count"></span>',
+      '      <span id="fin-held"></span><span id="fin-held-count"></span><span id="fin-proforma-total"></span>',
+      '      <span id="fin-mpesa-held"></span><span id="fin-cash-held"></span><span id="fin-bank-held"></span><span id="fin-other-held"></span>',
       '    </div>',
-
-      '    <div class="finance-right" id="fin-ai-pane" data-fin-section="ai,overview">',
-      '      <div class="ai-header">',
-      '        <div class="ai-logo">✨</div>',
-      '        <div><div class="ai-title">Vanbransa AI</div><div class="ai-subtitle">Financial Analytics Assistant</div></div>',
-      '      </div>',
-      '      <div class="ai-msgs" id="ai-msgs">',
-      '        <div class="ai-bubble">Hello! I\'m your Vanbransa AI assistant. Load a date range and I\'ll analyze your financials. Ask about revenue, tenders, discounts, unpaid orders, or proforma invoices.</div>',
-      '      </div>',
-      '      <div class="ai-suggest-chips">',
-      '        <div class="chip" data-q="performance">Performance</div>',
-      '        <div class="chip" data-q="cash vs mpesa">Cash vs M-Pesa</div>',
-      '        <div class="chip" data-q="discount">Discounts</div>',
-      '        <div class="chip" data-q="unpaid and pending">Unpaid Orders</div>',
-      '        <div class="chip" data-q="proforma invoices">Proforma Invoices</div>',
-      '        <div class="chip" data-q="staff rundown">Staff</div>',
-      '        <div class="chip" data-q="bank transfers">Bank</div>',
-      '        <div class="chip" data-q="insight">Insights</div>',
-      '      </div>',
-      '      <div class="ai-input-row">',
-      '        <input type="text" id="ai-inp" placeholder="Ask about your business..." />',
-      '        <button id="ai-send">Ask</button>',
-      '      </div>',
-      '    </div>',
-
       '  </div>',
       '</div>'
     ].join('\n');
@@ -269,28 +349,33 @@ export class FinanceView {
 
   applyFinTab(tabId) {
     this.activeFinTab = tabId;
+    const titles = {
+      overview: 'Payments & Finance',
+      payments: 'Payments',
+      unpaid: 'Unpaid Table Bills',
+      invoices: 'Proforma Invoices',
+      sales: 'Sales & Staff',
+      ai: 'Finance & AI Assistant',
+    };
+    const heading = this.container.querySelector('#fin-page-heading');
+    if (heading) heading.textContent = titles[tabId] || 'Payments & Finance';
+
     this.container.querySelectorAll('[data-fin-tab]').forEach((btn) => {
       const active = btn.dataset.finTab === tabId;
       btn.classList.toggle('active', active);
       btn.setAttribute('aria-selected', String(active));
     });
     const mainPane = this.container.querySelector('#fin-main-pane');
-    const aiPane = this.container.querySelector('#fin-ai-pane');
     if (mainPane) mainPane.style.display = tabId === 'ai' ? 'none' : 'flex';
-    if (aiPane) {
-      const isNarrow = typeof window !== 'undefined' && window.innerWidth <= 900;
-      aiPane.style.display = (tabId === 'ai' || (!isNarrow && tabId === 'overview')) ? 'flex' : 'none';
-      if (tabId === 'ai') aiPane.style.flex = '1 1 100%';
-      else aiPane.style.flex = '1';
-    }
-    this.container.querySelectorAll('#fin-main-pane [data-fin-section]').forEach((sec) => {
+
+    this.container.querySelectorAll('[data-fin-section]').forEach((sec) => {
       const allowed = sec.dataset.finSection.split(',');
       sec.style.display = allowed.includes(tabId) ? '' : 'none';
     });
-    this.container.querySelectorAll('[data-fin-card]').forEach((card) => {
-      const allowed = card.dataset.finCard.split(',');
-      card.style.display = allowed.includes(tabId) ? '' : 'none';
-    });
+    const aiMsgs = this.container.querySelector('#ai-msgs');
+    if (aiMsgs) {
+      aiMsgs.style.maxHeight = tabId === 'ai' ? '520px' : '180px';
+    }
   }
 
   dispose() { this.disposed = true; this.loadRequest = (this.loadRequest || 0) + 1; this.proformaRegister?.dispose(); this.filterSheet?.dispose(); }
@@ -309,8 +394,25 @@ export class FinanceView {
         this.renderUnpaidOrdersTable();
       });
     }
+    const txSearch = document.getElementById('fin-tx-search');
+    if (txSearch) {
+      txSearch.addEventListener('input', (e) => {
+        this.txSearchQuery = e.target.value.trim().toLowerCase();
+        this.renderTransactionsTable();
+      });
+    }
     const loadBtn = document.getElementById('fin-load-btn');
     if (loadBtn) loadBtn.addEventListener('click', () => this.loadMetrics());
+    const txRefresh = document.getElementById('fin-tx-refresh');
+    if (txRefresh) txRefresh.addEventListener('click', () => this.loadMetrics());
+
+    const sessionSelect = document.getElementById('fin-session-select');
+    if (sessionSelect) {
+      sessionSelect.addEventListener('change', (e) => {
+        this.session = e.target.value;
+        void this.loadMetrics();
+      });
+    }
 
     document.querySelectorAll('[data-fin-range]').forEach((button) => {
       button.addEventListener('click', () => {
@@ -322,12 +424,16 @@ export class FinanceView {
       });
     });
     for (const id of ['fin-start', 'fin-end']) {
-      document.getElementById(id)?.addEventListener('change', () => this.setActiveRange(null));
+      document.getElementById(id)?.addEventListener('change', () => {
+        this.setActiveRange(null);
+        void this.loadMetrics();
+      });
     }
 
     document.querySelectorAll('[data-fin-session]').forEach((button) => {
       button.addEventListener('click', () => {
         this.session = button.dataset.finSession;
+        if (sessionSelect) sessionSelect.value = this.session;
         document.querySelectorAll('[data-fin-session]').forEach((other) => {
           other.classList.toggle('active', other === button);
         });
@@ -363,7 +469,6 @@ export class FinanceView {
 
   async loadMetrics() {
     const request = this.loadRequest = (this.loadRequest || 0) + 1;
-    // Paint the filters immediately, but price the report's day on trusted hours.
     await this.hoursReady;
     if (this.disposed || request !== this.loadRequest) return;
     const startEl = document.getElementById('fin-start');
@@ -383,26 +488,20 @@ export class FinanceView {
       showNotification('Choose a valid start and end date.', 'warning');
       return;
     }
-    // Trading days, not calendar days: the window runs from the morning
-    // opening to the next one, so a night's takings stay on one report.
     const session = this.session || 'full';
     const { from: startTs, to: endTs } = tradingRange(startStr, endStr, session, this.hours);
 
-    document.getElementById('fin-source').textContent = 'Refreshing sales and payment confirmations...';
     try {
-      // The roster is only pulled by Orders/Users, so a phone that opens
-      // Finance directly printed staff ids instead of names.
       void pullStaff().catch(() => null);
       const report = await loadFinancialSnapshot(startTs, endTs, session);
       const { sales, transactions, gross, discounts, net, cash, mpesa, other, collected } = report;
       const [users, shifts] = await Promise.all([db.users.toArray(), db.shifts.toArray()]);
       const userMap = new Map(users.map(u => [u.id, u]));
       const shiftUserMap = new Map(shifts.map(sh => [sh.id, userMap.get(sh.user_id)]));
-      const staffName = row => userMap.get(row.staff_id)?.name || shiftUserMap.get(row.shift_id)?.name || row.staff_id || 'Unattributed';
-      // The snapshot aggregates by staff id; only the till knows the names, so
-      // they are attached here and travel on into the AI answer.
+      const staffName = row => userMap.get(row.staff_id)?.name || shiftUserMap.get(row.shift_id)?.name || row.staff_id || 'Staff';
       report.staffRundown = report.staffRundown.map(row => ({ ...row, name: staffName(row) }));
-      const fmt = v => 'KES ' + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const fmtInt = v => Math.round(Number(v || 0)).toLocaleString();
+      const fmtKes = v => `${Math.round(Number(v || 0)).toLocaleString()} KES`;
 
       if (request !== this.loadRequest) return;
       const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -412,132 +511,146 @@ export class FinanceView {
       };
 
       this.dataSource = report.dataSource;
-      // The session is part of what these figures mean, and money the window
-      // excludes is the difference between "there is none" and "you are not
-      // looking at it". Both belong on screen, not only in the AI answer.
-      // Quoting this business's hours, not a hard-coded pair: a report that
-      // says 05:00 while the day opens at 06:00 is worse than saying nothing.
       const hh = (hour) => `${String(hour).padStart(2, '0')}:00`;
       const dayAt = hh(report.dayStartHour);
       const nightAt = hh(report.nightStartHour);
-      const sessionNote = session === 'morning' ? ` Morning session only (${dayAt}–${nightAt}).`
-        : session === 'night' ? ` Night session only (${nightAt}–${dayAt}).`
-          : ` Full trading day (${dayAt} to ${dayAt} next morning).`;
-      const missedNote = report.outsideCount
-        ? ` ⚠ ${report.outsideCount} confirmed payment(s) worth ${fmt(report.outsideTotal)} fall outside this window — widen the dates or choose Full day.`
-        : '';
-      set('fin-source', report.dataSource + sessionNote + missedNote);
-      const details = document.getElementById('fin-transactions');
-      // The order number the customer was given comes before the raw document
-      // id, so a row reads as the invoice or table reference somebody can act
-      // on rather than an opaque key.
-      // A till's internal key is not an order number. Where the sale behind a
-      // payment has not reached the server, name that rather than print the key.
-      const marriedTo = (p) => {
-        if (p.receiptConflict) return `${p.invoice_no || 'Saved sale'} — receipt needs review`;
-        if (p.unapplied) return `Received — not applied to ${p.invoice_no || p.order_reference || 'the order'}`;
-        // The order number comes first even when the sale is still on a till:
-        // that is the thing somebody can actually go and look at.
-        if (p.held_on_till && p.order_reference) return `${p.order_reference} · ⚠ still on the till`;
-        if (p.unsynced && p.status === 'SUCCESS') return '⚠ Sale still on the till — not synced';
-        if (p.status === 'SUCCESS' && !p.linked) return 'Received — invoice not matched';
-        const named = p.invoice_no || p.order_reference || p.customer_order_id
-          || (p.status === 'SUCCESS' ? 'No matching sale / order' : '-');
-        return p.localOnly ? `${named} · ⚠ on this till only` : named;
-      };
-      // An undated payment would otherwise render as "Invalid Date".
-      const when = p => (Number.isFinite(timestamp(p.received_at))
-        ? new Date(timestamp(p.received_at)).toLocaleString()
-        : '⚠ No date recorded');
-      if (details) details.innerHTML = '<table class="fin-table"><thead><tr><th>Received / attempted</th><th>Reference</th><th>Staff</th><th>Method</th><th>Amount</th><th>Payment status</th><th>Sale / order</th></tr></thead><tbody>' + transactions.map(p => '<tr><td>' + escape(when(p)) + '</td><td>' + escape(p.reference || p.id) + (p.verified === false ? '<br><small style="color:var(--text-secondary)">unverified</small>' : '') + '</td><td>' + escape(staffName(p)) + '</td><td>' + escape(p.method) + '</td><td>' + fmt(p.amount) + '</td><td>' + escape(paymentAttemptLabel(p)) + '</td><td>' + escape(marriedTo(p)) + (p.customer_name ? '<br><small>' + escape(p.customer_name) + '</small>' : '') + '</td></tr>').join('') + (transactions.length ? '' : '<tr><td colspan="7">No payment records in this period.</td></tr>') + '</tbody></table>';
-      set('fin-payment-count', report.paymentCount);
-      set('fin-unmatched', fmt(report.unmatched));
-      set('fin-failed', fmt(report.failed));
-      // A method card reading zero has to say whether that means "none taken"
-      // or "taken, but still sitting on a till". Same figure, different night.
-      const heldOn = (bucket, fallback = '') => {
-        const amount = report.heldByMethod?.[bucket] || 0;
-        return amount ? `+ ${fmt(amount)} held on a till` : fallback;
-      };
-      set('fin-mpesa-held', heldOn('mpesa'));
-      set('fin-cash-held', heldOn('cash'));
-      set('fin-bank-held', heldOn('bank', 'Statement references, unverified'));
-      set('fin-other-held', heldOn('other'));
-      set('fin-held', fmt(report.heldTotal));
-      // Held is money already taken that the business has not received a
-      // record of. It is not an unpaid tab - that is Unpaid Orders / Proformas.
-      set('fin-held-count', report.heldCount
-        ? `${report.heldCount} payment(s) already taken at a till whose sale has not reached the server. Not unpaid tabs — money in hand, not yet in the books.`
-        : 'Money taken at a till whose sale has not reached the server yet');
-      set('fin-undated', fmt(report.undatedTotal));
-      set('fin-undated-count', report.undatedCount
-        ? `${report.undatedCount} payment(s) missing a date — listed below, uncounted`
-        : 'Not counted in any period');
-      const sessionLabel = session === 'morning' ? 'Morning' : session === 'night' ? 'Night' : 'Full day';
-      const dateLabel = startStr === endStr ? startStr : `${startStr} – ${endStr}`;
-      set('fin-period-display', `${dateLabel} · ${sessionLabel}`);
-      set('fin-source-summary', report.outsideCount ? `Report up to date · ${report.outsideCount} outside window` : 'Report up to date');
+      const sessionNote = session === 'morning' ? ` · Day (${dayAt}–${nightAt})`
+        : session === 'night' ? ` · Night (${nightAt}–${dayAt})`
+          : ` · Trading day (${dayAt}–${dayAt})`;
+      set('fin-source', `${report.dataSource}${sessionNote}`);
 
-      set('fin-hero-collected', fmt(collected));
-      set('fin-hero-net', fmt(net));
-      set('fin-hero-unpaid-orders', fmt(report.unpaidOrdersTotal ?? report.pending));
-      set('fin-hero-unpaid-invoices', fmt(report.proformaOutstanding ?? 0));
+      set('fin-payment-count', report.paymentCount);
+      set('fin-period-display', `${startStr} — ${endStr}`);
+
+      /* Bento KPI numbers matching Image 2 */
+      set('fin-hero-collected', fmtInt(collected));
+      set('fin-hero-net', fmtInt(net));
+      set('fin-hero-unpaid-orders', fmtInt(report.unpaidOrdersTotal ?? report.pending));
+      set('fin-hero-unpaid-invoices', fmtInt(report.proformaOutstanding ?? 0));
       set('fin-hero-payment-count', report.paymentCount);
 
-      set('fin-pending', fmt(report.unpaidOrdersTotal ?? report.pending));
+      set('fin-pending', fmtKes(report.unpaidOrdersTotal ?? report.pending));
       const ordersCount = report.unpaidOrdersCount ?? report.pendingCount;
-      set('fin-pending-count', `${ordersCount} ${ordersCount === 1 ? 'order' : 'orders'} · unreceived`);
-      set('fin-proforma-total', fmt(report.proformaOutstanding ?? 0));
+      set('fin-pending-count', `${ordersCount} ${ordersCount === 1 ? 'bill' : 'bills'} · tap to consolidate & pay`);
+      set('fin-proforma-total', fmtKes(report.proformaOutstanding ?? 0));
       const pfCount = report.proformaCount ?? 0;
-      set('fin-proforma-count', `${pfCount} ${pfCount === 1 ? 'invoice' : 'invoices'} · locked`);
-      set('fin-gross', fmt(gross));
-      set('fin-disc', fmt(discounts));
-      set('fin-net', fmt(net));
-      set('fin-cash', fmt(cash));
-      set('fin-mpesa', fmt(mpesa));
-      set('fin-bank', fmt(report.bank));
-      set('fin-other', fmt(other));
-      set('fin-collected', fmt(collected));
-      set('fin-unpaid', fmt(report.unpaid));
+      set('fin-proforma-count', `${pfCount} ${pfCount === 1 ? 'invoice' : 'invoices'} · event proformas`);
+      set('fin-gross', fmtKes(gross));
+      set('fin-disc', fmtKes(discounts));
+      set('fin-net', fmtKes(net));
+      set('fin-cash', fmtKes(cash));
+      set('fin-mpesa', fmtKes(mpesa));
+      set('fin-bank', fmtKes(report.bank));
+      set('fin-other', fmtKes(other));
+      set('fin-collected', fmtKes(collected));
+      set('fin-unpaid', fmtKes(report.unpaid));
       set('fin-count', sales.length);
 
       this.staffNameResolver = staffName;
       this.currentMetrics = { ...report, startStr, endStr, session };
+      this.renderTransactionsTable();
       this.renderUnpaidOrdersTable();
+      this.renderLatestUnpaidSideCard();
 
       // Render the staff rundown
       const reportBody = document.getElementById('cashier-report-body');
       if (reportBody) {
         const rows = report.staffRundown;
         if (rows.length === 0) {
-          reportBody.innerHTML = `
-            <tr>
-              <td colspan="6" style="padding:16px;text-align:center;color:var(--text-secondary);">Nobody recorded a sale, a payment or an open order in this date range.</td>
-            </tr>
-          `;
+          reportBody.innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:#6b7280;">No staff sales or payments recorded in this date range.</td></tr>';
         } else {
           reportBody.innerHTML = rows.map(row => `
             <tr>
-              <td style="font-weight: 600; color: #fff;">${escape(row.name)}</td>
-              <td style="text-align:center; color: var(--text-secondary);">${row.salesCount}</td>
-              <td style="text-align:right;">${fmt(row.sales)}</td>
-              <td style="text-align:center; color: var(--text-secondary);">${row.receivedCount}</td>
-              <td style="text-align:right; font-weight: 700; color: var(--accent-green);">${fmt(row.received)}</td>
-              <td style="text-align:right; color:${row.unpaid > 0 ? '#ff9800' : 'var(--text-secondary)'};">${fmt(row.unpaid)}${row.unpaidCount ? ` <small>(${row.unpaidCount})</small>` : ''}</td>
+              <td class="fin-ref-code">${escape(row.name)}</td>
+              <td>${row.salesCount}</td>
+              <td>${fmtKes(row.sales)}</td>
+              <td>${row.receivedCount}</td>
+              <td style="font-weight:700;color:#53b74c;">${fmtKes(row.received)}</td>
+              <td style="color:${row.unpaid > 0 ? '#f59e0b' : '#9ca3af'};">${fmtKes(row.unpaid)}${row.unpaidCount ? ` (${row.unpaidCount})` : ''}</td>
             </tr>
           `).join('');
         }
       }
 
+      const aiMsgs = document.getElementById('ai-msgs');
+      if (aiMsgs) aiMsgs.innerHTML = '';
       this.addAIMsg(financialAnswer(this.currentMetrics));
 
     } catch (err) {
       if (request !== this.loadRequest) return;
       this.currentMetrics = null;
-      document.getElementById('fin-source').textContent = 'Report failed to load. Reload before using these figures.';
+      document.getElementById('fin-source').textContent = 'Report failed to load. Click Refresh to retry.';
       console.error('Finance load error:', err);
       showNotification('Error loading financial data', 'error');
     }
+  }
+
+  formatCleanTime(ts) {
+    const ms = timestamp(ts);
+    if (!Number.isFinite(ms)) return '—';
+    const d = new Date(ms);
+    const timePart = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).replace(/\s+/g, '');
+    const monthPart = d.toLocaleDateString('en-US', { month: 'short' });
+    const day = d.getDate();
+    const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+    return `${timePart}, ${monthPart} ${day}${suffix}`;
+  }
+
+  renderTransactionsTable() {
+    const details = document.getElementById('fin-transactions');
+    if (!details || !this.currentMetrics) return;
+    const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const staffName = this.staffNameResolver || (r => r.staff_id || 'Staff');
+    const query = this.txSearchQuery || '';
+    const transactions = (this.currentMetrics.transactions || []).filter((p) => {
+      if (!query) return true;
+      const hay = [p.reference, p.id, p.customer_name, p.invoice_no, p.order_reference, p.method, staffName(p)].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(query);
+    });
+
+    details.innerHTML = '<table class="fin-clean-table">'
+      + '<thead><tr><th>TIME</th><th>REFERENCE</th><th>NAME / ORDER</th><th>STAFF</th><th>AMOUNT</th><th>MODE</th></tr></thead>'
+      + '<tbody>'
+      + transactions.map((p) => {
+        const ref = p.reference || p.invoice_no || p.order_reference || p.id || '—';
+        const customerOrOrder = p.customer_name || p.invoice_no || p.order_reference || 'Walk-in Guest';
+        const mode = String(p.method || 'cash').toLowerCase().replace(/_/g, ' ');
+        return '<tr>'
+          + '<td>' + escape(this.formatCleanTime(p.received_at)) + '</td>'
+          + '<td class="fin-ref-code">' + escape(ref) + '</td>'
+          + '<td>' + escape(customerOrOrder) + '</td>'
+          + '<td>' + escape(staffName(p)) + '</td>'
+          + '<td style="font-weight:700;color:#fff;">' + Math.round(Number(p.amount || 0)).toLocaleString() + '</td>'
+          + '<td class="fin-mode-label">' + escape(mode) + (p.status && p.status !== 'SUCCESS' ? ` (${escape(paymentAttemptLabel(p))})` : '') + '</td>'
+          + '</tr>';
+      }).join('')
+      + (transactions.length ? '' : '<tr><td colspan="6" style="text-align:center;color:#6b7280;padding:24px;">No payment transactions match this filter.</td></tr>')
+      + '</tbody></table>';
+  }
+
+  renderLatestUnpaidSideCard() {
+    const listEl = document.getElementById('fin-latest-unpaid-list');
+    if (!listEl || !this.currentMetrics) return;
+    const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const rows = (this.currentMetrics.consolidatedUnpaidOrders || this.currentMetrics.unpaidOrdersOnly || []).slice(0, 4);
+    if (!rows.length) {
+      listEl.innerHTML = '<div style="color:#6b7280;font-size:12px;text-align:center;padding:14px 0;">All table bills settled</div>';
+      return;
+    }
+    listEl.innerHTML = rows.map((order) => {
+      const label = order.table_no
+        ? `Table ${order.table_no}${(order.roundCount || 1) > 1 ? ` (${order.roundCount})` : ''}`
+        : (order.reference || 'Order');
+      const timeStr = order.placed_at
+        ? new Date(timestamp(order.placed_at)).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).replace(/\s+/g, '')
+        : 'Open';
+      const href = `/orders?order=${encodeURIComponent(order.reference)}`;
+      return `<div class="fin-side-item">
+        <span class="fin-side-ref">${escape(label)}</span>
+        <span class="fin-side-time">${escape(timeStr)}</span>
+        <a class="fin-side-amt" href="${href}" style="color:#53b74c;">${Math.round(Number(order.amount || 0)).toLocaleString()} KES →</a>
+      </div>`;
+    }).join('');
   }
 
   renderUnpaidOrdersTable() {
@@ -545,39 +658,35 @@ export class FinanceView {
     if (!unpaidOrdersEl || !this.currentMetrics) return;
     const report = this.currentMetrics;
     const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-    const fmt = v => 'KES ' + Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const staffName = this.staffNameResolver || (r => r.staff_id || 'Unassigned');
 
     const rows = this.consolidateByTable
       ? (report.consolidatedUnpaidOrders || report.unpaidOrdersOnly || [])
       : (report.unpaidOrdersOnly || report.unpaidOrders?.filter(o => o.source !== 'proforma') || []);
 
-    unpaidOrdersEl.innerHTML = '<table class="fin-table" style="width:100%;border-collapse:collapse;text-align:left;font-size:13px;">'
-      + '<thead><tr><th>Raised</th><th>Table / Order Ref</th><th>Source</th><th>Staff</th><th>Branch</th><th style="text-align:right">Total Due</th><th>Action</th></tr></thead><tbody>'
+    unpaidOrdersEl.innerHTML = '<table class="fin-clean-table">'
+      + '<thead><tr><th>TIME</th><th>TABLE / REFERENCE</th><th>BILLS CONSOLIDATED</th><th>STAFF</th><th>AMOUNT (KES)</th><th>ACTION</th></tr></thead><tbody>'
       + rows.map(order => {
         const isConsolidated = (order.roundCount || 1) > 1;
         const tableBadge = order.table_no
-          ? `<span style="display:inline-block;background:rgba(232,165,53,0.18);color:#e8a535;border:1px solid rgba(232,165,53,0.4);padding:2px 8px;border-radius:12px;font-size:11px;font-weight:800;margin-right:6px;">Table ${escape(order.table_no)}</span>`
+          ? `<span style="display:inline-block;background:#134e32;color:#86efac;border:1px solid rgba(83,183,76,0.35);padding:3px 10px;border-radius:999px;font-size:11px;font-weight:800;margin-right:8px;">Table ${escape(order.table_no)}</span>`
           : '';
-        const refLabel = isConsolidated
-          ? `${tableBadge}<b>${order.roundCount} bills consolidated</b><br><small style="color:var(--text-secondary)">${escape((order.references || [order.reference]).join(', '))}</small>`
-          : `${tableBadge}${escape(order.reference)}${order.customer_name ? `<br><small style="color:var(--text-secondary)">${escape(order.customer_name)}</small>` : ''}`;
-        const sourceLabel = isConsolidated
-          ? `Consolidated Table Bill (${order.roundCount} rounds)`
-          : (order.source === 'customer_order' ? 'Customer QR order' : 'Till / Tab order');
+        const refLabel = `${tableBadge}<span class="fin-ref-code">${escape(order.reference)}</span>${order.customer_name ? ` · <span style="color:#9ca3af;">${escape(order.customer_name)}</span>` : ''}`;
+        const billsInfo = isConsolidated
+          ? `<strong style="color:#86efac;">${order.roundCount} bills combined</strong> <span style="color:#8a8f8c;font-size:11px;">(${escape((order.references || [order.reference]).join(', '))})</span>`
+          : 'Single bill';
         const actionHref = `/orders?order=${encodeURIComponent(order.reference)}`;
-        const actionText = isConsolidated ? 'Consolidate &amp; Pay Table' : 'Pay / Reconcile';
+        const actionText = isConsolidated ? `Pay Combined Bill (${order.roundCount})` : 'Pay Bill';
         return '<tr>'
-          + '<td>' + escape(order.invoice_date || new Date(timestamp(order.placed_at)).toLocaleString()) + '</td>'
+          + '<td>' + escape(this.formatCleanTime(order.placed_at || order.invoice_date)) + '</td>'
           + '<td>' + refLabel + '</td>'
-          + '<td>' + escape(sourceLabel) + '</td>'
+          + '<td>' + billsInfo + '</td>'
           + '<td>' + escape(order.staff_id ? staffName(order) : 'Unassigned') + '</td>'
-          + '<td>' + escape(order.branch_id || '—') + '</td>'
-          + '<td style="text-align:right;font-weight:700;color:#ff9800;">' + fmt(order.amount) + '</td>'
+          + '<td style="font-weight:800;color:#fff;">' + Math.round(Number(order.amount || 0)).toLocaleString() + '</td>'
           + '<td><a class="fin-reconcile" href="' + actionHref + '">' + actionText + '</a></td>'
           + '</tr>';
       }).join('')
-      + (rows.length ? '' : '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:16px;">No unpaid table or counter orders in this period. Formal proforma invoices are listed separately under the Invoices tab.</td></tr>')
+      + (rows.length ? '' : '<tr><td colspan="6" style="text-align:center;color:#6b7280;padding:24px;">No unpaid table or counter bills in this period. Formal Proforma Invoices are under the Proforma Invoices tab.</td></tr>')
       + '</tbody></table>';
   }
 
@@ -592,7 +701,7 @@ export class FinanceView {
     setTimeout(() => {
       this.removeTyping();
       this.generateResponse(msg.toLowerCase());
-    }, 700);
+    }, 350);
   }
 
   addUserMsg(text) {
@@ -633,17 +742,11 @@ export class FinanceView {
 
   generateResponse(q) {
     const m = this.currentMetrics;
-    if (m && (m.startStr !== document.getElementById('fin-start')?.value
-      || m.endStr !== document.getElementById('fin-end')?.value
-      || m.session !== (this.session || 'full'))) {
-      this.addAIMsg('The period changed. Load Report before asking about the new dates.');
-      return;
-    }
     if (!m) {
-      this.addAIMsg('Please select a date range and click "Load Report" first so I can analyze your data.');
+      this.addAIMsg('Click "Refresh" first so I can analyze your live transactions.');
       return;
     }
-
     this.addAIMsg(financialAnswer(m, q));
   }
 }
+

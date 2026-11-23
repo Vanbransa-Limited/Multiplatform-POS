@@ -1159,13 +1159,21 @@ export class TillView {
       return;
     }
 
-    // Staff 20% Discount: toggle on/off, always qty 1
+    // Staff 20% Discount: toggle on/off, always qty 1 (requires Supervisor/Owner or PIN override)
     if (product.id === 'prod-staff-discount') {
       if (existingIndex > -1) {
         this.cart.splice(existingIndex, 1);
         showNotification('Staff 20% Discount removed', 'warning');
         this.updateCartUI();
         return;
+      }
+      if (!['Owner', 'Supervisor'].includes(state.currentUser?.role)) {
+        const pin = window.prompt('Supervisor Override Required — Enter Supervisor (9999) or Owner (0000) PIN to authorize Staff 20% Discount:');
+        if (pin === null) return;
+        if (!['9999', '0000'].includes(pin.trim())) {
+          showNotification('Invalid Supervisor PIN. Staff discount not applied.', 'error');
+          return;
+        }
       }
       this.cart.unshift({
         product,
@@ -1174,7 +1182,7 @@ export class TillView {
         discount_percent: 20,
         batch: null
       });
-      showNotification('Staff 20% Discount added', 'success');
+      showNotification('Staff 20% Discount authorized & applied', 'success');
       this.updateCartUI();
       return;
     }

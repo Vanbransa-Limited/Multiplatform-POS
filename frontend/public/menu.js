@@ -7,8 +7,110 @@ const $ = (id) => document.getElementById(id);
 const money = (minor) => `KES ${(minor / 100).toFixed(2)}`;
 const escapeText = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+function readFromIndexedDb() {
+  return new Promise((resolve) => {
+    if (typeof indexedDB === 'undefined') { resolve(null); return; }
+    const req = indexedDB.open('TitaniumPOS_DB_v1');
+    req.onerror = () => resolve(null);
+    req.onsuccess = () => {
+      const db = req.result;
+      const names = Array.from(db.objectStoreNames || []);
+      if (!names.includes('products')) { db.close(); resolve(null); return; }
+      const tx = db.transaction(['products', 'categories', 'branches', 'tenants'].filter((n) => names.includes(n)), 'readonly');
+      const getAll = (storeName) => new Promise((res) => {
+        if (!names.includes(storeName)) { res([]); return; }
+        const r = tx.objectStore(storeName).getAll();
+        r.onsuccess = () => res(r.result || []);
+        r.onerror = () => res([]);
+      });
+      Promise.all([getAll('products'), getAll('categories'), getAll('branches'), getAll('tenants')])
+        .then(([prods, cats, brs, tenants]) => {
+          db.close();
+          resolve({ prods, cats, brs, tenant: tenants[0] || null });
+        })
+        .catch(() => { db.close(); resolve(null); });
+    };
+  });
+}
+
 async function callMenu(name, data) {
-  if (!tenantId || !window.MENU_CONFIG?.baseUrl) throw new Error('Menu is not configured. Please contact staff.');
+  if (!tenantId || !window.MENU_CONFIG?.baseUrl) {
+    if (name === 'getPublicMenu') {
+      const local = await readFromIndexedDb();
+      const rawProducts = (local?.prods || []).filter((p) => !p.is_service && !p.retired_at && p.show_on_menu !== false && Number(p.sell_price) > 0);
+      const mappedProducts = rawProducts.map((p) => ({
+        id: p.id,
+        name: p.name,
+        categoryId: p.category_id || 'cat-beers',
+        sellPriceMinor: Math.round(Number(p.sell_price || 0) * 100),
+        uom: p.uom || 'EACH',
+        imagePath: p.image_data || p.image_path || null,
+        soldOut: false,
+      }));
+      const mappedCategories = (local?.cats?.length ? local.cats : [
+        { id: 'cat-beers', name: 'Beers & Ciders' },
+        { id: 'cat-spirits', name: 'Spirits & Wines' },
+        { id: 'cat-softdrinks', name: 'Soft Drinks & Water' },
+        { id: 'cat-food', name: 'Food & Meals' },
+      ]);
+      const mappedBranches = (local?.brs?.length ? local.brs : [{ id: 'branch-nai-01', name: 'Vanbransa Lounge' }]).map((b) => ({
+        id: b.id,
+        name: b.name || 'Vanbransa Lounge',
+      }));
+      return {
+        name: local?.tenant?.trading_name || 'Vanbransa Lounge',
+        products: mappedProducts,
+        categories: mappedCategories,
+        branches: mappedBranches,
+      };
+    }
+    if (name === 'submitCustomerOrder') {
+      const ref = `QR-${Date.now().toString().slice(-5)}`;
+      const lineItems = (data.lines || []).map((l) => {
+        const prod = products.find((p) => p.id === l.productId);
+        return {
+          productId: l.productId,
+          name: prod?.name || l.productId,
+          qty: Number(l.qty || 1),
+          unitPriceMinor: Number(l.unitPriceMinor || prod?.sellPriceMinor || 0),
+        };
+      });
+      const totalMinor = lineItems.reduce((sum, l) => sum + l.unitPriceMinor * l.qty, 0);
+      const orderRecord = {
+        id: data.requestId || crypto.randomUUID(),
+        ref,
+        source: 'menu',
+        tenantId: data.tenantId || 'tenant-01',
+        branchId: data.branchId || 'branch-nai-01',
+        orderType: data.orderType || 'dine_in',
+        customerName: data.customerName || (data.tableNumber ? `Table ${data.tableNumber} Guest` : 'Guest'),
+        tableNumber: data.tableNumber || '',
+        note: data.note || '',
+        lines: lineItems,
+        totalMinor,
+        dueMinor: totalMinor,
+        paymentStatus: 'unpaid',
+        status: 'received',
+        printCount: 0,
+        createdAt: new Date().toISOString(),
+      };
+      try {
+        const existing = JSON.parse(localStorage.getItem('pos_local_customer_orders') || '[]');
+        const list = Array.isArray(existing) ? existing : [];
+        if (!list.some((o) => o.id === orderRecord.id)) {
+          list.unshift(orderRecord);
+          localStorage.setItem('pos_local_customer_orders', JSON.stringify(list));
+        }
+        if (typeof BroadcastChannel !== 'undefined') {
+          const ch = new BroadcastChannel('vanbransa_customer_orders');
+          ch.postMessage({ type: 'new_order', order: orderRecord });
+          ch.close();
+        }
+      } catch {}
+      return { id: orderRecord.id, ref };
+    }
+    throw new Error('Menu action is not available offline.');
+  }
   const response = await fetch(`${window.MENU_CONFIG.baseUrl}/${name}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data }),
     signal: AbortSignal.timeout(30000),

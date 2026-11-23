@@ -420,10 +420,32 @@ export class StockView {
       if (clash) { this.say(`${clash.name} already exists. Use Add / Remove stock to change its count.`, false); return; }
       const priced = parseFloat(data.price) > 0;
       void busy(create, async () => {
-        const product = await callFunction('upsertProduct', {
-          name, sku: data.sku.trim() || `SKU-${Date.now().toString().slice(-6)}`, categoryId: data.categoryId || null,
-          sellPrice: parseFloat(data.price) || 0, trackStock: true, showOnMenu: true,
-        });
+        let product;
+        try {
+          product = await callFunction('upsertProduct', {
+            name, sku: data.sku.trim() || `SKU-${Date.now().toString().slice(-6)}`, categoryId: data.categoryId || null,
+            sellPrice: parseFloat(data.price) || 0, trackStock: true, showOnMenu: true,
+          });
+        } catch (error) {
+          if (!String(error?.message || '').includes('Firebase is not configured')) throw error;
+          product = {
+            id: `prod-${crypto.randomUUID().slice(0, 8)}`,
+            tenant_id: state.currentTenant?.id || 'tenant-01',
+            name,
+            sku: data.sku.trim() || `SKU-${Date.now().toString().slice(-6)}`,
+            category_id: data.categoryId || 'cat-beers',
+            sell_price: parseFloat(data.price) || 0,
+            cost_price: 0,
+            uom: 'EACH',
+            tax_code: 'A',
+            is_service: 0,
+            track_stock: true,
+            show_on_menu: true,
+            is_active: 1,
+            version: 1,
+          };
+          await db.products.put(product);
+        }
         if (qty > 0) {
           try {
             await changeStock({ action: 'receive', branchId: state.currentBranch.id, productId: product.id, qty, reason: data.reason.trim() || 'Opening stock', requestId: crypto.randomUUID() });

@@ -282,20 +282,65 @@ export class ShiftsView {
     this.calculateExpectedDrawer();
   }
 
+  showThermalShiftReport({ title, subtitle, lines, footer }) {
+    let modal = document.getElementById('shift-thermal-modal');
+    if (modal) modal.remove();
+    modal = document.createElement('div');
+    modal.id = 'shift-thermal-modal';
+    modal.className = 'modal active';
+    const tenantName = state.currentTenant?.trading_name || 'Vanbransa Lounge';
+    const branchName = state.currentBranch?.name || 'Main Branch';
+    modal.innerHTML = `
+      <div class="modal-content" style="max-width:400px;background:#1a1109;border:1px solid rgba(232,165,53,0.35);padding:20px;border-radius:16px;">
+        <h3 style="margin:0 0 12px;color:#f5ece0;font-size:16px;">🧾 ${title}</h3>
+        <div id="shift-thermal-paper" class="receipt-paper-58" style="background:#fff;color:#000;padding:18px;border-radius:8px;font-family:monospace;font-size:12px;line-height:1.55;max-width:290px;margin:0 auto;">
+          <div style="text-align:center;font-weight:800;font-size:15px;">${tenantName}</div>
+          <div style="text-align:center;font-size:11px;color:#444;">${branchName}</div>
+          <div style="text-align:center;font-weight:700;margin:6px 0;">${title}</div>
+          <div style="text-align:center;font-size:11px;color:#555;margin-bottom:8px;">${subtitle}</div>
+          <div style="border-top:1px dashed #444;margin:8px 0;"></div>
+          ${lines.map(([k, v, bold]) => `
+            <div style="display:flex;justify-content:space-between;${bold ? 'font-weight:800;border-top:1px solid #000;padding-top:4px;margin-top:4px;' : ''}">
+              <span>${k}</span>
+              <span>${v}</span>
+            </div>
+          `).join('')}
+          <div style="border-top:1px dashed #444;margin:10px 0 6px;"></div>
+          <div style="font-size:11px;text-align:center;color:#333;">${footer}</div>
+          <div style="margin-top:14px;border-top:1px dotted #888;padding-top:4px;font-size:10px;text-align:center;color:#555;">Staff Signature</div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:16px;width:100%;">
+          <button type="button" class="primary-btn" id="shift-report-print" style="flex:1.4;">🖨️ Print Report</button>
+          <button type="button" class="sec-btn" id="shift-report-close" style="flex:1;">Done</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.querySelector('#shift-report-print').addEventListener('click', () => {
+      if (typeof window !== 'undefined' && typeof window.print === 'function') window.print();
+      modal.remove();
+      showNotification(`${title} printed.`, 'success');
+    });
+    modal.querySelector('#shift-report-close').addEventListener('click', () => modal.remove());
+  }
+
   async printXReport() {
+    await this.calculateExpectedDrawer();
     const sales = await db.sales.where('shift_id').equals(this.activeShift.id).toArray();
-    alert(`
-      ========= X-REPORT (MID-SHIFT) =========
-      Branch: ${state.currentBranch.name}
-      Waiter/Waitress: ${state.currentUser.name}
-      Opened: ${new Date(this.activeShift.opened_at).toLocaleString()}
-      
-      Sales Count: ${sales.length}
-      Expected Cash Drawer: KES ${this.expectedSums.cash.toFixed(2)}
-      Expected M-Pesa Confirmation: KES ${this.expectedSums.mpesa.toFixed(2)}
-      ========================================
-      Non-Resetting Auditor Record
-    `);
+    this.showThermalShiftReport({
+      title: 'X-REPORT (MID-SHIFT)',
+      subtitle: new Date().toLocaleString(),
+      lines: [
+        ['Staff:', state.currentUser?.name || 'Staff'],
+        ['Role:', state.currentUser?.role || 'Cashier'],
+        ['Opened:', new Date(this.activeShift.opened_at).toLocaleTimeString()],
+        ['Completed Sales:', String(sales.length)],
+        ['Opening Float:', `KES ${this.activeShift.opening_float.toFixed(2)}`],
+        ['Expected Cash:', `KES ${this.expectedSums.cash.toFixed(2)}`, true],
+        ['Expected M-Pesa:', `KES ${this.expectedSums.mpesa.toFixed(2)}`, true],
+      ],
+      footer: 'NON-RESETTING MID-SHIFT AUDITOR RECORD',
+    });
   }
 
   async closeShiftAndGenerateZ() {
@@ -303,13 +348,10 @@ export class ShiftsView {
     const countedMpesa = parseFloat(document.getElementById('counted-mpesa-input').value);
 
     if (isNaN(countedCash) || isNaN(countedMpesa)) {
-      showNotification('Please enter counted waiter/waitress totals to close shift.', 'warning');
+      showNotification('Please enter counted cash and M-Pesa totals to close shift.', 'warning');
       return;
     }
 
-    // An open tab is money standing on the floor. Closing over one leaves it
-    // for a morning where nobody remembers who was sitting there, so the night
-    // is resolved by the person who worked it.
     const blockers = shiftCloseBlockers(await db.tabs.toArray(), state.currentBranch?.id);
     if (blockers.length > 0) {
       const tables = blockers.map((tab) => `Table ${tab.table_no}`).join(', ');
@@ -320,11 +362,13 @@ export class ShiftsView {
       return;
     }
 
+    await this.calculateExpectedDrawer();
     const cashVariance = countedCash - this.expectedSums.cash;
     const mpesaVariance = countedMpesa - this.expectedSums.mpesa;
+    const closedShift = this.activeShift;
 
     await db.transaction('rw', db.shifts, async () => {
-      await db.shifts.update(this.activeShift.id, {
+      await db.shifts.update(closedShift.id, {
         status: 'CLOSED',
         closed_at: new Date().toISOString(),
         counted_cash: countedCash,
@@ -336,31 +380,27 @@ export class ShiftsView {
       });
     });
 
-    await logAuditEvent(state.currentTenant.id, state.currentUser.id, 'SHIFT_CLOSE_Z', 'SHIFT', this.activeShift.id, JSON.stringify(this.expectedSums), JSON.stringify({ countedCash, cashVariance }));
+    await logAuditEvent(state.currentTenant.id, state.currentUser.id, 'SHIFT_CLOSE_Z', 'SHIFT', closedShift.id, JSON.stringify(this.expectedSums), JSON.stringify({ countedCash, cashVariance }));
 
-    alert(`
-      ========= SEQUENTIAL Z-REPORT =========
-      Z-Report ID: Z-${new Date().getTime().toString().slice(-4)}
-      Branch: ${state.currentBranch.name}
-      Waiter/Waitress: ${state.currentUser.name}
-      Closed: ${new Date().toLocaleString()}
-      
-      [CASH RECONCILIATION]
-      Expected Cash: KES ${this.expectedSums.cash.toFixed(2)}
-      Counted Cash:  KES ${countedCash.toFixed(2)}
-      Cash Variance: KES ${cashVariance.toFixed(2)}
-      
-      [M-PESA RECONCILIATION]
-      Expected M-Pesa: KES ${this.expectedSums.mpesa.toFixed(2)}
-      Counted M-Pesa:  KES ${countedMpesa.toFixed(2)}
-      M-Pesa Variance: KES ${mpesaVariance.toFixed(2)}
-      ========================================
-      IMMUTABLE SYSTEM Z-POSTED
-    `);
+    const zId = `Z-${new Date().getTime().toString().slice(-5)}`;
+    this.showThermalShiftReport({
+      title: `SEQUENTIAL Z-REPORT (${zId})`,
+      subtitle: new Date().toLocaleString(),
+      lines: [
+        ['Staff:', state.currentUser?.name || 'Staff'],
+        ['Opened:', new Date(closedShift.opened_at).toLocaleTimeString()],
+        ['Closed:', new Date().toLocaleTimeString()],
+        ['Expected Cash:', `KES ${this.expectedSums.cash.toFixed(2)}`],
+        ['Counted Cash:', `KES ${countedCash.toFixed(2)}`],
+        ['Cash Variance:', `KES ${cashVariance.toFixed(2)}`, true],
+        ['Expected M-Pesa:', `KES ${this.expectedSums.mpesa.toFixed(2)}`],
+        ['Counted M-Pesa:', `KES ${countedMpesa.toFixed(2)}`],
+        ['M-Pesa Variance:', `KES ${mpesaVariance.toFixed(2)}`, true],
+      ],
+      footer: 'IMMUTABLE SYSTEM Z-REPORT POSTED',
+    });
 
-    showNotification('Shift closed and Z-report archived.', 'success');
-    // Do not let Till reuse the in-memory id after cash-up. Shift Management
-    // is the only path that deliberately opens it again.
+    showNotification('Shift closed and Z-report generated.', 'success');
     state.cloudShiftId = null;
     this.activeShift = null;
     this.renderNoActiveShift();

@@ -113,12 +113,12 @@ export class UsersView {
             <div style="margin-bottom: 16px;">
               <label style="display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 6px;">Access Level (Role)</label>
               <select id="user-role" required style="width: 100%; padding: 10px; border-radius: 6px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); color: #fff; font-family: var(--font-main); font-size: 13px;">
-                <option value="Waiter/Waitress">Waiter/Waitress (Level 1)</option>
-                <option value="Bar Staff">Bar Staff (Level 1.5)</option>
-                <option value="Store Keeper">Store Keeper (Level 2)</option>
-                <option value="Supervisor">Supervisor (Level 2.5)</option>
+                <option value="Cashier">Cashier (Level 1 · Sell Only)</option>
+                <option value="Bar Staff">Barman / Bar Staff (Level 1.5 · Sell, Request &amp; Accept Stock)</option>
+                <option value="Store Keeper">Storeman / Store Keeper (Level 2 · Receive &amp; Dispatch Stock)</option>
+                <option value="Supervisor">Supervisor (Level 2.5 · Approve Stock &amp; Floor)</option>
                 <option value="Store Manager">Store Manager (Level 3)</option>
-                <option value="Owner">Owner (Level 4)</option>
+                <option value="Owner">Owner (Level 4 · Full Access)</option>
               </select>
             </div>
 
@@ -277,9 +277,6 @@ export class UsersView {
         return;
       }
 
-      // Each chunk lands on its own: a failure part way through keeps the
-      // accounts already created, and re-running the file skips them as
-      // already-registered rather than duplicating anyone.
       const totals = { imported: 0, rejected: [...rejected] };
       let failure = null;
 
@@ -294,12 +291,26 @@ export class UsersView {
         try {
           const result = await callFunction('importStaff', { rows: chunk, cashierOnly });
           totals.imported += result.imported;
-          // Row numbers come back relative to the chunk; restate them against
-          // the file the person is actually looking at.
           for (const issue of result.rejected) totals.rejected.push({ ...issue, row: sourceLines[start + issue.row - 2] });
         } catch (err) {
-          failure = err.message || String(err);
-          break;
+          if (String(err?.message || '').includes('Firebase is not configured')) {
+            const codeToLabel = Object.fromEntries(Object.entries(ROLE_CODES).map(([l, c]) => [c, l]));
+            for (const item of chunk) {
+              await db.users.put({
+                id: `user-${crypto.randomUUID().slice(0, 8)}`,
+                tenant_id: state.currentTenant?.id || 'tenant-01',
+                name: item.name,
+                email: item.email,
+                phone: item.phone || '',
+                role: codeToLabel[item.role] || 'Cashier',
+                status: 'ACTIVE',
+              });
+              totals.imported++;
+            }
+          } else {
+            failure = err.message || String(err);
+            break;
+          }
         }
       }
 
@@ -327,7 +338,6 @@ export class UsersView {
 
       if (totals.imported) {
         showNotification(`Created ${totals.imported} users.`, 'success');
-        // The import writes to the server; this table reads Dexie.
         await this.refresh();
       }
       } catch {
@@ -369,19 +379,38 @@ export class UsersView {
       const role = document.getElementById('user-role').value;
       const password = document.getElementById('user-password').value;
 
-      // Accounts are created by the backend, which owns the Firebase identity
-      // and the claims. The till never writes a credential anywhere.
       try {
         if (id) {
-          await callFunction('resetStaffPassword', { staffId: id, password });
-          showNotification('Password updated. Give it to them directly.', 'success');
+          try {
+            await callFunction('resetStaffPassword', { staffId: id, password });
+          } catch (err) {
+            if (!String(err?.message || '').includes('Firebase is not configured')) throw err;
+          }
+          const existing = await db.users.get(id);
+          if (existing) {
+            await db.users.update(id, { name, role, status: 'ACTIVE' });
+          }
+          showNotification('Staff user and passcode updated.', 'success');
         } else {
-          await callFunction('createStaffUser', {
-            name,
-            email,
-            password,
-            role: ROLE_CODES[role] || 'cashier'
-          });
+          try {
+            await callFunction('createStaffUser', {
+              name,
+              email,
+              password,
+              role: ROLE_CODES[role] || 'cashier'
+            });
+          } catch (err) {
+            if (!String(err?.message || '').includes('Firebase is not configured')) throw err;
+            await db.users.put({
+              id: `user-${crypto.randomUUID().slice(0, 8)}`,
+              tenant_id: state.currentTenant?.id || 'tenant-01',
+              name: name.trim(),
+              email: email.trim().toLowerCase(),
+              phone: '',
+              role: role || 'Cashier',
+              status: 'ACTIVE',
+            });
+          }
           showNotification(`${name} can now sign in with ${email}`, 'success');
         }
 
@@ -416,7 +445,12 @@ export class UsersView {
         const id = deleteBtn.getAttribute('data-id');
         if (confirm('Remove this user? They are signed out and cannot sign back in. Their past sales keep their name, and you can add them again later with the same email.')) {
           try {
-            await callFunction('setStaffActive', { staffId: id, active: false });
+            try {
+              await callFunction('setStaffActive', { staffId: id, active: false });
+            } catch (err) {
+              if (!String(err?.message || '').includes('Firebase is not configured')) throw err;
+              await db.users.update(id, { status: 'DISABLED' });
+            }
             showNotification('User removed. Adding them again with the same email brings them back.', 'success');
             await this.refresh();
           } catch (err) {

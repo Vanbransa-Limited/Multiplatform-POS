@@ -708,8 +708,22 @@ Past sales keep it. You can add it again later.`)) return;
         const button = modal.querySelector('#pe-new-category');
         button.disabled = true;
         try {
-          const created = await callFunction('upsertCategory', { name: name.trim() });
-          await pullCatalogue();
+          let created;
+          try {
+            created = await callFunction('upsertCategory', { name: name.trim() });
+            await pullCatalogue();
+          } catch (error) {
+            if (!String(error?.message || '').includes('Firebase is not configured')) throw error;
+            const cleanName = name.trim();
+            const existing = (await db.categories.toArray()).find(c => String(c.name || '').toLowerCase() === cleanName.toLowerCase());
+            if (existing) {
+              created = { id: existing.id, name: existing.name, created: false };
+            } else {
+              const id = `cat-${crypto.randomUUID().slice(0, 8)}`;
+              await db.categories.put({ id, name: cleanName });
+              created = { id, name: cleanName, created: true };
+            }
+          }
           const select = modal.querySelector('#pe-category');
           if (![...select.options].some((option) => option.value === created.id)) {
             select.add(new Option(created.name, created.id));
@@ -732,9 +746,7 @@ Past sales keep it. You can add it again later.`)) return;
         const saveBtn = modal.querySelector('#pe-save-btn');
         saveBtn.disabled = true;
         try {
-          // Products live in the central catalogue. Saving locally only meant an
-          // item existed on one device and never reached the menu or the tills.
-          await callFunction('upsertProduct', {
+          const payload = {
             id: prod.id || undefined,
             name,
             sku,
@@ -746,11 +758,34 @@ Past sales keep it. You can add it again later.`)) return;
             isService,
             trackStock: !isService && modal.querySelector('#pe-counted').checked,
             showOnMenu: modal.querySelector('#pe-on-menu').checked,
-            // The field the customer menu actually reads. Without it the
-            // picture only ever existed in this device's cache.
             imagePath: modal.querySelector('#pe-image-path').value.trim() || null,
-          });
-          await pullCatalogue();
+          };
+          try {
+            await callFunction('upsertProduct', payload);
+            await pullCatalogue();
+          } catch (error) {
+            if (!String(error?.message || '').includes('Firebase is not configured')) throw error;
+            const localId = payload.id || `prod-${crypto.randomUUID().slice(0, 8)}`;
+            const existing = await db.products.get(localId);
+            await db.products.put({
+              ...existing,
+              id: localId,
+              tenant_id: state.currentTenant?.id || 'tenant-01',
+              name: payload.name,
+              sku: payload.sku,
+              category_id: payload.categoryId,
+              sell_price: payload.sellPrice,
+              cost_price: payload.costPrice,
+              uom: payload.uom,
+              tax_code: payload.taxCode,
+              is_service: payload.isService ? 1 : 0,
+              track_stock: payload.trackStock,
+              show_on_menu: payload.showOnMenu,
+              image_data: payload.imagePath || existing?.image_data || null,
+              is_active: 1,
+              version: (existing?.version || 0) + 1,
+            });
+          }
           showNotification('Product saved to the catalogue.', 'success');
           modal.remove();
           this.loadSubTab(); // refresh ledger
@@ -764,21 +799,10 @@ Past sales keep it. You can add it again later.`)) return;
     const addBtn = document.getElementById('ledg-add-prod-btn');
     if (addBtn) addBtn.addEventListener('click', () => openEditor(null));
 
-    /**
-     * One handler, assigned rather than added.
-     *
-     * This runs again on every render, but the pane itself survives them - only
-     * its contents are replaced. addEventListener therefore stacked a new
-     * listener each time, so after a few refreshes one click on Edit opened
-     * several copies of the editor at once, and the one on top was the one
-     * whose buttons did nothing.
-     */
     pane.onclick = (e) => {
       const edit = e.target.closest('.edit-prod-btn');
       if (edit) return void openEditor(edit.getAttribute('data-id'));
 
-      // Counted items are the ones the public menu holds to their House
-      // balance, so this writes to the server catalogue, not the local cache.
       const btn = e.target.closest('.track-stock-btn, .menu-visible-btn');
       if (!btn) return;
       void this.toggleProductFlag(btn);
@@ -790,10 +814,18 @@ Past sales keep it. You can add it again later.`)) return;
     const change = menu
       ? { showOnMenu: !btn.getAttribute('data-shown') }
       : { trackStock: !btn.getAttribute('data-tracked') };
+    const productId = btn.getAttribute('data-id');
     btn.disabled = true;
     try {
-      await callFunction('setProductTracking', { productId: btn.getAttribute('data-id'), ...change });
-      await pullCatalogue();
+      try {
+        await callFunction('setProductTracking', { productId, ...change });
+        await pullCatalogue();
+      } catch (error) {
+        if (!String(error?.message || '').includes('Firebase is not configured')) throw error;
+        await db.products.update(productId, menu
+          ? { show_on_menu: change.showOnMenu }
+          : { track_stock: change.trackStock });
+      }
       showNotification(
         menu
           ? (change.showOnMenu ? 'Item now shows on the customer menu.' : 'Item is store only; it stays sellable at the till.')

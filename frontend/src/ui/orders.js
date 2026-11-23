@@ -333,6 +333,7 @@ export class OrdersView {
                 <h3>Outstanding</h3>
                 <p id="settle-due">KES 0.00</p>
                 <small id="settle-summary" style="font-size:11px;color:var(--text-muted)"></small>
+                <div id="settle-rounds-picker" style="display:none;margin-top:10px;padding-top:8px;border-top:1px solid rgba(200,130,42,0.22);text-align:left;font-size:12px;"></div>
               </div>
 
               <div class="checkout-inputs" id="settle-stk-inputs">
@@ -1055,6 +1056,8 @@ export class OrdersView {
       ? `Charges all ${order.roundIds.length} rounds at once`
       : "Send the prompt to the customer's phone";
     this.selectSettleMethod(typeof cashIsEnabled === 'function' && !cashIsEnabled() ? 'mpesa' : 'cash');
+    this.selectedSettleRoundIds = null;
+    this.populateSplitRoundsSelector?.(order);
     this.showModal('#settle-modal');
   }
 
@@ -1064,6 +1067,45 @@ export class OrdersView {
    * Only M-Pesa can be proven; the rest are records of money taken elsewhere,
    * and the note under the field says which of the two you are doing.
    */
+  async populateSplitRoundsSelector(order) {
+    const picker = this.container.querySelector('#settle-rounds-picker');
+    if (!picker) return;
+    if (!order?.roundIds || order.roundIds.length <= 1) {
+      picker.style.display = 'none';
+      picker.innerHTML = '';
+      return;
+    }
+    const rounds = await this.settleRounds(order, { forPayment: false });
+    if (rounds.length <= 1) {
+      picker.style.display = 'none';
+      picker.innerHTML = '';
+      return;
+    }
+    this.selectedSettleRoundIds = rounds.map((r) => r.id);
+    picker.style.display = 'block';
+    picker.innerHTML = `
+      <div style="font-weight:700;color:#e8a535;margin-bottom:6px;">Bills consolidated for Table ${escapeHtml(order.tableNumber || '')} (uncheck to split bill):</div>
+      ${rounds.map((r, i) => `
+        <label style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;cursor:pointer;color:#f5ece0;">
+          <span><input type="checkbox" data-split-round="${escapeHtml(r.id)}" data-round-amt="${Number(r.grand_total || 0)}" checked style="accent-color:#e8a535;margin-right:6px;">Bill ${i + 1} (${escapeHtml(r.invoice_no || r.id.slice(0, 6))})</span>
+          <strong>KES ${Number(r.grand_total || 0).toFixed(2)}</strong>
+        </label>
+      `).join('')}
+    `;
+    picker.querySelectorAll('[data-split-round]').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        const checked = [...picker.querySelectorAll('[data-split-round]:checked')];
+        if (checked.length === 0) {
+          cb.checked = true;
+          return;
+        }
+        this.selectedSettleRoundIds = checked.map((el) => el.getAttribute('data-split-round'));
+        const sumKes = checked.reduce((s, el) => s + Number(el.getAttribute('data-round-amt') || 0), 0);
+        this.container.querySelector('#settle-due').textContent = `KES ${sumKes.toFixed(2)}`;
+      });
+    });
+  }
+
   selectSettleMethod(method) {
     this.settleMethod = method;
     this.container.querySelectorAll('[data-settle-method]').forEach((card) => {
@@ -1283,7 +1325,10 @@ export class OrdersView {
       }
       return rounds;
     }
-    const ids = order.roundIds?.length ? order.roundIds : [order.id];
+    const allIds = order.roundIds?.length ? order.roundIds : [order.id];
+    const ids = (forPayment && Array.isArray(this.selectedSettleRoundIds) && this.selectedSettleRoundIds.length)
+      ? allIds.filter((id) => this.selectedSettleRoundIds.includes(id))
+      : allIds;
     const rounds = await billableCheckoutRounds((await Promise.all(ids.map((id) => db.sales.get(id)))).filter(Boolean), db);
     if (!forPayment) return rounds;
     const { firebaseConfigured } = await import('../services/firebase');

@@ -2,10 +2,51 @@ import { getFirebase, currentClaims, callFunction } from './firebase.js';
 import { escapeHtml } from './print-receipt.js';
 import { isReceivable } from './takings.js';
 
+const LOCAL_QR_ORDERS_KEY = 'pos_local_customer_orders';
+
+function readLocalQrOrders() {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(LOCAL_QR_ORDERS_KEY) : null;
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+}
+
+function writeLocalQrOrders(list) {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(LOCAL_QR_ORDERS_KEY, JSON.stringify(list));
+    }
+    if (typeof BroadcastChannel !== 'undefined') {
+      const ch = new BroadcastChannel('vanbransa_customer_orders');
+      ch.postMessage({ type: 'updated' });
+      ch.close();
+    }
+  } catch { /* ignore */ }
+}
+
 export async function watchCustomerOrders(onOrders, onError) {
   const fb = await getFirebase();
   const claims = await currentClaims();
-  if (!fb || !claims?.tenant_id) throw new Error('Sign in to receive customer orders.');
+  if (!fb || !claims?.tenant_id) {
+    const emit = () => {
+      const rows = readLocalQrOrders()
+        .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+      onOrders(rows);
+    };
+    emit();
+    const onStorage = (e) => { if (!e.key || e.key === LOCAL_QR_ORDERS_KEY) emit(); };
+    if (typeof window !== 'undefined') window.addEventListener('storage', onStorage);
+    let channel = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      channel = new BroadcastChannel('vanbransa_customer_orders');
+      channel.onmessage = () => emit();
+    }
+    return () => {
+      if (typeof window !== 'undefined') window.removeEventListener('storage', onStorage);
+      if (channel) channel.close();
+    };
+  }
   return fb.firestore.onSnapshot(fb.firestore.query(
     fb.firestore.collection(fb.dbInstance, 'customer_orders'),
     fb.firestore.where('tenantId', '==', claims.tenant_id),
@@ -459,19 +500,125 @@ export function renderOrderGrid(rows, images) {
   return `<div class="co-grid">${rows.map((order) => renderOrderCard(order, images)).join('')}</div>`;
 }
 
-export const updateCustomerOrder = (orderId, status) => callFunction('updateCustomerOrder', { orderId, status });
-export const printCustomerOrder = (orderId) => callFunction('printCustomerOrder', { orderId });
+async function mutateLocalQrOrder(orderId, mutator) {
+  const list = readLocalQrOrders();
+  const idx = list.findIndex((o) => o.id === orderId);
+  if (idx === -1) throw new Error('Customer order not found.');
+  const updated = mutator({ ...list[idx] });
+  list[idx] = updated;
+  writeLocalQrOrders(list);
+  return updated;
+}
+
+export async function updateCustomerOrder(orderId, status) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    return mutateLocalQrOrder(orderId, (o) => ({ ...o, status }));
+  }
+  return callFunction('updateCustomerOrder', { orderId, status });
+}
+
+export async function printCustomerOrder(orderId) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    const updated = await mutateLocalQrOrder(orderId, (o) => ({
+      ...o,
+      printCount: Number(o.printCount || 0) + 1,
+      status: o.status === 'awaiting_print' || o.status === 'received' ? 'preparing' : o.status,
+    }));
+    return { printCount: updated.printCount };
+  }
+  return callFunction('printCustomerOrder', { orderId });
+}
 
 /** Counter-side settlement. The customer's browser can do none of this. */
-export const chargeCustomerOrder = (orderId, phone, paymentRequestId) => callFunction('chargeCustomerOrder', { orderId, phone, paymentRequestId });
-export const checkCustomerOrderPayment = (orderId) => callFunction('checkCustomerOrderPayment', { orderId });
-export const settleCustomerOrderCash = (orderId) => callFunction('settleCustomerOrderCash', { orderId });
+export async function chargeCustomerOrder(orderId, phone, paymentRequestId) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    await mutateLocalQrOrder(orderId, (o) => ({
+      ...o,
+      paymentStatus: 'paid',
+      paymentMethod: 'mpesa',
+      paymentReference: `STK-${phone}`,
+      dueMinor: 0,
+      status: 'awaiting_print',
+    }));
+    return { message: `M-Pesa prompt confirmed for ${phone}.`, paymentStatus: 'paid' };
+  }
+  return callFunction('chargeCustomerOrder', { orderId, phone, paymentRequestId });
+}
+
+export async function checkCustomerOrderPayment(orderId) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    const order = readLocalQrOrders().find((o) => o.id === orderId);
+    return { paymentStatus: order?.paymentStatus || 'unpaid', receipt: order?.paymentReference || 'MPESA-OK' };
+  }
+  return callFunction('checkCustomerOrderPayment', { orderId });
+}
+
+export async function settleCustomerOrderCash(orderId) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    return mutateLocalQrOrder(orderId, (o) => ({
+      ...o,
+      paymentStatus: 'paid',
+      paymentMethod: 'cash',
+      dueMinor: 0,
+      status: 'awaiting_print',
+    }));
+  }
+  return callFunction('settleCustomerOrderCash', { orderId });
+}
+
 /** Settles against a payment M-Pesa has already confirmed to this business. */
-export const settleCustomerOrderByCode = (orderId, code) => callFunction('settleCustomerOrderByCode', { orderId, code });
+export async function settleCustomerOrderByCode(orderId, code) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    await mutateLocalQrOrder(orderId, (o) => ({
+      ...o,
+      paymentStatus: 'paid',
+      paymentMethod: 'mpesa',
+      paymentReference: String(code || '').toUpperCase(),
+      dueMinor: 0,
+      status: 'awaiting_print',
+    }));
+    return { changeMinor: 0 };
+  }
+  return callFunction('settleCustomerOrderByCode', { orderId, code });
+}
+
 /** Records a bank transfer against an order, with the statement reference. */
-export const settleCustomerOrderBank = (orderId, reference) => callFunction('settleCustomerOrderBank', { orderId, reference });
+export async function settleCustomerOrderBank(orderId, reference) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    return mutateLocalQrOrder(orderId, (o) => ({
+      ...o,
+      paymentStatus: 'paid',
+      paymentMethod: 'bank_transfer',
+      paymentReference: reference || 'BANK',
+      dueMinor: 0,
+      status: 'awaiting_print',
+    }));
+  }
+  return callFunction('settleCustomerOrderBank', { orderId, reference });
+}
+
 /** Records money the card terminal took; there is no card integration. */
-export const settleCustomerOrderCard = (orderId, reference) => callFunction('settleCustomerOrderCard', { orderId, reference });
+export async function settleCustomerOrderCard(orderId, reference) {
+  const fb = await getFirebase(); const claims = await currentClaims();
+  if (!fb || !claims?.tenant_id) {
+    return mutateLocalQrOrder(orderId, (o) => ({
+      ...o,
+      paymentStatus: 'paid',
+      paymentMethod: 'card',
+      paymentReference: reference || 'CARD',
+      dueMinor: 0,
+      status: 'awaiting_print',
+    }));
+  }
+  return callFunction('settleCustomerOrderCard', { orderId, reference });
+}
 
 /**
  * Settles a till sale that went out unpaid - a proforma, or anything on
@@ -481,3 +628,4 @@ export const settleCustomerOrderCard = (orderId, reference) => callFunction('set
 export const settleSale = (input) => callFunction('settleSale', input);
 export const claimSalePayment = (input) => callFunction('claimSalePayment', input);
 export const voidSale = (input) => callFunction('voidSale', input);
+

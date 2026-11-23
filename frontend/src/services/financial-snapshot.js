@@ -47,6 +47,9 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
   const remote = serverSales.filter(s => s.tenantId === tenantId).map(s => ({
     id: s.id, tenant_id: s.tenantId, sale_uuid: s.idempotencyKey || s.saleUuid,
     invoice_no: s.invoiceNumber || s.id, staff_id: s.staffId, shift_id: s.shiftId,
+    branch_id: s.branchId || '',
+    table_no: s.tableNumber || s.table_no || '',
+    tab_id: s.tabId || s.tab_id || '',
     checkout_stk_key: s.checkoutStkKey,
     sold_at: s.soldAt || s.createdAt, status: methodOf(s.status),
     subtotal: (s.subtotalMinor || 0) / 100, discount: (s.discountMinor || 0) / 100,
@@ -338,6 +341,8 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
       sale_uuid: sale.sale_uuid,
       source: 'pos',
       branch_id: sale.branch_id,
+      table_no: sale.table_no || '',
+      tab_id: sale.tab_id || '',
       reference: sale.invoice_no || sale.id,
       amount: amountMinor / 100,
       placed_at: sale.sold_at || sale.created_at,
@@ -355,6 +360,7 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
       id: order.id,
       source: 'customer_order',
       branch_id: order.branchId,
+      table_no: order.tableNumber || '',
       reference: order.ref || order.id,
       customer_name: order.customerName || '',
       amount: amountMinor / 100,
@@ -379,7 +385,42 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
   }
   unpaidOrders.sort((a, b) => timestamp(b.invoice_date || b.placed_at) - timestamp(a.invoice_date || a.placed_at));
   const unpaidMinor = unpaidOrders.reduce((sum, order) => sum + minor(order.amount), 0);
+  const unpaidOrdersOnly = unpaidOrders.filter(row => row.source !== 'proforma');
+  const unpaidInvoicesOnly = unpaidOrders.filter(row => row.source === 'proforma');
+  const unpaidOrdersMinor = unpaidOrdersOnly.reduce((sum, order) => sum + minor(order.amount), 0);
+  const unpaidInvoicesMinor = unpaidInvoicesOnly.reduce((sum, order) => sum + minor(order.amount), 0);
   const pendingAttempts = otherAttempts.filter(p => p.status === 'PENDING');
+
+  // Consolidate unpaid orders by table number so all rounds/bills under a table
+  // can be viewed and settled as one consolidated bill.
+  const tableGroups = new Map();
+  const consolidatedUnpaidOrders = [];
+  for (const order of unpaidOrdersOnly) {
+    const rawTable = String(order.table_no || '').trim();
+    const normTable = rawTable.toLowerCase().replace(/\s+/g, ' ').replace(/^table\s*/, '');
+    if (!normTable) {
+      consolidatedUnpaidOrders.push({ ...order, roundCount: 1, references: [order.reference] });
+      continue;
+    }
+    const groupKey = `${order.branch_id || ''}:${normTable}`;
+    const existingGroup = tableGroups.get(groupKey);
+    if (!existingGroup) {
+      const grouped = {
+        ...order,
+        table_no: rawTable,
+        roundCount: 1,
+        references: [order.reference],
+        amountMinor: minor(order.amount),
+      };
+      tableGroups.set(groupKey, grouped);
+      consolidatedUnpaidOrders.push(grouped);
+    } else {
+      existingGroup.roundCount += 1;
+      existingGroup.references.push(order.reference);
+      existingGroup.amountMinor += minor(order.amount);
+      existingGroup.amount = existingGroup.amountMinor / 100;
+    }
+  }
 
   // What each member of staff actually did in the period. An owner needs one
   // row per person covering both sides of the night - money taken in, and work
@@ -433,12 +474,18 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
     // every consumer sees it on the report rather than bolted on afterwards.
     dataSource: '',
     receivable: receivableMinor / 100,
-    proformaOutstanding: unpaidOrders.filter(row => row.source === 'proforma').reduce((sum, row) => sum + minor(row.amount), 0) / 100,
+    proformaOutstanding: unpaidInvoicesMinor / 100,
+    proformaCount: unpaidInvoicesOnly.length,
     proformaReceived: payments.filter(row => row.proforma_id).reduce((sum, row) => sum + minor(row.amount), 0) / 100,
     // Unpaid means an actual order exists in one of the business's order
     // viewers and no received payment has been married to it yet.
     unpaid: unpaidMinor / 100,
     unpaidOrders,
+    unpaidOrdersOnly,
+    unpaidOrdersTotal: unpaidOrdersMinor / 100,
+    unpaidOrdersCount: unpaidOrdersOnly.length,
+    unpaidInvoicesOnly,
+    consolidatedUnpaidOrders,
     count: sales.length, paymentCount: payments.length,
     pendingCount: unpaidOrders.length,
     pendingAttemptCount: pendingAttempts.length,

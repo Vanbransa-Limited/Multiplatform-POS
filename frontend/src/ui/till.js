@@ -2964,9 +2964,17 @@ export class TillView {
    */
   async roundsBeingSettled() {
     const own = this.pendingSale ? [this.pendingSale.saleId] : [];
-    if (!this.activeTabId) return own;
+    if (!this.activeTabId && !this.activeTable) return own;
 
-    const rounds = await db.sales.where('tab_id').equals(this.activeTabId).toArray();
+    const norm = (val) => String(val ?? '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/^table\s*/, '');
+    const activeNorm = norm(this.activeTable);
+    const byTab = this.activeTabId ? await db.sales.where('tab_id').equals(this.activeTabId).toArray() : [];
+    const byTable = (activeNorm && typeof db.sales.filter === 'function')
+      ? await db.sales.filter((sale) => norm(sale.table_no) === activeNorm).toArray()
+      : [];
+    const rounds = [...new Map([...byTab, ...byTable].map((s) => [s.id, s])).values()];
+    if (!rounds.length) return own;
+
     const ledger = await db.payments.where('sale_id').anyOf(rounds.map(sale => sale.id)).toArray();
     const bySale = new Map();
     for (const row of ledger) {

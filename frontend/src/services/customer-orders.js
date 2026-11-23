@@ -127,6 +127,28 @@ export function mergeTabRounds(orders, tabs) {
     }
   }
 
+  // Also consolidate any unpaid rounds that share a tableNumber in the same branch,
+  // even if one round was rung without a tab header or under a separate tabId,
+  // so every bill under a table can be settled together in one payment.
+  const normTable = (t) => String(t ?? '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/^table\s*/, '');
+  const tableTabByKey = new Map();
+  for (const tab of open.values()) {
+    const k = `${tab.branch_id || ''}:${normTable(tab.table_no)}`;
+    if (normTable(tab.table_no) && !tableTabByKey.has(k)) {
+      tableTabByKey.set(k, tab);
+    }
+  }
+
+  // Count unpaid orders per (branch, normalized table) so multiple unpaid bills
+  // at the same table always consolidate into one unified table bill.
+  const unpaidTableCounts = new Map();
+  for (const order of orders || []) {
+    if (order.paymentStatus === 'unpaid' && normTable(order.tableNumber)) {
+      const k = `${order.branchId || ''}:${normTable(order.tableNumber)}`;
+      unpaidTableCounts.set(k, (unpaidTableCounts.get(k) || 0) + 1);
+    }
+  }
+
   const merged = [];
   const groups = new Map();
 
@@ -134,7 +156,26 @@ export function mergeTabRounds(orders, tabs) {
     // Edit items voids a round and re-sends what is left as a new one, so a
     // voided round is history, never part of the bill: merging it put every
     // removed item, and its price, back on the table.
-    const tab = order.tabId && order.paymentStatus !== 'void' ? open.get(order.tabId) : null;
+    let tab = order.tabId && order.paymentStatus !== 'void' ? open.get(order.tabId) : null;
+    const tNorm = normTable(order.tableNumber);
+    const tableKey = tNorm ? `${order.branchId || ''}:${tNorm}` : '';
+
+    if (order.paymentStatus === 'unpaid' && tableKey) {
+      if (tableTabByKey.has(tableKey)) {
+        tab = tableTabByKey.get(tableKey);
+      } else if (tab) {
+        tableTabByKey.set(tableKey, tab);
+      } else if ((unpaidTableCounts.get(tableKey) || 0) > 1) {
+        tab = {
+          id: order.tabId || `table-group-${tableKey}`,
+          order_no: order.tabReference || order.ref,
+          table_no: order.tableNumber,
+          branch_id: order.branchId,
+        };
+        tableTabByKey.set(tableKey, tab);
+      }
+    }
+
     if (!tab) {
       merged.push(order);
       continue;
@@ -146,7 +187,7 @@ export function mergeTabRounds(orders, tabs) {
         ...order,
         id: tab.id,
         ref: tab.order_no || order.ref,
-        tableNumber: tab.table_no,
+        tableNumber: tab.table_no || order.tableNumber,
         orderType: 'dine_in',
         // The rounds behind the card, so settling can clear all of them.
         roundIds: [order.id],
@@ -369,16 +410,17 @@ export function renderOrderCard(order, images) {
     return renderSharedCard(order, images, tab, placed);
   }
 
+  const isConsolidatedTable = Array.isArray(order.roundIds) && order.roundIds.length > 1;
   const actions = fromTill
-    ? `<button type="button" class="co-print" data-invoice-sale="${escapeHtml(order.id)}">View invoice</button>
-       ${paid || voided ? '' : `<button type="button" class="co-pay" data-settle-sale="${escapeHtml(order.id)}">Pay now</button>`}
+    ? `<button type="button" class="co-print" data-invoice-sale="${escapeHtml(order.id)}">${isConsolidatedTable ? 'Consolidated invoice' : 'View invoice'}</button>
+       ${paid || voided ? '' : `<button type="button" class="co-pay" data-settle-sale="${escapeHtml(order.id)}">${isConsolidatedTable ? `Pay consolidated bill (${order.roundIds.length})` : 'Pay now'}</button>`}
        ${!paid && !voided && order.tabId !== undefined && order.roundIds
          ? `<button type="button" class="sec-btn" data-edit-tab="${escapeHtml(order.id)}" style="padding:6px 12px;font-size:12px;">Edit items</button>
             <a class="sec-btn" href="/tabs" style="padding:6px 12px;font-size:12px;text-decoration:none;">Tab management</a>`
          : ''}
        <span class="co-meta" style="margin:0">${voided
          ? `Voided${order.voidReason ? ` · ${escapeHtml(order.voidReason)}` : ''}`
-         : paid ? escapeHtml(order.paymentMethod || 'Payment recorded') : 'Awaiting payment'}</span>`
+         : paid ? escapeHtml(order.paymentMethod || 'Payment recorded') : (isConsolidatedTable ? `${order.roundIds.length} bills consolidated for Table ${escapeHtml(order.tableNumber)}` : 'Awaiting payment')}</span>`
     : `${closed ? '' : `${liveActions}
        <select class="co-status-select" aria-label="Order status" data-customer-order="${escapeHtml(order.id)}"><option value="">Update status…</option><option value="preparing">Preparing</option><option value="ready">Ready</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option></select>`}
        <span class="co-meta" style="margin:0">${prints ? `Printed ${prints}×` : 'Not printed'}</span>`;
@@ -387,10 +429,11 @@ export function renderOrderCard(order, images) {
     ${thumbFor(order, images)}
     <div class="co-body">
       <div class="co-row">
-        <span class="co-ref">Order #${escapeHtml(order.ref)}</span>
+        <span class="co-ref">Order #${escapeHtml(order.ref)}${isConsolidatedTable ? ` <small style="font-size:11px;color:var(--accent-amber);">(${order.roundIds.length} bills consolidated)</small>` : ''}</span>
         <span class="co-pill ${tab ? tab.id : 'pending'}">${escapeHtml(statusLabel(order))}</span>
       </div>
       <div class="co-meta">${escapeHtml(servingLabel(order))} · ${escapeHtml(order.customerName)}<br>
+        ${isConsolidatedTable && order.roundRefs?.length ? `Bills: <b>${escapeHtml(order.roundRefs.join(', '))}</b><br>` : ''}
         ${order.cashierName
           ? `${escapeHtml(handledLabel(order))} <b>${escapeHtml(order.cashierName)}</b><br>`
           : '<span style="opacity:0.7">Nobody has handled this yet</span><br>'}

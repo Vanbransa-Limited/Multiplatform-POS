@@ -88,19 +88,50 @@ export function openTabAt(tabs, branchId, tableNo) {
  */
 export function tabsWithTotals(tabs, rounds) {
   const byTab = new Map();
+  const byTableKey = new Map();
   for (const round of rounds || []) {
-    if (!round.tabId) continue;
-    byTab.set(round.tabId, [...(byTab.get(round.tabId) || []), round]);
+    if (round.tabId) {
+      byTab.set(round.tabId, [...(byTab.get(round.tabId) || []), round]);
+    }
+    const tKey = tabKey(round.tableNumber || round.table_no);
+    if (tKey) {
+      const bKey = `${round.branchId || round.branch_id || ''}:${tKey}`;
+      byTableKey.set(bKey, [...(byTableKey.get(bKey) || []), round]);
+    }
   }
 
-  return (tabs || [])
-    .filter((tab) => tab.status === OPEN)
+  // Consolidate open tabs that share the same normalized table name within a branch
+  const consolidatedTabs = [];
+  const seenTableKeys = new Map();
+  for (const tab of (tabs || []).filter((t) => t.status === OPEN)) {
+    const tKey = tabKey(tab.table_no);
+    const bKey = tKey ? `${tab.branch_id || ''}:${tKey}` : '';
+    if (bKey && seenTableKeys.has(bKey)) {
+      const primary = seenTableKeys.get(bKey);
+      primary._mergedTabIds.push(tab.id);
+      if (new Date(tab.opened_at).getTime() < new Date(primary.opened_at).getTime()) {
+        primary.opened_at = tab.opened_at;
+      }
+      continue;
+    }
+    const entry = { ...tab, _mergedTabIds: [tab.id] };
+    if (bKey) seenTableKeys.set(bKey, entry);
+    consolidatedTabs.push(entry);
+  }
+
+  return consolidatedTabs
     .map((tab) => {
+      const tKey = tabKey(tab.table_no);
+      const bKey = tKey ? `${tab.branch_id || ''}:${tKey}` : '';
+      const tabRounds = tab._mergedTabIds.flatMap((id) => byTab.get(id) || []);
+      const tableRounds = bKey ? (byTableKey.get(bKey) || []) : [];
+      const uniqueRounds = [...new Map([...tabRounds, ...tableRounds].map((r) => [r.id, r])).values()];
       // A voided round (an Edit items correction) is no longer on the table.
-      const owned = (byTab.get(tab.id) || []).filter((round) => round.paymentStatus !== 'void');
+      const owned = uniqueRounds.filter((round) => round.paymentStatus !== 'void');
       const unpaid = owned.filter((round) => round.paymentStatus === 'unpaid');
+      const { _mergedTabIds, ...cleanTab } = tab;
       return {
-        ...tab,
+        ...cleanTab,
         table: tab.table_no,
         rounds: owned,
         unpaidRounds: unpaid,

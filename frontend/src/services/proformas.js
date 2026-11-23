@@ -2,7 +2,10 @@ import { getFirebase, currentClaims, callFunction } from './firebase.js';
 
 export async function watchProformas(onInvoices, onError) {
   const [fb, claims] = await Promise.all([getFirebase(), currentClaims()]);
-  if (!fb || !claims?.tenant_id) throw new Error('Sign in to load proforma invoices.');
+  if (!fb || !claims?.tenant_id) {
+    onInvoices([]);
+    return () => {};
+  }
   return fb.firestore.onSnapshot(fb.firestore.query(
     fb.firestore.collection(fb.dbInstance, 'proformas'),
     fb.firestore.where('tenantId', '==', claims.tenant_id),

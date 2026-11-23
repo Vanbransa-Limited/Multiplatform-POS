@@ -12,6 +12,8 @@ export class FinanceView {
   constructor(container) {
     this.container = container;
     this.currentMetrics = null;
+    this.activeFinTab = 'overview';
+    this.consolidateByTable = true;
   }
 
   async load() {
@@ -28,7 +30,7 @@ export class FinanceView {
       if (!this.disposed) this.hours = hours;
     }).catch(() => {});
     this.filterSheet = createMobileFilters({
-      container: this.container, toolbar: this.container.querySelector('.fin-card'),
+      container: this.container, toolbar: this.container.querySelector('#fin-period-toolbar'),
       controls: [this.container.querySelector('.fin-date-bar')], title: 'Report filters',
       count: () => Number(this.container.querySelector('[data-fin-range].active')?.dataset.finRange !== 'today') + Number((this.session || 'full') !== 'full'),
       reset: () => { this.container.querySelector('[data-fin-session="full"]').click(); this.container.querySelector('[data-fin-range="today"]').click(); },
@@ -39,10 +41,33 @@ export class FinanceView {
   render() {
     this.container.innerHTML = [
       '<style>',
-      '.finance-shell { display: flex; gap: 16px; height: 100%; padding: 16px; box-sizing: border-box; overflow: hidden; }',
-      '.finance-left { flex: 2; min-width: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }',
-      '.finance-right { flex: 1; min-width: 280px; display: flex; flex-direction: column; background: linear-gradient(180deg, rgba(30,30,60,0.98) 0%, rgba(15,15,35,0.98) 100%); border-radius: 16px; border: 1px solid rgba(120,100,255,0.3); overflow: hidden; }',
-      '.fin-card { background: var(--surface); border-radius: 12px; padding: 20px; }',
+      '.finance-page { display: flex; flex-direction: column; gap: 16px; padding: 16px; box-sizing: border-box; max-width: 1600px; margin: 0 auto; width: 100%; }',
+      '.fin-top-header h1 { margin: 0; font-family: var(--font-display); font-size: 26px; font-weight: 800; color: #fff; }',
+      '.fin-top-header p { margin: 4px 0 0; font-size: 13px; color: var(--text-secondary); }',
+      '.fin-nav-tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(20, 14, 8, 0.6); border-radius: 10px 10px 0 0; overflow: hidden; }',
+      '@media(min-width: 900px) { .fin-nav-tabs { grid-template-columns: repeat(6, 1fr); } }',
+      '.fin-nav-tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--text-secondary); font-family: var(--font-main); font-size: 13px; font-weight: 600; padding: 12px 8px; cursor: pointer; text-align: center; transition: color 0.2s, border-color 0.2s, background 0.2s; min-height: 44px; }',
+      '.fin-nav-tab:hover { color: #fff; background: rgba(255,255,255,0.03); }',
+      '.fin-nav-tab.active { color: #e8a535; border-bottom-color: #e8a535; font-weight: 700; background: rgba(232, 165, 53, 0.06); }',
+      '.finance-shell { display: flex; gap: 16px; width: 100%; box-sizing: border-box; align-items: flex-start; }',
+      '.finance-left { flex: 2; min-width: 0; display: flex; flex-direction: column; gap: 16px; width: 100%; }',
+      '.finance-right { flex: 1; min-width: 300px; display: flex; flex-direction: column; background: linear-gradient(180deg, rgba(30,22,14,0.98) 0%, rgba(16,11,7,0.98) 100%); border-radius: 16px; border: 1px solid rgba(232,165,53,0.28); overflow: hidden; min-height: 480px; max-height: 720px; }',
+      '.fin-card { background: var(--surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px; }',
+      '.fin-period-card { background: #221509; border: 1px solid rgba(200,130,42,0.22); border-radius: 12px; padding: 16px; }',
+      '.fin-period-summary { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }',
+      '.fin-period-summary strong { font-size: 13px; color: #fff; }',
+      '.fin-period-summary span { font-size: 13px; color: var(--text-secondary); }',
+      '.fin-status-details { font-size: 12px; color: var(--text-secondary); margin: 4px 0; }',
+      '.fin-status-details summary { cursor: pointer; font-weight: 600; color: #c7b399; padding: 4px 0; }',
+      '.fin-overview-hero { padding: 8px 4px; }',
+      '.fin-overview-hero h2 { font-family: var(--font-display); font-size: 22px; font-weight: 800; margin: 0 0 4px; color: #fff; }',
+      '.fin-overview-hero > p { font-size: 13px; color: var(--text-secondary); margin: 0 0 18px; }',
+      '.fin-hero-label { font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }',
+      '.fin-hero-amount { font-family: var(--font-display); font-size: 36px; font-weight: 800; color: #fff; margin: 0 0 16px; letter-spacing: -0.5px; }',
+      '.fin-overview-lines { border-top: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; }',
+      '.fin-overview-line { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 14px; color: var(--text-secondary); cursor: pointer; }',
+      '.fin-overview-line:hover { color: #fff; }',
+      '.fin-overview-line strong { font-family: var(--font-display); font-size: 18px; font-weight: 700; color: #fff; }',
       '.fin-date-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }',
       '.fin-date-bar label { font-size: 13px; color: var(--text-secondary); }',
       '.fin-date-bar input[type=date] { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 13px; }',
@@ -60,129 +85,176 @@ export class FinanceView {
       '.m-card .m-val { margin: 0; font-size: 22px; font-weight: 700; }',
       /* AI Panel */
       '.ai-header { display: flex; align-items: center; gap: 10px; padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); }',
-      '.ai-logo { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #6060ff, #a040ff); display: flex; align-items: center; justify-content: center; font-size: 16px; }',
-      '.ai-title { font-size: 15px; font-weight: 700; color: #c0b0ff; }',
-      '.ai-subtitle { font-size: 11px; color: rgba(255,255,255,0.4); }',
+      '.ai-logo { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #e8a535, #c8832a); display: flex; align-items: center; justify-content: center; font-size: 16px; color: #1a1008; }',
+      '.ai-title { font-size: 15px; font-weight: 700; color: #f5ece0; }',
+      '.ai-subtitle { font-size: 11px; color: var(--text-secondary); }',
       '.ai-msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }',
-      '.ai-bubble { background: rgba(100,80,255,0.15); border-left: 3px solid #8060ff; border-radius: 0 8px 8px 0; padding: 10px 12px; font-size: 13px; color: rgba(255,255,255,0.85); line-height: 1.5; }',
+      '.ai-bubble { background: rgba(232,165,53,0.12); border-left: 3px solid #e8a535; border-radius: 0 8px 8px 0; padding: 10px 12px; font-size: 13px; color: rgba(255,255,255,0.9); line-height: 1.5; white-space: pre-line; }',
       '.user-bubble { background: rgba(255,255,255,0.08); border-radius: 8px 8px 0 8px; padding: 10px 12px; font-size: 13px; align-self: flex-end; max-width: 85%; }',
       '.ai-typing { display: flex; gap: 4px; padding: 8px 12px; align-items: center; }',
-      '.ai-typing span { width: 7px; height: 7px; background: #8060ff; border-radius: 50%; animation: aidot 1.2s infinite; }',
+      '.ai-typing span { width: 7px; height: 7px; background: #e8a535; border-radius: 50%; animation: aidot 1.2s infinite; }',
       '.ai-typing span:nth-child(2) { animation-delay: 0.2s; }',
       '.ai-typing span:nth-child(3) { animation-delay: 0.4s; }',
       '@keyframes aidot { 0%,80%,100%{opacity:0.3;transform:scale(0.8)} 40%{opacity:1;transform:scale(1)} }',
       '.ai-input-row { display: flex; gap: 8px; padding: 12px; border-top: 1px solid rgba(255,255,255,0.08); }',
       '.ai-input-row input { flex: 1; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 13px; outline: none; }',
-      '.ai-input-row button { background: linear-gradient(135deg,#6060ff,#a040ff); color: #fff; border: none; padding: 0 16px; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 13px; }',
+      '.ai-input-row button { background: linear-gradient(135deg,#e8a535,#c8832a); color: #1a1008; border: none; padding: 0 16px; border-radius: 8px; cursor: pointer; font-weight: 800; font-size: 13px; }',
       '.ai-suggest-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 12px 8px; }',
-      '.chip { background: rgba(120,80,255,0.2); border: 1px solid rgba(120,80,255,0.35); border-radius: 20px; padding: 4px 10px; font-size: 11px; cursor: pointer; color: #c0a0ff; white-space: nowrap; }',
-      '.chip:hover { background: rgba(120,80,255,0.4); }',
-      '@media(max-width:768px){ .finance-shell{flex-direction:column;} .finance-right{min-width:unset;height:400px;} }',
+      '.chip { background: rgba(232,165,53,0.15); border: 1px solid rgba(232,165,53,0.35); border-radius: 20px; padding: 4px 10px; font-size: 11px; cursor: pointer; color: #f5ece0; white-space: nowrap; }',
+      '.chip:hover { background: rgba(232,165,53,0.3); }',
+      '@media(max-width:768px){ .finance-shell{flex-direction:column;} .finance-right{min-width:unset;width:100%;height:440px;} .fin-period-card .mobile-filter-trigger { width: 100%; } }',
       '.fin-table th { padding: 10px 12px; border-bottom: 2px solid rgba(255,255,255,0.08); font-size: 11px; text-transform: uppercase; color: var(--text-secondary); }',
       '.fin-table td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.05); }',
       '.fin-table tr:hover { background: rgba(255,255,255,0.02); }',
       '</style>',
 
-      '<div class="finance-shell">',
+      '<div class="finance-page">',
+      '  <header class="fin-top-header">',
+      '    <h1>Financials &amp; AI</h1>',
+      '    <p>Review payments, sales and outstanding orders.</p>',
+      '  </header>',
 
-      '  <div class="finance-left">',
-      '    <div class="fin-card">',
-      '      <h2 style="margin:0 0 14px 0;font-size:18px;">📊 Financial Report</h2>',
-      '      <div class="fin-date-bar">',
-      '        <label>From:</label>',
-      '        <input type="date" id="fin-start" />',
-      '        <label>To:</label>',
-      '        <input type="date" id="fin-end" />',
-      '        <button class="fin-load-btn" id="fin-load-btn">Load Report</button>',
-      '        <div class="fin-quick-ranges" role="group" aria-label="Quick report period">',
-      '          <button type="button" class="fin-range-btn active" data-fin-range="today">Today</button>',
-      '          <button type="button" class="fin-range-btn" data-fin-range="yesterday">Yesterday</button>',
-      '          <button type="button" class="fin-range-btn" data-fin-range="week">Past week</button>',
-      '          <button type="button" class="fin-range-btn" data-fin-range="month">Past month</button>',
-      '        </div>',
-      '        <div class="fin-quick-ranges" role="group" aria-label="Trading session">',
-      '          <button type="button" class="fin-range-btn active" data-fin-session="full">Full day</button>',
-      '          <button type="button" class="fin-range-btn" data-fin-session="morning">Morning</button>',
-      '          <button type="button" class="fin-range-btn" data-fin-session="night">Night</button>',
-      '        </div>',
-      '      </div>',
-      '      <p style="margin:10px 0 0;color:var(--text-secondary);font-size:12px;">A trading day runs from the morning opening to the next morning, so a night that crosses midnight stays on the day it started.</p>',
-      '    </div>',
-      '    <p id="fin-source" role="status">Loading transaction records...</p>',
-      '    <div class="metrics-row">',
-      '      <div class="m-card"><h5>Payments Received</h5><p class="m-val" id="fin-collected">KES 0</p></div>',
-      '      <div class="m-card green"><h5>M-Pesa Received</h5><p class="m-val" id="fin-mpesa">KES 0</p><small id="fin-mpesa-held"></small></div>',
-      '      <div class="m-card blue"><h5>Cash Received</h5><p class="m-val" id="fin-cash">KES 0</p><small id="fin-cash-held"></small></div>',
-      '      <div class="m-card green"><h5>Bank Transfers</h5><p class="m-val" id="fin-bank">KES 0</p><small id="fin-bank-held">Statement references, unverified</small></div>',
-      '      <div class="m-card"><h5>Card &amp; Other</h5><p class="m-val" id="fin-other">KES 0</p><small id="fin-other-held"></small></div>',
-      '      <div class="m-card blue"><h5>Confirmed Payments</h5><p class="m-val" id="fin-payment-count">0</p></div>',
-      '      <div class="m-card orange"><h5>Received Without Sale / Order</h5><p class="m-val" id="fin-unmatched">KES 0</p></div>',
-      '      <div class="m-card"><h5>Failed / Cancelled Attempts</h5><p class="m-val" id="fin-failed">KES 0</p></div>',
-      '      <div class="m-card orange"><h5>Received Without A Date</h5><p class="m-val" id="fin-undated">KES 0</p><small id="fin-undated-count">Not counted in any period</small></div>',
-      '      <div class="m-card orange"><h5>Held On A Till</h5><p class="m-val" id="fin-held">KES 0</p><small id="fin-held-count">Settled but not yet reached the business — not counted above</small></div>',
-      '      <div class="m-card"><h5>Unpaid Orders / Proformas</h5><p class="m-val" id="fin-pending">KES 0</p><small id="fin-pending-count">0 orders · unreceived</small></div>',
-      '      <div class="m-card"><h5>Gross Recorded Sales</h5><p class="m-val" id="fin-gross">KES 0</p></div>',
-      '      <div class="m-card"><h5>Total Discounts</h5><p class="m-val" id="fin-disc">KES 0</p></div>',
-      '      <div class="m-card green"><h5>Recorded Sales After Discounts</h5><p class="m-val" id="fin-net">KES 0</p></div>',
-      '      <div class="m-card orange"><h5>Unreceived Cash</h5><p class="m-val" id="fin-unpaid">KES 0</p><small>Awaiting reconciliation to an order</small></div>',
-      '      <div class="m-card orange"><h5>Completed Sales</h5><p class="m-val" id="fin-count">0</p></div>',
-      '    </div>',
-      '    <div class="fin-card">',
-      '      <h3 style="margin:0 0 6px;font-size:15px;color:#fff;">Unpaid orders and proforma invoices</h3>',
-      '      <p style="margin:0 0 12px;color:var(--text-secondary);font-size:12px;">Unpaid orders for the selected period, plus currently outstanding proforma invoices across all invoice dates. Reconcile each when payment arrives. Proforma payments count in Total Received on the day recorded.</p>',
-      '      <div id="fin-unpaid-orders" style="overflow:auto"></div>',
-      '    </div>',
-      '    <div class="fin-card">',
-      '      <h3 style="margin:0 0 6px 0;font-size:15px;color:#fff;">👥 Staff rundown</h3>',
-      '      <p style="margin:0 0 12px;color:var(--text-secondary);font-size:12px;">Everyone who handled money or an order in the selected period: what they completed, what they took, and what is still open against their name.</p>',
-      '      <div style="overflow-x:auto;">',
-      '        <table class="fin-table" style="width:100%; border-collapse:collapse; text-align:left; font-size:13px;">',
-      '          <thead>',
-      '            <tr>',
-      '              <th>Staff member</th>',
-      '              <th style="text-align:center;">Completed sales</th>',
-      '              <th style="text-align:right;">Sales value</th>',
-      '              <th style="text-align:center;">Payments</th>',
-      '              <th style="text-align:right;">Received</th>',
-      '              <th style="text-align:right;">Still unpaid</th>',
-      '            </tr>',
-      '          </thead>',
-      '          <tbody id="cashier-report-body">',
-      '            <tr>',
-      '              <td colspan="6" style="padding:16px;text-align:center;color:var(--text-secondary);">No data loaded yet.</td>',
-      '            </tr>',
-      '          </tbody>',
-      '        </table>',
-      '      </div>',
-      '    </div>',
-      '    <div class="fin-card" id="fin-proformas"></div>',
-      '    <div class="fin-card"><h3>Transactions in selected period</h3><p>Payments are filtered by receipt date. Sales are filtered by sale date. Failed and pending attempts are excluded from money received. Unmatched payments are received money awaiting a sale/order record.</p><div id="fin-transactions" style="overflow:auto"></div></div>',
-      '  </div>',
+      '  <nav class="fin-nav-tabs" role="tablist" aria-label="Financials sections">',
+      '    <button type="button" class="fin-nav-tab active" role="tab" aria-selected="true" data-fin-tab="overview">Overview</button>',
+      '    <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="payments">Payments</button>',
+      '    <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="sales">Sales &amp; staff</button>',
+      '    <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="unpaid">Unpaid orders</button>',
+      '    <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="invoices">Invoices</button>',
+      '    <button type="button" class="fin-nav-tab" role="tab" aria-selected="false" data-fin-tab="ai">AI assistant</button>',
+      '  </nav>',
 
-      '  <div class="finance-right">',
-      '    <div class="ai-header">',
-      '      <div class="ai-logo">✨</div>',
-      '      <div><div class="ai-title">Vanbransa AI</div><div class="ai-subtitle">Offline Analytics Assistant</div></div>',
+      '  <div class="fin-period-card" id="fin-period-toolbar">',
+      '    <div class="fin-period-summary">',
+      '      <strong>Report period</strong>',
+      '      <span id="fin-period-display">Today · Full day</span>',
       '    </div>',
-      '    <div class="ai-msgs" id="ai-msgs">',
-      '      <div class="ai-bubble">Hello! I\'m your Vanbransa AI assistant. Load a date range and I\'ll analyze your financials. Ask about revenue, tenders, discounts, or order counts.</div>',
-      '    </div>',
-      '    <div class="ai-suggest-chips">',
-      '      <div class="chip" data-q="performance">Performance</div>',
-      '      <div class="chip" data-q="cash vs mpesa">Cash vs M-Pesa</div>',
-      '      <div class="chip" data-q="discount">Discounts</div>',
-      '      <div class="chip" data-q="unpaid and pending">Unpaid</div>',
-      '      <div class="chip" data-q="proforma invoices">Proformas</div>',
-      '      <div class="chip" data-q="staff rundown">Staff</div>',
-      '      <div class="chip" data-q="bank transfers">Bank</div>',
-      '      <div class="chip" data-q="insight">Insights</div>',
-      '    </div>',
-      '    <div class="ai-input-row">',
-      '      <input type="text" id="ai-inp" placeholder="Ask about your business..." />',
-      '      <button id="ai-send">Ask</button>',
+      '    <div class="fin-date-bar">',
+      '      <label>From:</label>',
+      '      <input type="date" id="fin-start" />',
+      '      <label>To:</label>',
+      '      <input type="date" id="fin-end" />',
+      '      <button class="fin-load-btn" id="fin-load-btn">Load Report</button>',
+      '      <div class="fin-quick-ranges" role="group" aria-label="Quick report period">',
+      '        <button type="button" class="fin-range-btn active" data-fin-range="today">Today</button>',
+      '        <button type="button" class="fin-range-btn" data-fin-range="yesterday">Yesterday</button>',
+      '        <button type="button" class="fin-range-btn" data-fin-range="week">Past week</button>',
+      '        <button type="button" class="fin-range-btn" data-fin-range="month">Past month</button>',
+      '      </div>',
+      '      <div class="fin-quick-ranges" role="group" aria-label="Trading session">',
+      '        <button type="button" class="fin-range-btn active" data-fin-session="full">Full day</button>',
+      '        <button type="button" class="fin-range-btn" data-fin-session="morning">Morning</button>',
+      '        <button type="button" class="fin-range-btn" data-fin-session="night">Night</button>',
+      '      </div>',
       '    </div>',
       '  </div>',
 
+      '  <details class="fin-status-details">',
+      '    <summary id="fin-source-summary">Report up to date</summary>',
+      '    <p id="fin-source" role="status" style="margin:6px 0 0;line-height:1.5;">Loading transaction records...</p>',
+      '  </details>',
+
+      '  <div class="finance-shell">',
+      '    <div class="finance-left" id="fin-main-pane">',
+
+      '      <section class="fin-overview-hero" data-fin-section="overview">',
+      '        <h2>Overview</h2>',
+      '        <p>The selected period at a glance.</p>',
+      '        <div class="fin-hero-label">Payments received</div>',
+      '        <div class="fin-hero-amount" id="fin-hero-collected">KES 0.00</div>',
+      '        <div class="fin-overview-lines">',
+      '          <div class="fin-overview-line" data-jump-tab="sales"><span>Sales after discounts</span><strong id="fin-hero-net">KES 0.00</strong></div>',
+      '          <div class="fin-overview-line" data-jump-tab="unpaid"><span>Unpaid orders (tables &amp; tabs)</span><strong id="fin-hero-unpaid-orders" style="color:#ff9800;">KES 0.00</strong></div>',
+      '          <div class="fin-overview-line" data-jump-tab="invoices"><span>Proforma invoices (outstanding)</span><strong id="fin-hero-unpaid-invoices">KES 0.00</strong></div>',
+      '          <div class="fin-overview-line" data-jump-tab="payments"><span>Confirmed payments</span><strong id="fin-hero-payment-count">0</strong></div>',
+      '        </div>',
+      '      </section>',
+
+      '      <div class="metrics-row" data-fin-section="overview,payments,sales">',
+      '        <div class="m-card" data-fin-card="overview,payments"><h5>Payments Received</h5><p class="m-val" id="fin-collected">KES 0</p></div>',
+      '        <div class="m-card green" data-fin-card="overview,payments"><h5>M-Pesa Received</h5><p class="m-val" id="fin-mpesa">KES 0</p><small id="fin-mpesa-held"></small></div>',
+      '        <div class="m-card blue" data-fin-card="overview,payments"><h5>Cash Received</h5><p class="m-val" id="fin-cash">KES 0</p><small id="fin-cash-held"></small></div>',
+      '        <div class="m-card green" data-fin-card="overview,payments"><h5>Bank Transfers</h5><p class="m-val" id="fin-bank">KES 0</p><small id="fin-bank-held">Statement references, unverified</small></div>',
+      '        <div class="m-card" data-fin-card="overview,payments"><h5>Card &amp; Other</h5><p class="m-val" id="fin-other">KES 0</p><small id="fin-other-held"></small></div>',
+      '        <div class="m-card blue" data-fin-card="overview,payments"><h5>Confirmed Payments</h5><p class="m-val" id="fin-payment-count">0</p></div>',
+      '        <div class="m-card orange" data-fin-card="payments"><h5>Received Without Sale / Order</h5><p class="m-val" id="fin-unmatched">KES 0</p></div>',
+      '        <div class="m-card" data-fin-card="payments"><h5>Failed / Cancelled Attempts</h5><p class="m-val" id="fin-failed">KES 0</p></div>',
+      '        <div class="m-card orange" data-fin-card="payments"><h5>Received Without A Date</h5><p class="m-val" id="fin-undated">KES 0</p><small id="fin-undated-count">Not counted in any period</small></div>',
+      '        <div class="m-card orange" data-fin-card="overview,payments"><h5>Held On A Till</h5><p class="m-val" id="fin-held">KES 0</p><small id="fin-held-count">Settled but not yet reached the business — not counted above</small></div>',
+      '        <div class="m-card orange" data-fin-card="overview"><h5>Unpaid Orders (Tables &amp; Counter)</h5><p class="m-val" id="fin-pending">KES 0</p><small id="fin-pending-count">0 orders · unreceived</small></div>',
+      '        <div class="m-card" data-fin-card="overview"><h5>Outstanding Proforma Invoices</h5><p class="m-val" id="fin-proforma-total">KES 0</p><small id="fin-proforma-count">0 invoices · locked</small></div>',
+      '        <div class="m-card" data-fin-card="overview,sales"><h5>Gross Recorded Sales</h5><p class="m-val" id="fin-gross">KES 0</p></div>',
+      '        <div class="m-card" data-fin-card="overview,sales"><h5>Total Discounts</h5><p class="m-val" id="fin-disc">KES 0</p></div>',
+      '        <div class="m-card green" data-fin-card="overview,sales"><h5>Recorded Sales After Discounts</h5><p class="m-val" id="fin-net">KES 0</p></div>',
+      '        <div class="m-card orange" data-fin-card="sales"><h5>Total Unreceived (Orders + Invoices)</h5><p class="m-val" id="fin-unpaid">KES 0</p><small>Awaiting reconciliation</small></div>',
+      '        <div class="m-card orange" data-fin-card="overview,sales"><h5>Completed Sales</h5><p class="m-val" id="fin-count">0</p></div>',
+      '      </div>',
+
+      '      <div class="fin-card" data-fin-section="unpaid,overview">',
+      '        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:6px;">',
+      '          <h3 style="margin:0;font-size:16px;color:#fff;">Unpaid orders (Tables, Tabs &amp; Counter)</h3>',
+      '          <label style="display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--accent-amber);font-weight:700;cursor:pointer;">',
+      '            <input type="checkbox" id="fin-consolidate-tables" checked style="width:18px;height:18px;accent-color:#e8a535;" />',
+      '            Consolidate bills by table for 1-payment settlement',
+      '          </label>',
+      '        </div>',
+      '        <p style="margin:0 0 12px;color:var(--text-secondary);font-size:12px;">Active unpaid table tabs, customer orders, and counter bills (separated from formal Proforma Invoices). Consolidating by table groups all rounds under a table into one total bill so the cashier can settle the entire table in one payment.</p>',
+      '        <div id="fin-unpaid-orders" style="overflow:auto"></div>',
+      '      </div>',
+
+      '      <div class="fin-card" data-fin-section="sales,overview">',
+      '        <h3 style="margin:0 0 6px 0;font-size:15px;color:#fff;">👥 Staff rundown</h3>',
+      '        <p style="margin:0 0 12px;color:var(--text-secondary);font-size:12px;">Everyone who handled money or an order in the selected period: what they completed, what they took, and what is still open against their name.</p>',
+      '        <div style="overflow-x:auto;">',
+      '          <table class="fin-table" style="width:100%; border-collapse:collapse; text-align:left; font-size:13px;">',
+      '            <thead>',
+      '              <tr>',
+      '                <th>Staff member</th>',
+      '                <th style="text-align:center;">Completed sales</th>',
+      '                <th style="text-align:right;">Sales value</th>',
+      '                <th style="text-align:center;">Payments</th>',
+      '                <th style="text-align:right;">Received</th>',
+      '                <th style="text-align:right;">Still unpaid</th>',
+      '              </tr>',
+      '            </thead>',
+      '            <tbody id="cashier-report-body">',
+      '              <tr>',
+      '                <td colspan="6" style="padding:16px;text-align:center;color:var(--text-secondary);">No data loaded yet.</td>',
+      '              </tr>',
+      '            </tbody>',
+      '          </table>',
+      '        </div>',
+      '      </div>',
+
+      '      <div class="fin-card" id="fin-proformas" data-fin-section="invoices,overview"></div>',
+
+      '      <div class="fin-card" data-fin-section="payments,overview"><h3>Payments &amp; transactions in selected period</h3><p style="color:var(--text-secondary);font-size:12px;margin:4px 0 12px;">Payments are filtered by receipt date. Failed and pending attempts are excluded from money received.</p><div id="fin-transactions" style="overflow:auto"></div></div>',
+      '    </div>',
+
+      '    <div class="finance-right" id="fin-ai-pane" data-fin-section="ai,overview">',
+      '      <div class="ai-header">',
+      '        <div class="ai-logo">✨</div>',
+      '        <div><div class="ai-title">Vanbransa AI</div><div class="ai-subtitle">Financial Analytics Assistant</div></div>',
+      '      </div>',
+      '      <div class="ai-msgs" id="ai-msgs">',
+      '        <div class="ai-bubble">Hello! I\'m your Vanbransa AI assistant. Load a date range and I\'ll analyze your financials. Ask about revenue, tenders, discounts, unpaid orders, or proforma invoices.</div>',
+      '      </div>',
+      '      <div class="ai-suggest-chips">',
+      '        <div class="chip" data-q="performance">Performance</div>',
+      '        <div class="chip" data-q="cash vs mpesa">Cash vs M-Pesa</div>',
+      '        <div class="chip" data-q="discount">Discounts</div>',
+      '        <div class="chip" data-q="unpaid and pending">Unpaid Orders</div>',
+      '        <div class="chip" data-q="proforma invoices">Proforma Invoices</div>',
+      '        <div class="chip" data-q="staff rundown">Staff</div>',
+      '        <div class="chip" data-q="bank transfers">Bank</div>',
+      '        <div class="chip" data-q="insight">Insights</div>',
+      '      </div>',
+      '      <div class="ai-input-row">',
+      '        <input type="text" id="ai-inp" placeholder="Ask about your business..." />',
+      '        <button id="ai-send">Ask</button>',
+      '      </div>',
+      '    </div>',
+
+      '  </div>',
       '</div>'
     ].join('\n');
 
@@ -192,11 +264,51 @@ export class FinanceView {
     const finEnd = document.getElementById('fin-end');
     if (finStart) finStart.value = today.start;
     if (finEnd) finEnd.value = today.end;
+    this.applyFinTab('overview');
+  }
+
+  applyFinTab(tabId) {
+    this.activeFinTab = tabId;
+    this.container.querySelectorAll('[data-fin-tab]').forEach((btn) => {
+      const active = btn.dataset.finTab === tabId;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', String(active));
+    });
+    const mainPane = this.container.querySelector('#fin-main-pane');
+    const aiPane = this.container.querySelector('#fin-ai-pane');
+    if (mainPane) mainPane.style.display = tabId === 'ai' ? 'none' : 'flex';
+    if (aiPane) {
+      const isNarrow = typeof window !== 'undefined' && window.innerWidth <= 900;
+      aiPane.style.display = (tabId === 'ai' || (!isNarrow && tabId === 'overview')) ? 'flex' : 'none';
+      if (tabId === 'ai') aiPane.style.flex = '1 1 100%';
+      else aiPane.style.flex = '1';
+    }
+    this.container.querySelectorAll('#fin-main-pane [data-fin-section]').forEach((sec) => {
+      const allowed = sec.dataset.finSection.split(',');
+      sec.style.display = allowed.includes(tabId) ? '' : 'none';
+    });
+    this.container.querySelectorAll('[data-fin-card]').forEach((card) => {
+      const allowed = card.dataset.finCard.split(',');
+      card.style.display = allowed.includes(tabId) ? '' : 'none';
+    });
   }
 
   dispose() { this.disposed = true; this.loadRequest = (this.loadRequest || 0) + 1; this.proformaRegister?.dispose(); this.filterSheet?.dispose(); }
 
   bindEvents() {
+    this.container.querySelectorAll('[data-fin-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => this.applyFinTab(btn.dataset.finTab));
+    });
+    this.container.querySelectorAll('[data-jump-tab]').forEach((row) => {
+      row.addEventListener('click', () => this.applyFinTab(row.dataset.jumpTab));
+    });
+    const consolidateToggle = document.getElementById('fin-consolidate-tables');
+    if (consolidateToggle) {
+      consolidateToggle.addEventListener('change', (e) => {
+        this.consolidateByTable = e.target.checked;
+        this.renderUnpaidOrdersTable();
+      });
+    }
     const loadBtn = document.getElementById('fin-load-btn');
     if (loadBtn) loadBtn.addEventListener('click', () => this.loadMetrics());
 
@@ -361,8 +473,23 @@ export class FinanceView {
       set('fin-undated-count', report.undatedCount
         ? `${report.undatedCount} payment(s) missing a date — listed below, uncounted`
         : 'Not counted in any period');
-      set('fin-pending', fmt(report.pending));
-      set('fin-pending-count', `${report.pendingCount} ${report.pendingCount === 1 ? 'order' : 'orders'} · unreceived`);
+      const sessionLabel = session === 'morning' ? 'Morning' : session === 'night' ? 'Night' : 'Full day';
+      const dateLabel = startStr === endStr ? startStr : `${startStr} – ${endStr}`;
+      set('fin-period-display', `${dateLabel} · ${sessionLabel}`);
+      set('fin-source-summary', report.outsideCount ? `Report up to date · ${report.outsideCount} outside window` : 'Report up to date');
+
+      set('fin-hero-collected', fmt(collected));
+      set('fin-hero-net', fmt(net));
+      set('fin-hero-unpaid-orders', fmt(report.unpaidOrdersTotal ?? report.pending));
+      set('fin-hero-unpaid-invoices', fmt(report.proformaOutstanding ?? 0));
+      set('fin-hero-payment-count', report.paymentCount);
+
+      set('fin-pending', fmt(report.unpaidOrdersTotal ?? report.pending));
+      const ordersCount = report.unpaidOrdersCount ?? report.pendingCount;
+      set('fin-pending-count', `${ordersCount} ${ordersCount === 1 ? 'order' : 'orders'} · unreceived`);
+      set('fin-proforma-total', fmt(report.proformaOutstanding ?? 0));
+      const pfCount = report.proformaCount ?? 0;
+      set('fin-proforma-count', `${pfCount} ${pfCount === 1 ? 'invoice' : 'invoices'} · locked`);
       set('fin-gross', fmt(gross));
       set('fin-disc', fmt(discounts));
       set('fin-net', fmt(net));
@@ -374,10 +501,9 @@ export class FinanceView {
       set('fin-unpaid', fmt(report.unpaid));
       set('fin-count', sales.length);
 
-      const unpaidOrders = document.getElementById('fin-unpaid-orders');
-      if (unpaidOrders) unpaidOrders.innerHTML = '<table class="fin-table"><thead><tr><th>Raised</th><th>Order / invoice</th><th>Source</th><th>Staff</th><th>Branch</th><th style="text-align:right">Unreceived</th><th></th></tr></thead><tbody>'
-        + report.unpaidOrders.map(order => '<tr><td>' + escape(order.invoice_date || new Date(timestamp(order.placed_at)).toLocaleString()) + '</td><td>' + escape(order.reference) + (order.customer_name ? '<br><small>' + escape(order.customer_name) + '</small>' : '') + '</td><td>' + escape(order.source === 'proforma' ? 'Proforma invoice' : order.source === 'customer_order' ? 'Customer order' : 'Till invoice') + '</td><td>' + escape(order.staff_id ? staffName(order) : 'Unassigned') + '</td><td>' + escape(order.branch_id || '—') + '</td><td style="text-align:right">' + fmt(order.amount) + '</td><td><a class="fin-reconcile" href="/orders?' + (order.source === 'proforma' ? 'proforma=' + encodeURIComponent(order.id) : 'order=' + encodeURIComponent(order.reference)) + '">Reconcile</a></td></tr>').join('')
-        + (report.unpaidOrders.length ? '' : '<tr><td colspan="7">No unpaid orders in this period.</td></tr>') + '</tbody></table>';
+      this.staffNameResolver = staffName;
+      this.currentMetrics = { ...report, startStr, endStr, session };
+      this.renderUnpaidOrdersTable();
 
       // Render the staff rundown
       const reportBody = document.getElementById('cashier-report-body');
@@ -403,7 +529,6 @@ export class FinanceView {
         }
       }
 
-      this.currentMetrics = { ...report, startStr, endStr, session };
       this.addAIMsg(financialAnswer(this.currentMetrics));
 
     } catch (err) {
@@ -413,6 +538,47 @@ export class FinanceView {
       console.error('Finance load error:', err);
       showNotification('Error loading financial data', 'error');
     }
+  }
+
+  renderUnpaidOrdersTable() {
+    const unpaidOrdersEl = document.getElementById('fin-unpaid-orders');
+    if (!unpaidOrdersEl || !this.currentMetrics) return;
+    const report = this.currentMetrics;
+    const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const fmt = v => 'KES ' + Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const staffName = this.staffNameResolver || (r => r.staff_id || 'Unassigned');
+
+    const rows = this.consolidateByTable
+      ? (report.consolidatedUnpaidOrders || report.unpaidOrdersOnly || [])
+      : (report.unpaidOrdersOnly || report.unpaidOrders?.filter(o => o.source !== 'proforma') || []);
+
+    unpaidOrdersEl.innerHTML = '<table class="fin-table" style="width:100%;border-collapse:collapse;text-align:left;font-size:13px;">'
+      + '<thead><tr><th>Raised</th><th>Table / Order Ref</th><th>Source</th><th>Staff</th><th>Branch</th><th style="text-align:right">Total Due</th><th>Action</th></tr></thead><tbody>'
+      + rows.map(order => {
+        const isConsolidated = (order.roundCount || 1) > 1;
+        const tableBadge = order.table_no
+          ? `<span style="display:inline-block;background:rgba(232,165,53,0.18);color:#e8a535;border:1px solid rgba(232,165,53,0.4);padding:2px 8px;border-radius:12px;font-size:11px;font-weight:800;margin-right:6px;">Table ${escape(order.table_no)}</span>`
+          : '';
+        const refLabel = isConsolidated
+          ? `${tableBadge}<b>${order.roundCount} bills consolidated</b><br><small style="color:var(--text-secondary)">${escape((order.references || [order.reference]).join(', '))}</small>`
+          : `${tableBadge}${escape(order.reference)}${order.customer_name ? `<br><small style="color:var(--text-secondary)">${escape(order.customer_name)}</small>` : ''}`;
+        const sourceLabel = isConsolidated
+          ? `Consolidated Table Bill (${order.roundCount} rounds)`
+          : (order.source === 'customer_order' ? 'Customer QR order' : 'Till / Tab order');
+        const actionHref = `/orders?order=${encodeURIComponent(order.reference)}`;
+        const actionText = isConsolidated ? 'Consolidate &amp; Pay Table' : 'Pay / Reconcile';
+        return '<tr>'
+          + '<td>' + escape(order.invoice_date || new Date(timestamp(order.placed_at)).toLocaleString()) + '</td>'
+          + '<td>' + refLabel + '</td>'
+          + '<td>' + escape(sourceLabel) + '</td>'
+          + '<td>' + escape(order.staff_id ? staffName(order) : 'Unassigned') + '</td>'
+          + '<td>' + escape(order.branch_id || '—') + '</td>'
+          + '<td style="text-align:right;font-weight:700;color:#ff9800;">' + fmt(order.amount) + '</td>'
+          + '<td><a class="fin-reconcile" href="' + actionHref + '">' + actionText + '</a></td>'
+          + '</tr>';
+      }).join('')
+      + (rows.length ? '' : '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:16px;">No unpaid table or counter orders in this period. Formal proforma invoices are listed separately under the Invoices tab.</td></tr>')
+      + '</tbody></table>';
   }
 
   handleChat() {

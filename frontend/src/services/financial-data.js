@@ -1,4 +1,4 @@
-﻿import { db } from '../db/schema.js';
+import { db } from '../db/schema.js';
 import { currentClaims, getFirebase } from './firebase.js';
 import { financialSnapshot } from './financial-snapshot.js';
 import { tradingDayConfig } from './financial-period.js';
@@ -6,7 +6,52 @@ import { tradingDayConfig } from './financial-period.js';
 /** Use the signed-in tenant, exactly as the M-Pesa viewer does. Reads never create sale records. */
 export async function loadFinancialSnapshot(from, to, session = 'full') {
   const [fb, claims] = await Promise.all([getFirebase(), currentClaims()]);
-  if (!fb || !claims?.tenant_id) throw new Error('Sign in to load the business financial report.');
+  if (!fb || !claims?.tenant_id) {
+    const tenants = await db.tenants.toArray();
+    const tenantId = tenants[0]?.id || 'tenant-01';
+    const allLocalSales = await db.sales.toArray();
+    const allLocalPayments = await db.payments.toArray();
+    const serverSales = allLocalSales.map((s) => ({
+      id: s.id,
+      tenantId: s.tenant_id || tenantId,
+      idempotencyKey: s.sale_uuid || s.id,
+      saleUuid: s.sale_uuid || s.id,
+      invoiceNumber: s.invoice_no || s.id,
+      staffId: s.staff_id || s.created_by || '',
+      shiftId: s.shift_id || '',
+      tableNumber: s.table_no || '',
+      tabId: s.tab_id || '',
+      soldAt: s.sold_at,
+      status: s.status === 'VOIDED' ? 'voided' : 'completed',
+      subtotalMinor: Math.round((Number(s.subtotal ?? s.grand_total) || 0) * 100),
+      discountMinor: Math.round((Number(s.discount) || 0) * 100),
+      totalMinor: Math.round((Number(s.grand_total) || 0) * 100),
+      taxMinor: Math.round((Number(s.tax_total) || 0) * 100),
+    }));
+    const serverPayments = allLocalPayments.map((p) => ({
+      id: p.id,
+      tenantId,
+      saleId: p.sale_id,
+      method: p.method,
+      amountMinor: Math.round((Number(p.amount) || 0) * 100),
+      reference: p.reference || p.provider_txn_id || '',
+      paidAt: p.received_at,
+      settledAt: p.settled_at || null,
+      status: 'completed',
+      verified: Boolean(p.verified),
+    }));
+    const { dayStartHour, nightStartHour } = tradingDayConfig(null);
+    const report = financialSnapshot({
+      tenantId, from, to, localSales: [], localPayments: [],
+      serverSales, serverPayments, attempts: [], customerOrders: [], heldOrders: [], proformas: [],
+      staffScope: null, session, dayStartHour, nightStartHour,
+    });
+    report.session = session;
+    report.dayStartHour = dayStartHour;
+    report.nightStartHour = nightStartHour;
+    report.dataSource = 'Local device ledger (offline / standalone mode). Whole organization.';
+    return report;
+  }
   const tenantId = String(claims.tenant_id);
   // Owner and store manager see the whole organization; everyone else sees the
   // money that passed through their own hands. The rules already scope M-Pesa

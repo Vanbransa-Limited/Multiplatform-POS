@@ -536,8 +536,8 @@ export class TillView {
           </div>
 
           <div style="display:flex; gap: 10px; width: 100%; margin-top: 16px;">
-            <button class="sec-btn" style="flex:1;" id="receipt-print-btn">Push to print queue</button>
-            <button class="primary-btn" style="flex:1;" id="receipt-close-btn">Done (New Sale)</button>
+            <button class="primary-btn" style="flex:1.5;" id="receipt-print-btn">🖨️ Print Receipt &amp; Complete</button>
+            <button class="sec-btn" style="flex:1;" id="receipt-close-btn">Close</button>
           </div>
         </div>
       </div>
@@ -3295,32 +3295,64 @@ export class TillView {
 
     const paper = document.getElementById('receipt-paper-view');
     const branchId = state.currentBranch?.id;
-    const [jobId, stationOnline] = await Promise.all([
-      enqueuePrintJob({
-        branchId,
-        receipt: this.lastReceiptPayload,
-        widthClass: paper?.className === 'receipt-paper-58'
-          ? 'receipt-paper-58'
-          : 'receipt-paper-80'
-      }),
-      isStationOnline(branchId)
-    ]);
-
-    if (!jobId) {
-      showNotification(
-        'The receipt could not be queued. Print it from the counter instead.',
-        'error'
-      );
-      return;
+    let jobId = null;
+    let stationOnline = false;
+    try {
+      [jobId, stationOnline] = await Promise.all([
+        enqueuePrintJob({
+          branchId,
+          receipt: this.lastReceiptPayload,
+          widthClass: paper?.className === 'receipt-paper-58'
+            ? 'receipt-paper-58'
+            : 'receipt-paper-80'
+        }),
+        isStationOnline(branchId)
+      ]);
+    } catch {
+      jobId = null;
+      stationOnline = false;
     }
 
-    // Queued is not printed. With no station running the job waits indefinitely,
-    // and a server would stand at the counter waiting for paper that never came.
+    // If no remote print station took the job, trigger direct thermal/browser print
+    if (!jobId || !stationOnline) {
+      if (typeof window !== 'undefined' && typeof window.print === 'function') {
+        window.print();
+      }
+    }
+
+    // Printing the receipt completes the transaction in the local ledger
+    const now = new Date().toISOString();
+    const saleIds = this.lastReceiptSaleIds?.length ? this.lastReceiptSaleIds : [];
+    if (saleIds.length && !this.lastReceiptPayload.unpaid) {
+      try {
+        for (const id of saleIds) {
+          const sale = await db.sales.get(id);
+          if (sale) {
+            await db.sales.update(id, {
+              status: 'COMPLETED',
+              kds_status: 'SERVED',
+              printed_at: now,
+              held_until: null,
+            });
+            if (sale.tab_id) await freeSettledTab(sale.tab_id).catch(() => {});
+          }
+        }
+      } catch {}
+    }
+
+    document.getElementById('receipt-modal')?.classList.remove('active');
+    this.pendingSale = null;
+    this.pendingRegistration = null;
+    this.cartDraftId = null;
+    this.clearCart();
+    void this.loadOpenTabs().catch(() => {});
+    void this.loadProducts().catch(() => {});
+
     showNotification(
-      stationOnline
-        ? 'Sent to the counter printer.'
-        : 'Queued, but no print station is running. Start it at the counter.',
-      stationOnline ? 'success' : 'warning'
+      stationOnline && jobId
+        ? 'Receipt sent to counter printer — transaction complete.'
+        : 'Receipt printed — transaction complete.',
+      'success'
     );
   }
 

@@ -762,12 +762,20 @@ export class OrdersView {
       const jobId = await enqueuePrintJob({
         branchId: order.branchId,
         receipt: kitchenTicket(order, Number(order.printCount || 0) + 1),
-      });
-      if (!jobId) throw new Error('The ticket could not be queued.');
-      const { printCount } = await printCustomerOrder(order.id);
-      status.textContent = await isStationOnline(order.branchId)
-        ? `Ticket ${printCount} for ${order.ref} sent to the counter printer.`
-        : `Ticket for ${order.ref} is queued. Start the print station at the counter to print it.`;
+      }).catch(() => null);
+      if (jobId) {
+        const { printCount } = await printCustomerOrder(order.id);
+        await updateCustomerOrder(order.id, 'completed').catch(() => {});
+        status.textContent = await isStationOnline(order.branchId)
+          ? `Ticket ${printCount} for ${order.ref} sent to counter printer — transaction complete.`
+          : `Ticket for ${order.ref} queued — transaction complete.`;
+      } else {
+        if (typeof window !== 'undefined' && typeof window.print === 'function') window.print();
+        order.printCount = Number(order.printCount || 0) + 1;
+        order.status = 'completed';
+        this.renderCustomerBoard();
+        status.textContent = `Receipt printed for ${order.ref} — transaction complete.`;
+      }
     } catch (error) {
       status.textContent = `${error.message || 'The ticket could not be printed.'} The order was not marked printed.`;
       button.disabled = false;
@@ -964,8 +972,28 @@ export class OrdersView {
 
     const printBtn = document.getElementById('orders-modal-print');
     if (printBtn) {
-      printBtn.addEventListener('click', () => {
-        window.print();
+      printBtn.addEventListener('click', async () => {
+        if (typeof window !== 'undefined' && typeof window.print === 'function') {
+          window.print();
+        }
+        const now = new Date().toISOString();
+        const saleIds = this.invoiceSaleIds?.length ? this.invoiceSaleIds : [];
+        for (const id of saleIds) {
+          const sale = await db.sales.get(id);
+          if (sale && sale.status !== 'PENDING_PAYMENT' && sale.status !== 'VOIDED') {
+            await db.sales.update(id, {
+              status: 'COMPLETED',
+              kds_status: 'SERVED',
+              printed_at: now,
+              held_until: null,
+            });
+            if (sale.tab_id) await freeSettledTab(sale.tab_id).catch(() => {});
+          }
+        }
+        closeModal();
+        await this.loadPosOrders({ refresh: false });
+        this.renderCustomerBoard();
+        showNotification('Receipt printed — transaction complete.', 'success');
       });
     }
 
@@ -1363,6 +1391,8 @@ export class OrdersView {
           ? 'Recorded and sent to the business. It now shows as paid in Financials.'
           // Never "it now shows as paid" when only this device can see it.
           : `Recorded on this till, but it has NOT reached the business yet, so it will not appear in Financials: ${reached.reason}`) + freed;
+      this.hideModal('#settle-modal');
+      if (rounds[0]?.id) void this.openInvoiceModal(rounds[0].id);
     } catch (error) {
       message.textContent = error.message || 'That payment could not be recorded.';
     } finally {

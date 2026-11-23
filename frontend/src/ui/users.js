@@ -153,6 +153,7 @@ export class UsersView {
       let level = 'Level 1';
       let levelColor = 'var(--accent-blue)';
       if (u.role === 'Owner') { level = 'Level 4'; levelColor = '#F59E0B'; }
+      else if (u.role === 'Manager') { level = 'Level 3.5'; levelColor = 'var(--accent-purple)'; }
       else if (u.role === 'Store Manager') { level = 'Level 3'; levelColor = 'var(--accent-purple)'; }
       else if (u.role === 'Supervisor') { level = 'Level 2.5'; levelColor = 'var(--accent-green)'; }
       else if (u.role === 'Store Keeper') { level = 'Level 2'; }

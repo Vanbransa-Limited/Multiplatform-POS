@@ -87,12 +87,12 @@ export class InventoryView {
    * save was pressed, and only then did the server say no.
    */
   get canEditCatalogue() {
-    return ['Owner', 'Store Manager'].includes(state.currentUser?.role);
+    return ['Owner', 'Manager'].includes(state.currentUser?.role);
   }
 
   /** Counted and on-menu are stock decisions, so a keeper may flip them. */
   get canFlagProducts() {
-    return ['Owner', 'Store Manager', 'Store Keeper'].includes(state.currentUser?.role);
+    return ['Owner', 'Manager', 'Store Manager', 'Store Keeper'].includes(state.currentUser?.role);
   }
 
   async loadSubTab() {

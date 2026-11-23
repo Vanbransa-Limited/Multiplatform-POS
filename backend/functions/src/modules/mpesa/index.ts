@@ -1300,7 +1300,7 @@ export const queryMpesaStatus = onCall(
     const lookup = await attemptFromQueryInput(input);
     const snapshot = await lookup.reference.get();
     const record = snapshot.data() ?? {};
-    const manager = caller.role === "owner" || caller.role === "store_manager";
+    const manager = caller.role === "owner" || caller.role === "manager";
     if (
       !snapshot.exists
       || record.tenantId !== caller.tenantId

@@ -256,14 +256,14 @@ test('a batch id is required, so a slip cannot retire the whole menu', async () 
   }
 });
 
-test('only an owner or store manager may retire', async () => {
+test('only an owner or manager may retire', async () => {
   const docs = new Map();
   const restore = harness(docs);
   try {
     const keeper = { token: { tenant_id: 't1', staff_id: 's2', staff_role: 'store_keeper' } };
     await assert.rejects(
       () => retireMissingProducts.run({ auth: keeper, data: { batchId: 'b' } }),
-      /owner or store manager/
+      /owner or manager/
     );
   } finally {
     restore();

@@ -20,7 +20,7 @@ service cloud.firestore {
     function managesTenant() {
       return signedIn()
         && request.auth.token.staff_role is string
-        && request.auth.token.staff_role in ['owner', 'store_manager'];
+        && request.auth.token.staff_role in ['owner', 'manager'];
     }
 
     // Modules the sidebar hides from most roles. Hiding a button is not access
@@ -168,13 +168,13 @@ service cloud.firestore {
     // Issued proformas are immutable; only server callables may issue or settle them.
     match /proformas/{documentId} {
       allow read: if canReadTenantDocument()
-        && request.auth.token.staff_role in ['owner', 'store_manager', 'supervisor', 'bar_staff', 'cashier', 'store_keeper'];
+        && request.auth.token.staff_role in ['owner', 'manager', 'store_manager', 'supervisor', 'bar_staff', 'cashier', 'store_keeper'];
       allow write: if false;
     }
 
     match /customer_orders/{documentId} {
       allow read: if canReadTenantDocument()
-        && request.auth.token.staff_role in ['owner', 'store_manager', 'supervisor', 'bar_staff', 'cashier', 'store_keeper'];
+        && request.auth.token.staff_role in ['owner', 'manager', 'store_manager', 'supervisor', 'bar_staff', 'cashier', 'store_keeper'];
       allow write: if false;
     }
 

@@ -35,11 +35,11 @@ function kraRefusal(what: string, reply: { resultCd: string; resultMsg: string }
   return new HttpsError('failed-precondition', `KRA refused ${what}: ${reply.resultMsg || 'no reason given'} (code ${reply.resultCd}).`);
 }
 
-/** Connects a branch to its KRA OSCU device. Owners and store managers only. */
+/** Connects a branch to its KRA OSCU device. Owners and managers only. */
 export const setupEtims = onCall({ region: FUNCTION_REGION }, async (request) => {
   const token = request.auth?.token;
-  if (!token?.tenant_id || !['owner', 'store_manager'].includes(String(token.staff_role))) {
-    throw new HttpsError('permission-denied', 'Only an owner or store manager can connect eTIMS.');
+  if (!token?.tenant_id || !['owner', 'manager'].includes(String(token.staff_role))) {
+    throw new HttpsError('permission-denied', 'Only an owner or manager can connect eTIMS.');
   }
   const tenantId = String(token.tenant_id);
   const input = asRecord(request.data);

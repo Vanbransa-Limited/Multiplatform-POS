@@ -61,6 +61,8 @@ test('access levels are read loosely, but an unknown one is never demoted to cas
   assert.equal(roleCode('Cashier'), 'cashier');
   assert.equal(roleCode('cashier / waiter (level 1)'), 'cashier');
   assert.equal(roleCode('Store-Manager'), 'store_manager');
+  assert.equal(roleCode('Manager'), 'manager');
+  assert.equal(roleCode('manager'), 'manager');
   assert.equal(roleCode('store_keeper'), 'store_keeper');
   // Blank is the common case in a roster of cashiers.
   assert.equal(roleCode(''), 'cashier');

@@ -108,7 +108,7 @@ export const importProducts = onCall(
       throw new HttpsError("permission-denied", "This session carries no staff claims.");
     }
     if (!ADMIN_ROLES.has(role)) {
-      throw new HttpsError("permission-denied", "Only an owner or store manager can import products.");
+      throw new HttpsError("permission-denied", "Only an owner or manager can import products.");
     }
 
     const input = asRecord(request.data, "Request data");
@@ -316,7 +316,7 @@ export const upsertProduct = onCall({ region: FUNCTION_REGION }, async (request)
   const staffId = typeof claims.staff_id === "string" ? claims.staff_id : null;
   const role = typeof claims.staff_role === "string" ? claims.staff_role : "";
   if (!tenantId || !staffId) throw new HttpsError("permission-denied", "This session carries no staff claims.");
-  if (!ADMIN_ROLES.has(role)) throw new HttpsError("permission-denied", "Only an owner or store manager can change the catalogue.");
+  if (!ADMIN_ROLES.has(role)) throw new HttpsError("permission-denied", "Only an owner or manager can change the catalogue.");
 
   const input = asRecord(request.data);
   const name = text(input.name);
@@ -401,7 +401,7 @@ export const upsertCategory = onCall({ region: FUNCTION_REGION }, async (request
   const staffId = typeof claims.staff_id === "string" ? claims.staff_id : null;
   const role = typeof claims.staff_role === "string" ? claims.staff_role : "";
   if (!tenantId || !staffId) throw new HttpsError("permission-denied", "This session carries no staff claims.");
-  if (!ADMIN_ROLES.has(role)) throw new HttpsError("permission-denied", "Only an owner or store manager can change product types.");
+  if (!ADMIN_ROLES.has(role)) throw new HttpsError("permission-denied", "Only an owner or manager can change product types.");
 
   const input = asRecord(request.data);
   const name = text(input.name);
@@ -450,7 +450,7 @@ export const retireProduct = onCall({ region: FUNCTION_REGION }, async (request)
   const staffId = typeof claims.staff_id === "string" ? claims.staff_id : null;
   const role = typeof claims.staff_role === "string" ? claims.staff_role : "";
   if (!tenantId || !staffId) throw new HttpsError("permission-denied", "This session carries no staff claims.");
-  if (!ADMIN_ROLES.has(role)) throw new HttpsError("permission-denied", "Only an owner or store manager can remove products.");
+  if (!ADMIN_ROLES.has(role)) throw new HttpsError("permission-denied", "Only an owner or manager can remove products.");
 
   const input = asRecord(request.data);
   const productId = documentId(input.productId, "productId");
@@ -490,7 +490,7 @@ export const deleteProduct = onCall({ region: FUNCTION_REGION }, async (request)
   const tenantId = claims?.tenant_id;
   const staffId = claims?.staff_id;
   if (typeof tenantId !== 'string' || typeof staffId !== 'string' || !ADMIN_ROLES.has(String(claims?.staff_role))) {
-    throw new HttpsError('permission-denied', 'Only an owner or store manager can delete catalogue items.');
+    throw new HttpsError('permission-denied', 'Only an owner or manager can delete catalogue items.');
   }
   const input = asRecord(request.data);
   const productId = documentId(input.productId, 'productId');
@@ -551,7 +551,7 @@ export const retireMissingProducts = onCall(
       throw new HttpsError("permission-denied", "This session carries no staff claims.");
     }
     if (!ADMIN_ROLES.has(role)) {
-      throw new HttpsError("permission-denied", "Only an owner or store manager can retire products.");
+      throw new HttpsError("permission-denied", "Only an owner or manager can retire products.");
     }
 
     const input = asRecord(request.data, "Request data");
@@ -643,7 +643,7 @@ export const dedupeProducts = onCall(
       throw new HttpsError("permission-denied", "This session carries no staff claims.");
     }
     if (!ADMIN_ROLES.has(role)) {
-      throw new HttpsError("permission-denied", "Only an owner or store manager can merge duplicates.");
+      throw new HttpsError("permission-denied", "Only an owner or manager can merge duplicates.");
     }
 
     const input = asRecord(request.data, "Request data");
@@ -791,7 +791,7 @@ export const retireSeedProducts = onCall(
       throw new HttpsError("permission-denied", "This session carries no staff claims.");
     }
     if (!ADMIN_ROLES.has(role)) {
-      throw new HttpsError("permission-denied", "Only an owner or store manager can remove the demo products.");
+      throw new HttpsError("permission-denied", "Only an owner or manager can remove the demo products.");
     }
 
     const input = asRecord(request.data, "Request data");

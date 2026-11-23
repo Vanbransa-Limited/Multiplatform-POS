@@ -38,10 +38,10 @@ export const receivingLocation = (settings: Record<string, unknown>): 'STORE' | 
  * it stays with the two roles that answer for both rooms.
  */
 const STOCK_ROLES = {
-  receive: ['owner', 'store_manager', 'store_keeper'],
-  request: ['owner', 'store_manager', 'supervisor', 'cashier', 'bar_staff', 'store_keeper'],
-  approve: ['owner', 'store_manager'],
-  adjust: ['owner', 'store_manager'],
+  receive: ['owner', 'manager', 'store_manager', 'store_keeper'],
+  request: ['owner', 'manager', 'store_manager', 'supervisor', 'cashier', 'bar_staff', 'store_keeper'],
+  approve: ['owner', 'manager', 'store_manager'],
+  adjust: ['owner', 'manager', 'store_manager'],
   // Switching the Store off folds the whole room into the House. That is a
   // decision about the shape of the business rather than a stock operation,
   // and it is the one thing here the owner keeps to themselves.
@@ -58,8 +58,8 @@ export function stockActor(
     throw new HttpsError(
       'permission-denied',
       job === 'configure' ? 'Only the owner can change the stock locations.'
-        : job === 'adjust' ? 'Sign in as the owner or a store manager to correct a count.'
-          : job === 'approve' ? 'Only the owner or a store manager can approve stock requests.'
+        : job === 'adjust' ? 'Sign in as the owner, a manager or a store manager to correct a count.'
+          : job === 'approve' ? 'Only the owner, a manager or a store manager can approve stock requests.'
           : job === 'request' ? 'Sign in as service or stock staff.'
             : 'Sign in as stock management staff.',
     );

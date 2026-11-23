@@ -272,7 +272,7 @@ export class TillView {
               <select id="cart-customer-select" style="flex:1;">
                 <!-- Loaded dynamically -->
               </select>
-              ${['Owner', 'Supervisor'].includes(state.currentUser?.role)
+              ${['Owner', 'Manager', 'Supervisor'].includes(state.currentUser?.role)
                 ? '<button type="button" class="sec-btn" id="cart-new-customer-btn" style="white-space:nowrap;padding:6px 10px;">+ New</button>'
                 : ''}
             </div>
@@ -1192,7 +1192,8 @@ export class TillView {
       return;
     }
 
-    // Staff 20% Discount: toggle on/off, always qty 1 (requires Supervisor/Owner or PIN override)
+    // Staff 20% Discount: toggle on/off, always qty 1. The server accepts it only
+    // from an owner, manager or supervisor, so nobody else is offered it.
     if (product.id === 'prod-staff-discount') {
       if (existingIndex > -1) {
         this.cart.splice(existingIndex, 1);
@@ -1200,13 +1201,9 @@ export class TillView {
         this.updateCartUI();
         return;
       }
-      if (!['Owner', 'Supervisor'].includes(state.currentUser?.role)) {
-        const pin = window.prompt('Supervisor Override Required — Enter Supervisor (9999) or Owner (0000) PIN to authorize Staff 20% Discount:');
-        if (pin === null) return;
-        if (!['9999', '0000'].includes(pin.trim())) {
-          showNotification('Invalid Supervisor PIN. Staff discount not applied.', 'error');
-          return;
-        }
+      if (!['Owner', 'Manager', 'Supervisor'].includes(state.currentUser?.role)) {
+        showNotification('Staff discount needs a supervisor or manager to ring up this sale.', 'error');
+        return;
       }
       this.cart.unshift({
         product,
@@ -1215,7 +1212,7 @@ export class TillView {
         discount_percent: 20,
         batch: null
       });
-      showNotification('Staff 20% Discount authorized & applied', 'success');
+      showNotification('Staff 20% Discount applied', 'success');
       this.updateCartUI();
       return;
     }

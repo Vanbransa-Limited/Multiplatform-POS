@@ -27,6 +27,17 @@ test('without an owner map, the built-in table decides role visibility and selli
   assert.equal(canSell('Store Keeper'), false);
 });
 
+test('a manager oversees money, staff and stock but does not work the till; a store manager runs stock only', () => {
+  store.clear();
+  for (const tab of ['finance', 'settings', 'audit-logs', 'customers', 'mpesa', 'qrtools', 'inventory', 'store-stock', 'house-stock']) {
+    assert.equal(canViewTab('Manager', tab), true, tab);
+  }
+  for (const tab of ['till', 'orders', 'tabs', 'shifts']) assert.equal(canViewTab('Manager', tab), false, tab);
+  assert.equal(canSell('Manager'), false);
+  for (const tab of ['store-stock', 'house-stock', 'inventory']) assert.equal(canViewTab('Store Manager', tab), true, tab);
+  for (const tab of ['finance', 'settings', 'audit-logs', 'qrtools', 'till']) assert.equal(canViewTab('Store Manager', tab), false, tab);
+});
+
 test("the owner's map overrides the table, in role codes, and never locks the owner out", () => {
   store.clear();
   setAccess({ tabs: ['bar_staff'], settings: [], sell: ['cashier'], till: ['cashier'] });

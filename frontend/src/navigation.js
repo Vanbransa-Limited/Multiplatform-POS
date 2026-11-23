@@ -96,6 +96,8 @@ export function groupForTab(tab) {
  * - Barman (Bar Staff): can sell + request and accept new stock in House Stock -> sees Till, Orders, Tabs, Shifts, House Stock.
  * - Storeman (Store Keeper): can only receive stock into Store and dispatch to House Stock after Supervisor approval -> sees Store Stock (and House Stock transfer view), cannot sell.
  * - Supervisor: oversees floor, sells, approves stock requests for Storeman to dispatch.
+ * - Store Manager: runs both stock rooms - receive, approve, adjust, dispatch.
+ * - Manager: runs the business under the owner (money, staff, settings, stock) but does not sell by default.
  * - Owner: sees and does all.
  */
 export const RESTRICTED_TABS = {
@@ -103,16 +105,16 @@ export const RESTRICTED_TABS = {
   'orders': ['Owner', 'Supervisor', 'Cashier', 'Bar Staff'],
   'tabs': ['Owner', 'Supervisor', 'Cashier', 'Bar Staff'],
   'shifts': ['Owner', 'Supervisor', 'Cashier', 'Bar Staff'],
-  'house-stock': ['Owner', 'Supervisor', 'Bar Staff', 'Store Keeper', 'Store Manager'],
-  'store-stock': ['Owner', 'Supervisor', 'Store Keeper', 'Store Manager'],
-  'inventory': ['Owner', 'Supervisor', 'Store Manager'],
-  'customers': ['Owner', 'Supervisor'],
+  'house-stock': ['Owner', 'Manager', 'Supervisor', 'Bar Staff', 'Store Keeper', 'Store Manager'],
+  'store-stock': ['Owner', 'Manager', 'Supervisor', 'Store Keeper', 'Store Manager'],
+  'inventory': ['Owner', 'Manager', 'Supervisor', 'Store Manager'],
+  'customers': ['Owner', 'Manager', 'Supervisor'],
   'print-station': ['Owner', 'Supervisor'],
-  'mpesa': ['Owner', 'Supervisor'],
-  'finance': ['Owner', 'Store Manager'],
-  'qrtools': ['Owner', 'Supervisor', 'Store Manager'],
-  'audit-logs': ['Owner', 'Store Manager'],
-  'settings': ['Owner', 'Store Manager'],
+  'mpesa': ['Owner', 'Manager', 'Supervisor'],
+  'finance': ['Owner', 'Manager'],
+  'qrtools': ['Owner', 'Manager', 'Supervisor'],
+  'audit-logs': ['Owner', 'Manager'],
+  'settings': ['Owner', 'Manager'],
 };
 
 export const DEFAULT_SELL_ROLES = ['Owner', 'Supervisor', 'Cashier', 'Bar Staff'];
@@ -139,7 +141,7 @@ export function canViewTab(role, tab) {
   return !allowed || allowed.includes(role);
 }
 
-/** Whether this role may ring up a sale. Storeman (Store Keeper / Store Manager) cannot sell by default. */
+/** Whether this role may ring up a sale. Storeman (Store Keeper / Store Manager) and Manager cannot sell by default. */
 export function canSell(role) {
   if (role === 'Owner') return true;
   const allowed = ownerAccess('sell') || DEFAULT_SELL_ROLES;

@@ -49,7 +49,7 @@ test('delete removes only catalogue/zero balance records and preserves history a
 test('role and tenant checks forbid deletion without mutation', async () => {
   const docs = base(); const restore = harness(docs);
   try {
-    for (const role of ['store_keeper', 'cashier', 'supervisor']) await assert.rejects(run({ token: { ...owner.token, staff_role: role } }), /owner or store manager/);
+    for (const role of ['store_keeper', 'store_manager', 'cashier', 'supervisor']) await assert.rejects(run({ token: { ...owner.token, staff_role: role } }), /owner or manager/);
     await assert.rejects(run({ token: { ...owner.token, tenant_id: 't2' } }), /not found/);
     assert.equal(docs.has('products/p1'), true);
   } finally { restore(); }

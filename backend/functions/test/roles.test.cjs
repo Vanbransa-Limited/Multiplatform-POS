@@ -15,26 +15,27 @@ test("every role code has a till label and vice versa", () => {
   }
 });
 
-test("only owners and store managers administer staff", () => {
-  assert.deepEqual([...ADMIN_ROLES].sort(), ["owner", "store_manager"]);
+test("only owners and managers administer staff; the store manager runs stock", () => {
+  assert.deepEqual([...ADMIN_ROLES].sort(), ["manager", "owner"]);
+  assert.equal(ROLE_LABELS.manager, "Manager");
 });
 
-test("a store manager cannot mint an owner", () => {
+test("a manager cannot mint an owner", () => {
   // Otherwise a manager creates an owner account, signs into it, and has
   // escalated straight out of their own role.
-  assert.equal(canAssignRole("store_manager", "owner"), false);
+  assert.equal(canAssignRole("manager", "owner"), false);
   assert.equal(canAssignRole("owner", "owner"), true);
 });
 
-test("a store manager can create every non-owner role", () => {
+test("a manager can create every non-owner role, including another manager", () => {
   for (const role of STAFF_ROLES) {
     if (role === "owner") continue;
-    assert.equal(canAssignRole("store_manager", role), true, `store_manager should assign ${role}`);
+    assert.equal(canAssignRole("manager", role), true, `manager should assign ${role}`);
   }
 });
 
 test("non-administrators can assign nothing at all", () => {
-  for (const actor of ["cashier", "bar_staff", "supervisor", "store_keeper", "", "admin"]) {
+  for (const actor of ["cashier", "bar_staff", "supervisor", "store_keeper", "store_manager", "", "admin"]) {
     for (const target of ["cashier", "owner"]) {
       assert.equal(canAssignRole(actor, target), false, `${actor} must not assign ${target}`);
     }
@@ -52,8 +53,10 @@ const { canSell, normaliseModuleAccess, MODULE_KEYS } = require("../lib/shared/r
 const { setModuleAccess } = require("../lib/modules/staff-admin");
 const { db } = require("../lib/lib/firebase");
 
-test("selling is open to every role until the owner switches it off", () => {
-  for (const role of STAFF_ROLES) assert.equal(canSell({}, role), true);
+test("selling is open to every role but the manager until the owner switches it", () => {
+  for (const role of STAFF_ROLES) assert.equal(canSell({}, role), role !== "manager", role);
+  // Oversight by default, but the owner can still hand a manager the till.
+  assert.equal(canSell({ moduleAccess: { sell: ["manager"] } }, "manager"), true);
   const settings = { moduleAccess: { sell: ["cashier"] } };
   assert.equal(canSell(settings, "cashier"), true);
   assert.equal(canSell(settings, "store_keeper"), false);

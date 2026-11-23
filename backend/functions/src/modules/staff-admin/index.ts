@@ -46,7 +46,7 @@ function requireAdmin(auth: { token: Record<string, unknown> } | undefined): Act
     throw new HttpsError("permission-denied", "This session carries no staff claims.");
   }
   if (!ADMIN_ROLES.has(role)) {
-    throw new HttpsError("permission-denied", "Only an owner or store manager can manage staff.");
+    throw new HttpsError("permission-denied", "Only an owner or manager can manage staff.");
   }
 
   return { tenantId, staffId, role };
@@ -563,7 +563,7 @@ export const listStaffNames = onCall({ region: FUNCTION_REGION }, async (request
 /**
  * The owner's switches for which roles reach each module, and who may sell.
  *
- * Owner only: a store manager who could edit this could grant themselves
+ * Owner only: a manager who could edit this could grant themselves
  * anything. The map is not on the client write allowlist in firestore.rules,
  * so this callable is the only way in.
  */

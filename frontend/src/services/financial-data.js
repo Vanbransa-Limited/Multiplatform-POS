@@ -64,7 +64,7 @@ export async function loadFinancialSnapshot(from, to, session = 'full') {
   // so this widens no access, but it does put the whole tenant's ledger on a
   // cashier's device. Narrow it server-side (a staffId on every payment, or a
   // callable that returns the scoped rows) if that matters.
-  const manages = ['owner', 'store_manager'].includes(String(claims.staff_role));
+  const manages = ['owner', 'manager'].includes(String(claims.staff_role));
   const staffScope = manages ? null : String(claims.staff_id || '');
   // Financials and the Orders Viewer must agree on what an order is. Reading
   // customer_orders here brings table-menu orders from every branch into the

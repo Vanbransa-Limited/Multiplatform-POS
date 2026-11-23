@@ -43,20 +43,20 @@ export class StockView {
    * are theirs as well as the owner's. Mirrors STOCK_ROLES.adjust on the
    * server, which is what actually enforces it.
    */
-  get canCount() { return ['Owner', 'Store Manager', 'Supervisor'].includes(state.currentUser?.role); }
+  get canCount() { return ['Owner', 'Manager', 'Store Manager', 'Supervisor'].includes(state.currentUser?.role); }
   /** Booking a delivery is Storeman's job; requesting stock into House is Barman's job. */
   get canWrite() {
     const role = state.currentUser?.role;
     if (this.action === 'request') return ['Owner', 'Supervisor', 'Bar Staff'].includes(role);
-    return ['Owner', 'Store Manager', 'Store Keeper'].includes(role);
+    return ['Owner', 'Manager', 'Store Manager', 'Store Keeper'].includes(role);
   }
   /** Supervisor (or Owner) approves House requests before Storeman can dispatch. */
-  get canApprove() { return ['Owner', 'Supervisor', 'Store Manager'].includes(state.currentUser?.role); }
+  get canApprove() { return ['Owner', 'Manager', 'Supervisor', 'Store Manager'].includes(state.currentUser?.role); }
   /** Storeman (or Owner) dispatches stock from Store to House after Supervisor approval. */
-  get canDispatch() { return ['Owner', 'Store Keeper', 'Store Manager'].includes(state.currentUser?.role); }
+  get canDispatch() { return ['Owner', 'Manager', 'Store Keeper', 'Store Manager'].includes(state.currentUser?.role); }
   /** Barman (or Supervisor/Owner) accepts dispatched stock into House Stock. */
   get canAccept() { return ['Owner', 'Bar Staff', 'Supervisor'].includes(state.currentUser?.role); }
-  get canReceiveImport() { return this.action === 'receive' && ['Owner', 'Store Manager', 'Store Keeper'].includes(state.currentUser?.role); }
+  get canReceiveImport() { return this.action === 'receive' && ['Owner', 'Manager', 'Store Manager', 'Store Keeper'].includes(state.currentUser?.role); }
   get canImport() { return this.canReceiveImport || this.canCount; }
 
   /** What this room can do depends on whether a Store exists at all. */

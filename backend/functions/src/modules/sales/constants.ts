@@ -2,10 +2,12 @@ export const MAX_DISTINCT_LINES = 50;
 export const MAX_PAYMENTS = 5;
 export const MAX_QTY_PER_LINE = 10_000;
 
-// Every staff role can sell and use the standard staff preset. Custom
+// Roles that may reach the selling callables. A manager is here so the owner
+// can switch the till on for them; canSell keeps it off by default. Custom
 // checkout discounts require an owner, manager or provider authorization.
 export const SELLING_ROLES = new Set([
   "owner",
+  "manager",
   "store_manager",
   "supervisor",
   "cashier",
@@ -13,7 +15,10 @@ export const SELLING_ROLES = new Set([
   "store_keeper",
 ]);
 
-export const DISCOUNT_ROLES = new Set(["owner", "store_manager"]);
+export const DISCOUNT_ROLES = new Set(["owner", "manager"]);
+
+// The fixed 20% staff preset needs someone with authority on the floor.
+export const STAFF_PRESET_ROLES = new Set(["owner", "manager", "supervisor"]);
 
 export const PAYMENT_METHODS = new Set([
   "cash",

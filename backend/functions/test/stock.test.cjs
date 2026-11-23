@@ -107,7 +107,7 @@ test('correcting a count stays above the keeper and never happens without a reas
   docs.set('stock_balances/b1_p1_HOUSE', { qty: 10 });
   const restore = harness(docs);
   try {
-    await assert.rejects(call(keeper, { action: 'adjust', qty: 8, location: 'HOUSE', expectedQty: 10, reason: 'Breakage', requestId: 'r6' }), /owner or a store manager/);
+    await assert.rejects(call(keeper, { action: 'adjust', qty: 8, location: 'HOUSE', expectedQty: 10, reason: 'Breakage', requestId: 'r6' }), /or a store manager/);
     await assert.rejects(call(owner, { action: 'adjust', qty: 8, location: 'HOUSE', expectedQty: 10, requestId: 'r7' }), /reason/);
     // A stale count is refused rather than silently overwriting someone else.
     await assert.rejects(call(owner, { action: 'adjust', qty: 8, location: 'HOUSE', expectedQty: 9, reason: 'Breakage', requestId: 'r8' }), /Refresh/);
@@ -281,7 +281,7 @@ test('a counted sheet belongs to the owner and the store manager, and needs a re
   const docs = base();
   const restore = harness(docs);
   try {
-    await assert.rejects(importStock.run({ auth: keeper, data: { mode: 'count', branchId: 'b1', batchId: 'b2', reason: 'x', rows: [{ sku: 'S', qty: 1 }] } }), /owner or a store manager/);
+    await assert.rejects(importStock.run({ auth: keeper, data: { mode: 'count', branchId: 'b1', batchId: 'b2', reason: 'x', rows: [{ sku: 'S', qty: 1 }] } }), /or a store manager/);
     await assert.rejects(importStock.run({ auth: owner, data: { mode: 'count', branchId: 'b1', batchId: 'b3', rows: [{ sku: 'S', qty: 1 }] } }), /reason/);
     // The store manager runs both rooms, so a stock take is theirs to book.
     await assert.rejects(importStock.run({ auth: manager, data: { mode: 'count', branchId: 'b1', batchId: 'b4', rows: [{ sku: 'S', qty: 1 }] } }), /reason/);
@@ -297,9 +297,9 @@ test('bar staff may pull stock into the House but never book a delivery', async 
     const asked = await call(bar, { action: 'request', qty: 4, requestId: 'bar1' });
     assert.equal(asked.status, 'pending');
     await assert.rejects(call(bar, { action: 'receive', qty: 4, requestId: 'bar2' }), /stock management staff/);
-    await assert.rejects(call(bar, { action: 'adjust', qty: 1, location: 'HOUSE', expectedQty: 0, reason: 'x', requestId: 'bar3' }), /owner or a store manager/);
+    await assert.rejects(call(bar, { action: 'adjust', qty: 1, location: 'HOUSE', expectedQty: 0, reason: 'x', requestId: 'bar3' }), /or a store manager/);
     // The store manager corrects either room; the keeper still cannot.
-    await assert.rejects(call(keeper, { action: 'adjust', qty: 1, location: 'HOUSE', expectedQty: 0, reason: 'x', requestId: 'keep3' }), /owner or a store manager/);
+    await assert.rejects(call(keeper, { action: 'adjust', qty: 1, location: 'HOUSE', expectedQty: 0, reason: 'x', requestId: 'keep3' }), /or a store manager/);
     const corrected = await call(manager, { action: 'adjust', qty: 9, location: 'HOUSE', expectedQty: 0, reason: 'Stock take', requestId: 'mgr3' });
     assert.equal(corrected.qty, 9);
   } finally { restore(); }
@@ -310,9 +310,9 @@ const { upsertCategory } = require('../lib/modules/catalogue');
 test('a product type can be created, and renaming keeps everything filed under it', async () => {
   const docs = new Map([['tenants/t1', { status: 'active' }]]);
   const restore = harness(docs);
-  const manager = { token: { tenant_id: 't1', staff_id: 's2', staff_role: 'store_manager' } };
+  const manager = { token: { tenant_id: 't1', staff_id: 's2', staff_role: 'manager' } };
   try {
-    await assert.rejects(upsertCategory.run({ auth: keeper, data: { name: 'Pastries' } }), /owner or store manager/);
+    await assert.rejects(upsertCategory.run({ auth: keeper, data: { name: 'Pastries' } }), /owner or manager/);
     await assert.rejects(upsertCategory.run({ auth: manager, data: { name: '' } }), /name/);
 
     const made = await upsertCategory.run({ auth: manager, data: { name: 'Pastries' } });
@@ -337,9 +337,9 @@ const { retireProduct } = require('../lib/modules/catalogue');
 test('removing a product retires it rather than deleting what history points at', async () => {
   const docs = new Map([['products/p9', { tenantId: 't1', sku: 'SKU-9', name: 'Old Lager', isActive: true, showOnMenu: true }]]);
   const restore = harness(docs);
-  const manager = { token: { tenant_id: 't1', staff_id: 's2', staff_role: 'store_manager' } };
+  const manager = { token: { tenant_id: 't1', staff_id: 's2', staff_role: 'manager' } };
   try {
-    await assert.rejects(retireProduct.run({ auth: keeper, data: { productId: 'p9' } }), /owner or store manager/);
+    await assert.rejects(retireProduct.run({ auth: keeper, data: { productId: 'p9' } }), /owner or manager/);
     await assert.rejects(retireProduct.run({ auth: manager, data: { productId: 'nope' } }), /not found/);
 
     const gone = await retireProduct.run({ auth: manager, data: { productId: 'p9' } });
@@ -437,7 +437,7 @@ test('a waiter asks, nothing moves, and the store manager approves the move', as
     const pending = docs.get(`stock_requests/${asked.requestId}`);
     assert.deepEqual([pending.status, pending.qty, pending.requestedByStaffId, pending.productName], ['pending', 24, 's3', 'Tusker']);
 
-    await assert.rejects(decide(cashier, { requestId: asked.requestId, decision: 'approve' }), /owner or a store manager/);
+    await assert.rejects(decide(cashier, { requestId: asked.requestId, decision: 'approve' }), /or a store manager/);
     const done = await decide(manager, { requestId: asked.requestId, decision: 'approve' });
     assert.deepEqual(done, { status: 'approved', qty: 24, storeQty: 6 });
     assert.equal(docs.get('stock_balances/b1_p1_HOUSE').qty, 24);

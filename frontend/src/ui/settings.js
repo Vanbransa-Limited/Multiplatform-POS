@@ -98,7 +98,7 @@ export class SettingsView {
   render() {
     this.usersView?.dispose(); this.usersView = null;
     const cashEnabled = tenantStorage.getItem('pos_cash_enabled') !== 'false';
-    const isOwner = state.currentUser && (state.currentUser.role === 'Owner' || state.currentUser.role === 'Store Manager');
+    const isOwner = state.currentUser && (state.currentUser.role === 'Owner' || state.currentUser.role === 'Manager');
     const discounts = JSON.parse(tenantStorage.getItem('pos_discounts') || '[]');
     // The rules refuse these to anyone else, so the control is disabled rather
     // than offering a save that can only fail.

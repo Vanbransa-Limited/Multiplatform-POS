@@ -6,7 +6,7 @@ const { db } = require('../lib/lib/firebase');
 const { deterministicId } = require('../lib/shared/identifiers');
 const { printedSnapshotData } = require('./fixtures/printed-bill.cjs');
 
-const auth = { uid: 'cashier-login', token: { tenant_id: 'tenant', staff_id: 'cashier', staff_role: 'cashier' } };
+const auth = { uid: 'cashier-login', token: { tenant_id: 'tenant', staff_id: 'cashier', staff_role: 'supervisor' } };
 const input = {
   tenantId: 'tenant', branchId: 'branch', deviceId: 'device', shiftId: 'shift',
   staffId: 'cashier', customerId: 'guest', idempotencyKey: 'discounted-order-651015',
@@ -20,7 +20,7 @@ function harness() {
     ['branches/branch', { tenantId: 'tenant', status: 'active', code: 'BH001' }],
     ['devices/device', { tenantId: 'tenant', branchId: 'branch', status: 'active' }],
     ['shifts/shift', { tenantId: 'tenant', branchId: 'branch', deviceId: 'device', staffId: 'cashier', status: 'open', expectedCashMinor: 0 }],
-    ['staff/cashier', { tenantId: 'tenant', status: 'active', role: 'cashier' }],
+    ['staff/cashier', { tenantId: 'tenant', status: 'active', role: 'supervisor' }],
     ['customers/guest', { tenantId: 'tenant', isActive: true }],
     ['tenant_settings/tenant', { tenantId: 'tenant', acceptedPaymentMethods: ['mpesa'] }],
     ['products/meal', { tenantId: 'tenant', isActive: true, sellPriceMinor: 170000, taxCode: 'A', name: 'Meal' }],
@@ -102,7 +102,7 @@ test('a KES925 table publishes its 30% service and 20% staff round, then one typ
 });
 
 for (const method of ['typed-code', 'stk']) {
-  test(`cashier registers the KES 1,360 staff-discount order and settles by ${method}`, async () => {
+  test(`supervisor registers the KES 1,360 staff-discount order and settles by ${method}`, async () => {
     const { docs, restore } = harness();
     try {
       const saved = await createSale.run({ auth, data: input });
@@ -159,7 +159,7 @@ test('a role the owner has switched off selling for cannot register a sale', asy
     docs.set('tenant_settings/tenant', { tenantId: 'tenant', acceptedPaymentMethods: ['mpesa'], moduleAccess: { sell: ['bar_staff'] } });
     await assert.rejects(createSale.run({ auth, data: input }), /Selling is switched off/);
     assert.equal([...docs.keys()].some(path => path.startsWith('sales/')), false);
-    docs.set('tenant_settings/tenant', { tenantId: 'tenant', acceptedPaymentMethods: ['mpesa'], moduleAccess: { sell: ['cashier'] } });
+    docs.set('tenant_settings/tenant', { tenantId: 'tenant', acceptedPaymentMethods: ['mpesa'], moduleAccess: { sell: ['supervisor'] } });
     assert.equal((await createSale.run({ auth, data: input })).sale.totalMinor, 136000);
   } finally { restore(); }
 });

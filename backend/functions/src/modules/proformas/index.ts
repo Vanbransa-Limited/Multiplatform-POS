@@ -8,7 +8,7 @@ import { settlingStaff, outstandingMinor, attemptBlocks } from '../sales/settle'
 import { readReceiptUsage, receiptAllocation } from '../../shared/mpesa-receipt';
 import { readReceiptBalance, allocateReceiptBalance, receiptCode } from '../sales/receipt-balance';
 
-const ISSUERS = new Set(['owner', 'store_manager', 'supervisor']);
+const ISSUERS = new Set(['owner', 'manager', 'supervisor']);
 const required = (value: unknown, name: string, max = 160) => {
   const text = optionalText(value, name, max);
   if (!text) throw new HttpsError('invalid-argument', `Enter ${name}.`);
@@ -68,7 +68,7 @@ export function parseProforma(value: unknown) {
 export const issueProforma = onCall({ region: FUNCTION_REGION }, async request => {
   const actor = settlingStaff(request.auth?.token);
   if (!ISSUERS.has(String(request.auth?.token.staff_role))) {
-    throw new HttpsError('permission-denied', 'Only an owner, store manager or supervisor can issue a proforma.');
+    throw new HttpsError('permission-denied', 'Only an owner, manager or supervisor can issue a proforma.');
   }
   const input = asRecord(request.data);
   const requestId = documentId(input.requestId, 'requestId');

@@ -25,7 +25,7 @@ import { asRecord, documentId, minorUnits, optionalText } from '../../shared/val
  * Deleting is the owner's alone: a customer is what unpaid invoices are billed
  * to, and removing one takes the name off a debt.
  */
-const CUSTOMER_ROLES = ['owner', 'supervisor'];
+const CUSTOMER_ROLES = ['owner', 'manager', 'supervisor'];
 const DELETE_ROLES = ['owner'];
 
 const KRA_PIN_PATTERN = /^[A-Z]\d{9}[A-Z]$/;

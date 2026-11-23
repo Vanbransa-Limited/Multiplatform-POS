@@ -10,6 +10,7 @@ import { HttpsError } from "firebase-functions/v2/https";
 
 export const ROLE_LABELS: Record<string, string> = {
   owner: "Owner",
+  manager: "Manager",
   store_manager: "Store Manager",
   supervisor: "Supervisor",
   cashier: "Cashier",
@@ -19,13 +20,16 @@ export const ROLE_LABELS: Record<string, string> = {
 
 export const STAFF_ROLES = new Set(Object.keys(ROLE_LABELS));
 
-/** Roles that may create, re-password, or disable other staff. */
-export const ADMIN_ROLES = new Set(["owner", "store_manager"]);
+/**
+ * Roles that run the business under the owner: staff, menu, settings, money.
+ * The store manager is a stock role and is deliberately not one of them.
+ */
+export const ADMIN_ROLES = new Set(["owner", "manager"]);
 
 /**
  * Only an owner may mint another owner.
  *
- * Without this a store manager could create an owner account and then sign in
+ * Without this a manager could create an owner account and then sign in
  * as it, which is a full privilege escalation out of their own role.
  */
 export function canAssignRole(actorRole: string, targetRole: string): boolean {
@@ -65,9 +69,12 @@ export function normaliseModuleAccess(input: unknown): Record<string, string[]> 
   return out;
 }
 
-/** Whether a role may create sales under this tenant's settings. */
+/**
+ * Whether a role may create sales under this tenant's settings. A manager
+ * oversees rather than rings up, unless the owner switches selling on for them.
+ */
 export function canSell(settings: Record<string, unknown>, role: string): boolean {
   if (role === "owner") return true;
   const roles = (settings.moduleAccess as Record<string, unknown> | undefined)?.sell;
-  return Array.isArray(roles) ? roles.includes(role) : STAFF_ROLES.has(role);
+  return Array.isArray(roles) ? roles.includes(role) : STAFF_ROLES.has(role) && role !== "manager";
 }

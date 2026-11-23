@@ -9,6 +9,7 @@
 
 export const ROLE_LABELS = {
   owner: 'Owner',
+  manager: 'Manager',
   store_manager: 'Store Manager',
   supervisor: 'Supervisor',
   cashier: 'Cashier',

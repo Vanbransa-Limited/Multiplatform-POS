@@ -52,7 +52,7 @@ export class OrdersView {
     this.staffNames = new Map();
     // Money roles answer for the whole business, not only the branch attached
     // to the device on which they opened an organization-wide finance link.
-    this.allBranches = ['Owner', 'Store Manager'].includes(state.currentUser?.role);
+    this.allBranches = ['Owner', 'Manager'].includes(state.currentUser?.role);
     // The same client the till pushes with, so both screens obey one lifecycle.
     this.mpesa = new MpesaService();
   }
@@ -832,10 +832,10 @@ export class OrdersView {
       container: this.container, toolbar: this.container.querySelector('.co-toolbar'),
       controls: ['#orders-scope-wrap', '#orders-date-bar', '#customer-orders-tabs', '#orders-sort-wrap', '#orders-export-btn'].map(selector => this.container.querySelector(selector)),
       title: 'Order filters',
-      count: () => Number(this.customerTab !== 'all') + Number(Boolean(this.dateFrom || this.dateTo)) + Number(!this.allBranches && ['Owner', 'Store Manager'].includes(state.currentUser?.role)),
+      count: () => Number(this.customerTab !== 'all') + Number(Boolean(this.dateFrom || this.dateTo)) + Number(!this.allBranches && ['Owner', 'Manager'].includes(state.currentUser?.role)),
       reset: () => {
         this.customerTab = 'all'; this.dateFrom = ''; this.dateTo = ''; this.customerPage = 1;
-        this.allBranches = ['Owner', 'Store Manager'].includes(state.currentUser?.role);
+        this.allBranches = ['Owner', 'Manager'].includes(state.currentUser?.role);
         this.container.querySelector('#orders-all-branches').checked = this.allBranches;
         this.container.querySelector('#orders-date-from').value = ''; this.container.querySelector('#orders-date-to').value = '';
         this.renderCustomerBoard();
@@ -992,7 +992,7 @@ export class OrdersView {
     });
     // Organization money roles can move between whole-business and local views.
     const scope = this.container.querySelector('#orders-all-branches');
-    if (['Owner', 'Store Manager'].includes(state.currentUser?.role)) {
+    if (['Owner', 'Manager'].includes(state.currentUser?.role)) {
       this.container.querySelector('#orders-scope-wrap').style.display = 'flex';
       scope.checked = this.allBranches;
       scope.addEventListener('change', (event) => {

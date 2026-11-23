@@ -38,7 +38,7 @@ export function Sidebar() {
     <aside className="app-sidebar">
       <div className="sidebar-logo" style={{ padding: "10px 0", display: "flex", justifyContent: "center", alignItems: "center" }}>
         {state.currentTenant?.logo_url || state.currentTenant?.id === 'tenant-01'
-          ? <img src={state.currentTenant?.logo_url || '/logo.png'} alt={`${state.currentTenant?.trading_name || 'Titanium'} logo`} style={{ height: 38, maxWidth: 180, objectFit: "contain" }} />
+          ? <img src={state.currentTenant?.logo_url || '/logo.png'} alt={`${state.currentTenant?.trading_name || 'Vanbransa'} logo`} style={{ height: 38, maxWidth: 180, objectFit: "contain" }} />
           : <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, textAlign: 'center', overflowWrap: 'anywhere' }}>{state.currentTenant?.trading_name || 'Your business'}</span>}
       </div>
 

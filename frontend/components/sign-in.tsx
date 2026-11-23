@@ -60,6 +60,9 @@ export function SignIn() {
             className="modal-content pin-switcher-content"
             style={{ border: "none", background: "transparent", boxShadow: "none", padding: "28px 24px 20px", width: "100%", maxWidth: "100%" }}
           >
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}>
+              <img src="/logo.png" alt="Vanbransa" style={{ height: 42, maxWidth: 220, objectFit: "contain", borderRadius: 6 }} />
+            </div>
             <h2 style={{ margin: 0 }}>Sign In</h2>
 
             {/* .modal-content centres its children, which would otherwise

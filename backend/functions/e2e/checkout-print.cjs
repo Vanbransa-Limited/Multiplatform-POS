@@ -9,6 +9,10 @@ const { deterministicId } = require('../lib/shared/identifiers');
 const { prepareCheckoutReceipt, confirmCheckoutReceiptPrinted } = require('../lib/modules/sales/checkout-print');
 const { claimSalePayment, settleSale } = require('../lib/modules/sales/settle');
 const { settleCustomerOrderCash } = require('../lib/modules/customer-orders/payments');
+const { PRINT_BEFORE_PAYMENT } = require('../lib/modules/sales/printed-receipt');
+// The refusal is only asserted while the owner has print-before-payment on;
+// with it off, the queue, confirmation, scope and replay checks still run.
+const printGate = call => (PRINT_BEFORE_PAYMENT ? assert.rejects(call(), /Print the receipt/) : undefined);
 const tenantId = 'print-checkout-regression', branchId = 'print-checkout-branch';
 const auth = { token: { tenant_id: tenantId, staff_id: 'print-cashier', staff_role: 'cashier' } };
 const saleId = uuid => deterministicId('sale', `${tenantId}:${uuid}`);
@@ -62,9 +66,9 @@ async function main() {
   ]);
   assert.deepEqual(await prepare(['first']), { printed: false, queued: false });
   for (const method of ['cash', 'card', 'bank_transfer', 'mpesa']) {
-    await assert.rejects(settleSale.run({ auth, data: { saleUuid: 'first', requestId: method, method, reference: 'PRINT00001' } }), /Print the receipt/);
+    await printGate(() => settleSale.run({ auth, data: { saleUuid: 'first', requestId: method, method, reference: 'PRINT00001' } }));
   }
-  await assert.rejects(claim(['first']), /Print the receipt/);
+  await printGate(() => claim(['first']));
   const jobs = await Promise.all(Array.from({ length: 4 }, () => prepare(['first', 'second'], true,
     { receipt: { invoiceNo: 'FORGED', grandTotal: 0 } })));
   assert.ok(jobs.every(job => job.jobId === jobs[0].jobId));
@@ -75,7 +79,7 @@ async function main() {
   assert.equal(job.receipt.unpaid, true);
   assert.notEqual(job.receipt.invoiceNo, 'FORGED');
   assert.equal((await prepare(['first', 'second'])).queued, true);
-  await assert.rejects(claim(['first', 'second']), /Print the receipt/);
+  await printGate(() => claim(['first', 'second']));
   await assert.rejects(confirm(jobId, { confirmed: false }), /Confirm the receipt/);
   await assert.rejects(confirm(jobId, { deviceId: 'print-foreign-device' }), /active print station/);
   const foreign = { token: { ...auth.token, tenant_id: 'another-business' } };
@@ -96,7 +100,7 @@ async function main() {
   // Even a same-price item edit requires the new paper, on every till.
   await db.doc(`sale_lines/${saleId('second')}_line_01`).update({ productName: 'Changed item' });
   assert.equal((await prepare(['second'])).printed, false);
-  await assert.rejects(claim(['second']), /Print the receipt/);
+  await printGate(() => claim(['second']));
   const changed = await prepare(['second'], true);
   await db.doc(`sale_lines/${saleId('second')}_line_01`).update({ qty: 2 });
   await assert.rejects(confirm(changed.jobId), /bill changed/);
@@ -105,13 +109,13 @@ async function main() {
   await confirm(latest.jobId);
   assert.equal((await prepare(['second'])).printed, true);
   await seed('new-round');
-  await assert.rejects(claim(['second', 'new-round']), /Print the receipt/);
+  await printGate(() => claim(['second', 'new-round']));
 
   // Menu checkout shares the gate; a kitchen ticket's print count is insufficient.
   await db.doc('customer_orders/print-menu').set({ tenantId, branchId, ref: 'WEB-PRINT', totalMinor: 10000,
     status: 'received', paymentStatus: 'unpaid', printCount: 5,
     lines: [{ productId: 'print-item', name: 'Menu item', qty: 1, unitPriceMinor: 10000, totalMinor: 10000 }] });
-  await assert.rejects(settleCustomerOrderCash.run({ auth, data: { orderId: 'print-menu' } }), /Print the receipt/);
+  await printGate(() => settleCustomerOrderCash.run({ auth, data: { orderId: 'print-menu' } }));
   const menu = await prepareCheckoutReceipt.run({ auth, data: { customerOrderId: 'print-menu', queue: true } });
   await confirm(menu.jobId);
   assert.equal((await settleCustomerOrderCash.run({ auth, data: { orderId: 'print-menu' } })).paymentStatus, 'paid');

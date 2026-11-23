@@ -1886,8 +1886,8 @@ export class TillView {
     if (cashCard) cashCard.style.display = cashEnabled ? '' : 'none';
     document.getElementById('pay-mpesa-code').value = '';
 
-    // Pre-select CASH (or M-Pesa Code if cash is disabled) for 1-tap tablet checkout speed.
-    this.selectPaymentMethod(cashEnabled ? 'CASH' : 'MPESA_CODE');
+    // Require a deliberate tender choice before revealing its fields.
+    this.selectPaymentMethod(null);
     void this.refreshMpesaCapability();
     // On a tab the rounds are already registered and this is settling them,
     // so there is nothing further to register. Off a tab the order joins the

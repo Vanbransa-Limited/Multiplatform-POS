@@ -1121,7 +1121,7 @@ export class OrdersView {
     this.container.querySelector('#settle-stk-note').textContent = order.roundIds?.length > 1
       ? `Charges all ${order.roundIds.length} rounds at once`
       : "Send the prompt to the customer's phone";
-    this.selectSettleMethod(typeof cashIsEnabled === 'function' && !cashIsEnabled() ? 'mpesa' : 'cash');
+    this.selectSettleMethod(null);
     this.selectedSettleRoundIds = null;
     this.populateSplitRoundsSelector?.(order);
     this.showModal('#settle-modal');

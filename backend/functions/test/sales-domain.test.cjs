@@ -134,12 +134,11 @@ test('the fixed 20 percent staff preset can be registered before a payment exist
   }));
   const lines = prepareSaleLines(parsed.lines, [productDocument({ sellPriceMinor: 170000 })], parsed.tenantId);
   assert.equal(calculateSaleTotals(lines, parsed.payments).totalMinor, 136000);
-  // The preset needs someone with authority on the floor: a cashier typing a
-  // PIN into their own till is not an approval.
-  for (const role of ['owner', 'manager', 'supervisor']) {
+  // The preset is a management decision: only an owner or a manager gives it.
+  for (const role of ['owner', 'manager']) {
     assert.doesNotThrow(() => assertDiscountPermission(lines, role));
   }
-  for (const role of ['cashier', 'bar_staff', 'store_keeper', 'store_manager']) {
+  for (const role of ['supervisor', 'cashier', 'bar_staff', 'store_keeper', 'store_manager']) {
     assert.throws(() => assertDiscountPermission(lines, role), (error) => error.code === 'permission-denied', role);
   }
   assert.throws(() => assertDiscountPermission(lines, 'customer'));

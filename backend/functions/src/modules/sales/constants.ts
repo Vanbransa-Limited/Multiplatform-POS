@@ -17,8 +17,8 @@ export const SELLING_ROLES = new Set([
 
 export const DISCOUNT_ROLES = new Set(["owner", "manager"]);
 
-// The fixed 20% staff preset needs someone with authority on the floor.
-export const STAFF_PRESET_ROLES = new Set(["owner", "manager", "supervisor"]);
+// The fixed 20% staff preset is a management decision: owner or manager only.
+export const STAFF_PRESET_ROLES = new Set(["owner", "manager"]);
 
 export const PAYMENT_METHODS = new Set([
   "cash",

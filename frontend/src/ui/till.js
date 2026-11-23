@@ -1193,7 +1193,7 @@ export class TillView {
     }
 
     // Staff 20% Discount: toggle on/off, always qty 1. The server accepts it only
-    // from an owner, manager or supervisor, so nobody else is offered it.
+    // from an owner or manager, so nobody else is offered it.
     if (product.id === 'prod-staff-discount') {
       if (existingIndex > -1) {
         this.cart.splice(existingIndex, 1);
@@ -1201,8 +1201,8 @@ export class TillView {
         this.updateCartUI();
         return;
       }
-      if (!['Owner', 'Manager', 'Supervisor'].includes(state.currentUser?.role)) {
-        showNotification('Staff discount needs a supervisor or manager to ring up this sale.', 'error');
+      if (!['Owner', 'Manager'].includes(state.currentUser?.role)) {
+        showNotification('Only the owner or a manager can give the staff discount.', 'error');
         return;
       }
       this.cart.unshift({

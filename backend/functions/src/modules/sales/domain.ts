@@ -131,7 +131,7 @@ export function assertDiscountPermission(
   staffRole: unknown,
   providerAuthorized = false,
 ): void {
-  // The till exposes the fixed staff preset to supervisors and above. It is saved as
+  // The till exposes the fixed staff preset to owners and managers. It is saved as
   // line discounts before a receivable can be paid, including by STK. Validate
   // that preset against server prices without requiring a payment intent.
   const discountMinor = lines.reduce((total, line) => total + line.discountMinor, 0);

@@ -21,23 +21,23 @@ import {
 import { ACTIVITY_EVENT, state } from "@/context";
 
 /**
- * Idle sign-out. With the PIN pad gone there is no cheap re-lock, so an
- * unattended till would otherwise stay open on a full session all shift.
+ * Idle sign-out after 15 seconds of inactivity so an unattended shared tablet
+ * or counter terminal immediately locks back to the Sign-In screen.
  */
-const IDLE_LIMIT_MS = 15 * 60 * 1_000;
+export const IDLE_LIMIT_MS = 15 * 1_000;
 
 /**
  * What counts as the session still being in use.
  *
- * `touchstart` and `scroll` matter on a tablet: reading down a long order list
- * with a finger fires neither `pointerdown` nor `wheel`, so someone actively
- * using the screen could still be signed out mid-shift.
+ * `touchstart`, `pointermove`, `click`, and `scroll` matter on a tablet: reading
+ * down a long order list with a finger or moving across controls resets the
+ * 15-second idle timer while someone is actively operating the screen.
  *
  * ACTIVITY_EVENT is not a human touching the screen at all - it is a module
  * saying it is deliberately doing work, which is the only reason an untouched
  * print station stays signed in.
  */
-const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll', ACTIVITY_EVENT] as const;
+const ACTIVITY_EVENTS = ['pointerdown', 'pointermove', 'click', 'keydown', 'wheel', 'touchstart', 'touchmove', 'scroll', ACTIVITY_EVENT] as const;
 
 type PosUser = {
   id: string;

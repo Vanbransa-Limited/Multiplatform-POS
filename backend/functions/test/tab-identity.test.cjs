@@ -1,0 +1,67 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { db } = require('../lib/lib/firebase');
+const { resolveSharedTab } = require('../lib/modules/sales/tab-identity');
+const input = { tenantId: 'tenant', branchId: 'b1', tableNumber: '50', tabId: 'new-tab',
+  orderReference: 'ORD-NEW', payments: [{ method: 'credit', amountMinor: 10000 }] };
+
+function harness(sales = [], payments = []) {
+  const original = db.collection;
+  const locks = [];
+  const query = (name, constraints = []) => ({ name, constraints,
+    doc: id => ({ path: `${name}/${id}` }),
+    where: (field, operator, value) => query(name, [...constraints, [field, value]]) });
+  db.collection = name => query(name);
+  const tx = { get: async target => {
+    if (target.path) { locks.push(target.path); return { data: () => undefined }; }
+    return { docs: (target.name === 'sales' ? sales : payments)
+      .filter(row => target.constraints.every(([key, value]) => row[key] === value))
+      .map(row => ({ id: row.id, data: () => row })) };
+  } };
+  return { tx, locks, restore: () => { db.collection = original; } };
+}
+const sale = (id, tabId = 'original') => ({ id, tabId, tenantId: 'tenant', branchId: 'b1', tableNumber: '50',
+  orderReference: 'ORD-ORIGINAL', status: 'completed' });
+const credit = id => ({ saleId: id, tenantId: 'tenant', method: 'credit', amountMinor: 10000 });
+
+test('an uploaded unpaid round supplies the tab identity even when its snapshot is gone', async () => {
+  const h = harness([sale('first')], [credit('first')]);
+  try {
+    const result = await resolveSharedTab(h.tx, input);
+    assert.equal(result.data.tabId, 'original');
+    assert.equal(result.data.orderReference, 'ORD-ORIGINAL');
+    assert.equal(h.locks.length, 1, 'a table lock serializes concurrent first rounds');
+  } finally { h.restore(); }
+});
+
+test('paid, voided and another branch sales do not revive a previous bill', async () => {
+  const h = harness([sale('paid'), { ...sale('void'), status: 'VOIDED' }, { ...sale('other'), branchId: 'b2' }],
+    [{ ...credit('paid'), settledAt: 'paid' }, credit('void'), credit('other')]);
+  try { assert.equal((await resolveSharedTab(h.tx, input)).data.tabId, 'new-tab'); }
+  finally { h.restore(); }
+});
+
+test('existing split bills refuse more rounds until reconciled', async () => {
+  const h = harness([sale('first'), sale('second', 'split')], [credit('first'), credit('second')]);
+  try { await assert.rejects(resolveSharedTab(h.tx, input), /multiple unpaid bills/); }
+  finally { h.restore(); }
+});
+
+test('table spelling shares a lock while tenants and branches remain isolated', async () => {
+  const h = harness();
+  try {
+    const resolve = value => resolveSharedTab(h.tx, { ...input, ...value });
+    const a = await resolve({});
+    const b = await resolve({ tableNumber: ' Table  50 ' });
+    const c = await resolve({ branchId: 'b2' });
+    const d = await resolve({ tenantId: 'other' });
+    assert.equal(a.ref.path, b.ref.path);
+    assert.notEqual(a.ref.path, c.ref.path);
+    assert.notEqual(a.ref.path, d.ref.path);
+  } finally { h.restore(); }
+});
+
+test('settled sales and takeaway orders never acquire an open-table lock', async () => {
+  assert.equal(await resolveSharedTab({}, { ...input, payments: [{ method: 'cash', amountMinor: 10000 }] }), null);
+  assert.equal(await resolveSharedTab({}, { ...input, tableNumber: null }), null);
+});

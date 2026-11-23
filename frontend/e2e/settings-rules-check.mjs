@@ -8,6 +8,7 @@
  * document they do not.
  */
 import { readFileSync } from 'node:fs';
+import { assertSafeEmulatorTarget } from '../../scripts/lib/emulator-safety.cjs';
 import { initializeApp } from 'firebase/app';
 import { getAuth, connectAuthEmulator, signInWithCustomToken } from 'firebase/auth';
 import {
@@ -15,14 +16,16 @@ import {
   terminate,
 } from 'firebase/firestore';
 
+const target = assertSafeEmulatorTarget();
+const firestoreEndpoint = new URL(`http://${target.firestoreHost}`);
 const { tokens } = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-const app = initializeApp({ apiKey: 'fake', projectId: 'vanbransa-pos', appId: '1:1:web:1' });
+const app = initializeApp({ apiKey: 'fake', projectId: target.projectId, appId: '1:1:web:1' });
 const auth = getAuth(app);
-connectAuthEmulator(auth, 'http://127.0.0.1:9399', { disableWarnings: true });
+connectAuthEmulator(auth, `http://${target.authHost}`, { disableWarnings: true });
 // Node's gRPC transport hangs against the emulator; long polling is what the
 // browser uses here anyway, so this stays faithful to the real client.
 const db = initializeFirestore(app, { experimentalForceLongPolling: true });
-connectFirestoreEmulator(db, '127.0.0.1', 8380);
+connectFirestoreEmulator(db, firestoreEndpoint.hostname.replace(/^\[|\]$/g, ''), Number(firestoreEndpoint.port));
 
 const TENDERS = ['mpesa', 'bank_transfer', 'card', 'airtel_money'];
 const problems = [];

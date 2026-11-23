@@ -1,6 +1,8 @@
 import { getFirebase, currentClaims, callFunction } from './firebase.js';
 import { escapeHtml } from './print-receipt.js';
 import { isReceivable } from './takings.js';
+import { state } from '../context.js';
+import { createReceiptLookup } from './receipt-lookup.js';
 
 export async function watchCustomerOrders(onOrders, onError) {
   const fb = await getFirebase();
@@ -424,7 +426,8 @@ export const chargeCustomerOrder = (orderId, phone, paymentRequestId) => callFun
 export const checkCustomerOrderPayment = (orderId) => callFunction('checkCustomerOrderPayment', { orderId });
 export const settleCustomerOrderCash = (orderId) => callFunction('settleCustomerOrderCash', { orderId });
 /** Settles against a payment M-Pesa has already confirmed to this business. */
-export const settleCustomerOrderByCode = (orderId, code) => callFunction('settleCustomerOrderByCode', { orderId, code });
+export const settleCustomerOrderByCode = (orderId, code, receiptAmountMinor) => callFunction('settleCustomerOrderByCode', { orderId, code,
+  ...(receiptAmountMinor !== undefined ? { receiptAmountMinor } : {}) });
 /** Records a bank transfer against an order, with the statement reference. */
 export const settleCustomerOrderBank = (orderId, reference) => callFunction('settleCustomerOrderBank', { orderId, reference });
 /** Records money the card terminal took; there is no card integration. */
@@ -436,5 +439,9 @@ export const settleCustomerOrderCard = (orderId, reference) => callFunction('set
  * sent this business, so settling on one means the money actually arrived.
  */
 export const settleSale = (input) => callFunction('settleSale', input);
+export const lookupMpesaReceipt = createReceiptLookup(
+  input => callFunction('lookupMpesaReceipt', input, { timeout: 10000 }),
+  () => JSON.stringify([state.currentTenant?.id, state.currentUser?.id]),
+);
 export const claimSalePayment = (input) => callFunction('claimSalePayment', input);
 export const voidSale = (input) => callFunction('voidSale', input);

@@ -3,6 +3,7 @@ import { proformaHtml } from '../services/event-proforma.js';
 import { escapeHtml as esc } from '../services/print-receipt.js';
 import { timestamp } from '../services/financial-snapshot.js';
 import { paginate, pagerHtml, bindPager } from '../services/paginate.js';
+import { manualReceipt } from '../services/manual-receipt.js';
 
 const money = minor => `KES ${(Number(minor || 0) / 100).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -37,6 +38,11 @@ export class ProformaRegister {
       if (!event.target.matches('[data-pf-payment]')) return;
       event.preventDefault();
       void this.pay(event.target);
+    };
+    this.host.onchange = event => {
+      if (event.target.matches('[data-pf-payment] select[name="method"]')) {
+        event.target.form.querySelector('[data-pf-receipt-amount]').hidden = event.target.value !== 'mpesa';
+      }
     };
     try {
       const stop = await watchProformas(records => {
@@ -92,9 +98,10 @@ export class ProformaRegister {
       <button type="button" class="sec-btn" data-pf-print>View / print original invoice</button>
       ${paid ? `<p>Payment recorded ${esc(new Date(timestamp(row.paidAt)).toLocaleString())} · ${esc(row.paymentMethod)} · ${esc(row.paymentReference || '')}</p>`
         : `<form data-pf-payment class="proforma-payment"><h4>Record full payment received</h4>
-          <p>Record this after the money arrives. Bank and card references are staff-recorded; M-Pesa codes must match a confirmed payment for the full amount.</p>
+          <p>Record this after the money arrives. For M-Pesa, enter the code and amount from the payment message.</p>
           <label>Payment method <select name="method" required><option value="bank_transfer">Bank transfer</option><option value="mpesa">M-Pesa code</option><option value="card">Card</option><option value="cash">Cash</option></select></label>
-          <label>Payment reference <input name="reference" maxlength="120" placeholder="Statement reference or M-Pesa code"></label>
+          <label>Payment reference <input name="reference" maxlength="120" placeholder="Statement reference or M-Pesa code" autocomplete="off" autocorrect="off" spellcheck="false"></label>
+          <label data-pf-receipt-amount hidden>Amount on receipt (KES) <input name="receiptAmount" type="text" inputmode="decimal" autocomplete="off" placeholder="Enter receipt amount"></label>
           <button type="submit" class="discount-save-btn">Record ${money(invoice.dueMinor)} received</button>
           <p data-pf-payment-message role="status"></p></form>`}
     </section>`;
@@ -118,7 +125,9 @@ export class ProformaRegister {
     status.textContent = 'Recording payment…';
     try {
       const fields = new FormData(form);
-      const result = await payProforma({ proformaId: id, method: fields.get('method'), reference: fields.get('reference') });
+      const receipt = fields.get('method') === 'mpesa' ? manualReceipt(fields.get('reference'), fields.get('receiptAmount')) : null;
+      const result = await payProforma({ proformaId: id, method: fields.get('method'), reference: fields.get('reference'),
+        ...(receipt ? { reference: receipt.reference, receiptAmountMinor: receipt.receiptAmountMinor } : {}) });
       this.message(result.alreadyPaid
         ? 'This invoice was already paid. No new payment was recorded. Reconcile any money just received before taking another payment.'
         : 'Payment recorded. Included in the received total for today’s trading day.');

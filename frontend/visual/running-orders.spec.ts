@@ -7,11 +7,14 @@ const script = (file: string) => readFileSync(`src/${file}.js`, 'utf8')
 for (const width of [1440, 390]) {
   test(`running tables, payment and sorting at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
+    await page.goto('/orders/');
     await page.setContent('<meta name="viewport" content="width=device-width, initial-scale=1"><main class="app-main-content"><section class="tab-view active" id="host"></section></main>');
     await page.addStyleTag({ content: readFileSync('src/ui/styles.css', 'utf8') + readFileSync('src/ui/mobile.css', 'utf8') });
     await page.addScriptTag({ content: `
       const state={currentUser:{role:'Owner'},currentBranch:{id:'b1'}};
       const MpesaService=class{}; const cashIsEnabled=()=>true;
+      const createReceiptLookup=()=>()=>{throw Error('Manual entry must not look up a receipt');};
+      const ProformaRegister=class{constructor(host){this.host=host;}async load(){this.host.textContent='Invoice register';}};
       const isReceivable=m=>['CREDIT','PROFORMA'].includes(m);
       const escapeHtml=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
       ${script('services/paginate')}
@@ -50,5 +53,21 @@ for (const width of [1440, 390]) {
     await page.getByRole('tab', { name: 'Running', exact: true }).click();
     if (width < 600) await page.getByRole('button', { name: 'Show results', exact: true }).click();
     await expect(page.locator('#customer-orders-list')).toBeVisible();
+
+    await page.evaluate(`view.openSettleModal('b'); view.selectSettleMethod('mpesa');`);
+    await expect(page.locator('#settle-receipt-amount')).toBeVisible();
+    await expect(page.locator('#settle-confirm')).toBeEnabled();
+    await expect(page.locator('#settle-modal')).not.toContainText('Check M-Pesa code');
+    await page.locator('#settle-reference').fill('UKL0B2RHOX');
+    await page.locator('#settle-receipt-amount').fill('320');
+    await expect(page.locator('#settle-modal')).toHaveCSS('opacity', '1');
+    await page.screenshot({ path: `../tmp/manual-mpesa-bill-${width}.png`, fullPage: true });
+    await page.locator('#settle-close').click();
+    await page.evaluate(`view.customerOrders=[{id:'web',ref:'WEB-1',totalMinor:50000,lines:[]}];view.openPayModal('web');view.selectPayMethod('code');`);
+    await expect(page.locator('#pay-code-amount')).toBeVisible();
+    await expect(page.locator('#pay-code-settle')).toHaveText('Record payment');
+    await expect(page.locator('#settle-modal')).toHaveCSS('opacity', '0');
+    await expect(page.locator('#pay-modal')).toHaveCSS('opacity', '1');
+    await page.screenshot({ path: `../tmp/manual-mpesa-menu-${width}.png`, fullPage: true });
   });
 }

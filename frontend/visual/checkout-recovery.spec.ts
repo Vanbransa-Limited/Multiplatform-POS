@@ -6,7 +6,7 @@ const source = (path: string) => readFileSync(path, 'utf8').replace(/\r\n/g, '\n
 for (const method of ['card', 'mpesa', 'stk']) {
   test(`KES2100 checkout ignores an empty discount round and settles three saved rounds by ${method}`, async ({ page }) => {
     await page.goto('/orders/');
-    await page.evaluate(() => { document.body.innerHTML = '<main id="host"><div id="settle-message"></div><input id="settle-reference" value="TESTREFERENCE"><input id="settle-phone" value="0712345678"><div id="settle-stk-status"></div><div id="settle-stk-badge"></div><div id="settle-due"></div></main>'; });
+    await page.evaluate(() => { document.body.innerHTML = '<main id="host"><div id="settle-message"></div><input id="settle-receipt-amount" value="2100"><input id="settle-reference" value="TESTREF001"><input id="settle-phone" value="0712345678"><div id="settle-stk-status"></div><div id="settle-stk-badge"></div><div id="settle-due"></div></main>'; });
     await page.addScriptTag({ content: readFileSync('node_modules/dexie/dist/dexie.js', 'utf8') });
     const orders = source('src/ui/orders.js').replace("const { firebaseConfigured } = await import('../services/firebase');", 'const firebaseConfigured = true;');
     await page.addScriptTag({ content: `
@@ -19,9 +19,11 @@ for (const method of ['card', 'mpesa', 'stk']) {
       const MpesaService=class{};const calls=[];
       const pullSales=async()=>{};
       const claimSalePayment=async input=>{calls.push({type:'claim',...input});if(input.saleUuids.length!==3||input.expectedMinor!==210000)throw Error('Wrong bill claim');return {dueMinor:210000};};
-      const settleSale=async input=>{calls.push({type:'settlement',...input});const round=await db.sales.where('sale_uuid').equals(input.saleUuid).first();return{paymentId:'receipt-'+round.id,method:input.method,reference:'TESTREFERENCE',settledMinor:Math.round(round.grand_total*100),receivedMinor:210000,verified:input.method==='mpesa'};};
+      const settleSale=async input=>{calls.push({type:'settlement',...input});const round=await db.sales.where('sale_uuid').equals(input.saleUuid).first();return{paymentId:'receipt-'+round.id,method:input.method,reference:'TESTREF001',settledMinor:Math.round(round.grand_total*100),receivedMinor:210000,verified:input.method==='mpesa'};};
       const freeSettledTab=async()=>{calls.push({type:'free-table'});return '78';};
       const catalogueCartLines=()=>[];
+      ${source('src/services/manual-receipt.js')}
+      ${source('src/services/receipt-settlement.js')}
       ${source('src/services/checkout-rounds.js')}
       ${orders}
       window.testDb=db;window.calls=calls;
@@ -29,7 +31,7 @@ for (const method of ['card', 'mpesa', 'stk']) {
       view.settleMethod=${JSON.stringify(method)};view.settleRequestId='checkout';view.settleStkKey='prompt-original';
       view.settleTarget=()=>({id:'tab',ref:'EXAMPLE-TABLE',roundIds:['r1','empty','r2','r3'],customerId:'walk-in',branchId:'branch',dueMinor:210000});
       view.loadPosOrders=async()=>{};view.renderCustomerBoard=()=>{};view.pushSettledRounds=async()=>({ok:true});
-      view.mpesa={initiateStkPush:async input=>{calls.push({type:'prompt',...input});return{success:true,attemptId:'provider-proof'};},awaitResult:async()=>({status:'paid',receipt:'TESTREFERENCE',amountMinor:210000})};
+      view.mpesa={initiateStkPush:async input=>{calls.push({type:'prompt',...input});return{success:true,attemptId:'provider-proof'};},awaitResult:async()=>({status:'paid',receipt:'TESTREF001',amountMinor:210000})};
       state.syncManager={publishSale:async id=>{calls.push({type:'publish',id});throw Error('The empty adjustment must never be uploaded');}};
       window.ready=(async()=>{
         await db.sales.bulkPut([1100,800,200].map((amount,i)=>({id:'r'+(i+1),sale_uuid:'uuid'+(i+1),synced_at:'server',tab_id:'tab',grand_total:amount,status:'COMPLETED'})));

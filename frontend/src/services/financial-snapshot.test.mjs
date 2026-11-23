@@ -62,6 +62,15 @@ test('a provider receipt binds to its saved invoice and upgrades a matching ledg
   assert.equal(reconciled.transactions[0].unapplied, false);
 });
 
+test('separate allocations from the same receipt to the same bill count each payment once', () => {
+  const serverSales = [{ id: 'sale1', tenantId: 'tenant', status: 'completed', soldAt: date }];
+  const serverPayments = [40000, 60000].map((amountMinor, i) => ({ id: `portion${i}`, tenantId: 'tenant', saleId: 'sale1',
+    method: 'mpesa', amountMinor, reference: 'RECEIPT123', paidAt: date, receiptAllocationId: 'receipt:one', receiptLimitMinor: 100000 }));
+  const report = snapshot({ serverSales, serverPayments });
+  assert.equal(report.collected, 1000);
+  assert.equal(report.paymentCount, 1);
+});
+
 test('truncated references preserve first-prefix matching and exact references take priority', () => {
   const report = snapshot({
     serverSales: ['prefix-first', 'prefix-second', 'prefix'].map((key, i) => ({

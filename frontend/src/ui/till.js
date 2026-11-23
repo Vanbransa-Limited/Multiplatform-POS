@@ -19,11 +19,14 @@ import {
 import { mpesaConfirmationCode, toMinor, mapPaymentMethod } from '../services/tender';
 import { isReceivable } from '../services/takings';
 import { enqueuePrintJob, isStationOnline } from '../services/print-queue';
+import { requirePrintedReceipt } from './checkout-print';
 import { escapeHtml, renderReceiptHtml } from '../services/print-receipt';
 import { etrFor, generateEtr } from '../services/etr';
-import { compareNames, pullCatalogue } from '../services/catalogue';
+import { compareNames, pullCatalogue, pullSales } from '../services/catalogue';
 import { pullCustomers, saveCustomer } from '../services/customers';
 import { saleAsOrder, voidSale, settleSale, claimSalePayment } from '../services/customer-orders';
+import { recordReceiptSettlement } from '../services/receipt-settlement';
+import { manualReceipt } from '../services/manual-receipt';
 import { pullStock } from '../services/stock';
 import { closingUpdate, newTab, OPEN, openTabAt, roundTotals, tabKey } from '../services/tabs';
 import { pullOpenOrders } from '../services/open-orders';
@@ -115,6 +118,7 @@ export class TillView {
   }
 
   dispose() {
+    clearTimeout(this.searchTimer);
     this.filterSheet?.dispose();
     this.persistDraft();
     this.disposed = true;
@@ -230,7 +234,7 @@ export class TillView {
         <div class="till-cart-col" id="till-sale-panel">
           <div class="cart-header">
             <h3 id="cart-heading">Current Sale</h3>
-            <span class="cart-count" id="cart-item-count">0 Items</span>
+            <span class="cart-count" id="cart-item-count" role="status" aria-live="polite">0 Items</span>
           </div>
 
           <!-- Table and open tabs. A table that keeps ordering gets another
@@ -317,7 +321,7 @@ export class TillView {
                  only exits from a cart were pay it or cancel it, so every
                  round a table did not settle on the spot was voided. -->
             <button class="sec-btn hidden" id="till-add-to-tab-btn" style="width:100%;margin-bottom:8px;">Add to Tab</button>
-            <button class="checkout-btn" id="till-pay-now-btn" disabled>Pay Now</button>
+            <button class="checkout-btn" id="till-pay-now-btn" disabled>Print Receipt &amp; Pay</button>
             <p id="till-tab-due-note" class="hidden" style="margin-top:8px;text-align:center;font-size:11px;color:var(--text-secondary);"></p>
           </div>
         </div>
@@ -414,7 +418,7 @@ export class TillView {
               <!-- M-Pesa Input fields -->
               <div class="checkout-inputs hidden" id="payment-inputs-mpesa">
                 <label style="font-size:13px;color:var(--text-secondary)">M-Pesa Mobile Number</label>
-                <input type="text" id="pay-mpesa-phone" placeholder="e.g. 0712345678">
+                <input type="text" id="pay-mpesa-phone" placeholder="e.g. 0712345678" autocomplete="off" autocorrect="off" spellcheck="false">
                 <button class="primary-btn" id="pay-trigger-stk" style="margin-top:4px;">Initiate STK Push</button>
                 <div id="stk-status-area" class="hidden" style="margin-top:8px;text-align:center;font-size:12px;">
                   <span class="badge warning" id="stk-status-badge">Awaiting User PIN...</span>
@@ -424,10 +428,12 @@ export class TillView {
               <!-- This is independent of STK availability: the customer has
                    already paid and the cashier is recording the SMS proof. -->
               <div class="checkout-inputs hidden" id="payment-inputs-mpesa-code">
-                <label style="font-size:13px;color:var(--text-secondary)">M-Pesa Confirmation Code</label>
-                <input type="text" id="pay-mpesa-code" maxlength="32" placeholder="e.g. QGH4T21XZ9" autocapitalize="characters" spellcheck="false">
+                <label for="pay-mpesa-code" style="font-size:13px;color:var(--text-secondary)">M-Pesa Confirmation Code</label>
+                <input type="text" id="pay-mpesa-code" class="receipt-code-input" maxlength="10" placeholder="e.g. QGH4T21XZ9" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
+                <label for="pay-mpesa-amount">Amount on receipt (KES)</label>
+                <input type="text" id="pay-mpesa-amount" inputmode="decimal" autocomplete="off" placeholder="Enter receipt amount">
                 <p style="font-size:13px;color:var(--text-secondary);margin-top:8px;line-height:1.5;">
-                  Enter the code from the customer's M-Pesa message. It stays on the order for reconciliation.
+                  Enter the code and amount from the payment message.
                 </p>
               </div>
 
@@ -558,7 +564,11 @@ export class TillView {
     // Search filter typing
     const searchInput = document.getElementById('till-search');
     searchInput.addEventListener('input', () => {
-      this.filterCatalogue();
+      // Coalesce typing and barcode-scanner bursts before rebuilding the page.
+      clearTimeout(this.searchTimer);
+      this.searchTimer = setTimeout(() => {
+        if (!this.disposed) this.filterCatalogue();
+      }, 80);
     });
 
     // Category chips are populated after this binding, so delegate from their stable container.
@@ -647,7 +657,7 @@ export class TillView {
         });
         return;
       }
-      this.openCheckoutModal();
+      void this.startPrintedCheckout();
     });
 
     // Payment method switcher
@@ -814,6 +824,15 @@ export class TillView {
     if (!grid) return;
     const page = paginate(this.filteredProducts, this.productPage, 48);
     this.productPage = page.page;
+    // Successive prefixes often match the same first page. Keep its DOM and
+    // decoded images instead of rebuilding 48 cards for each letter.
+    const unchanged = this.renderedProductGrid === grid
+      && this.renderedProducts?.length === page.rows.length
+      && page.rows.every((product, index) => product === this.renderedProducts[index]);
+    if (unchanged) {
+      this.renderProductPager(page);
+      return;
+    }
     const { houseStockByProduct, barcodeByProduct, categoryMap } = this;
     const fragment = document.createDocumentFragment();
 
@@ -833,6 +852,9 @@ export class TillView {
       const card = document.createElement('div');
       card.className = `product-card ${prod.is_batch_tracked ? 'batch-tracked' : ''}`;
       card.setAttribute('data-id', prod.id);
+      card.setAttribute('role', 'button');
+      card.tabIndex = 0;
+      card.setAttribute('aria-label', `${name}, KES ${sellPrice.toFixed(2)}`);
       card.setAttribute('data-cat', String(prod.category_id ?? ''));
       card.setAttribute('data-canonical-cat', canonicalCatName);
       card.setAttribute('data-name', name.toLowerCase());
@@ -885,12 +907,23 @@ export class TillView {
       card.addEventListener('click', () => {
         this.addToCart(normalizedProduct);
       });
+      card.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        if (!event.repeat) this.addToCart(normalizedProduct);
+      });
       fragment.appendChild(card);
     }
 
     grid.replaceChildren(fragment);
     grid.scrollTop = 0;
     if (!page.total) grid.textContent = 'No products match your search.';
+    this.renderedProductGrid = grid;
+    this.renderedProducts = page.rows;
+    this.renderProductPager(page);
+  }
+
+  renderProductPager(page) {
     const pager = document.getElementById('till-product-pager');
     if (pager) {
       pager.innerHTML = pagerHtml('till-page-controls', page);
@@ -1159,15 +1192,18 @@ export class TillView {
       });
     }
 
-    showNotification(`${product.name} added to cart`, 'success');
+    // The cart and its live item count confirm the tap. A toast per item used
+    // to pile animated overlays on top of the checkout during rapid selling.
     this.updateCartUI();
   }
 
   updateCartUI() {
     this.persistDraft();
+    const count = this.cart.reduce((sum, item) => sum + Number(item.qty || 0), 0);
+    const cartCount = document.getElementById('cart-item-count');
+    if (cartCount) cartCount.textContent = `${count} ${count === 1 ? 'Item' : 'Items'}`;
     const mobileSummary = document.getElementById('mobile-sale-summary');
     if (mobileSummary) {
-      const count = this.cart.reduce((sum, item) => sum + Number(item.qty || 0), 0);
       mobileSummary.textContent = `${count} ${count === 1 ? 'item' : 'items'}`;
     }
     const list = document.getElementById('cart-list');
@@ -1185,20 +1221,19 @@ export class TillView {
       return;
     }
 
-    list.innerHTML = '';
     payBtn.disabled = false;
+    // The item objects remain stable when quantities change. Retain every
+    // unchanged row, including its image and controls, across cart updates.
+    this.cartRows ||= new WeakMap();
 
     this.cart.forEach((item, index) => {
-      const div = document.createElement('div');
-      div.className = 'cart-item';
-      
       const isVipCartItem = item.product.id === 'prod-table-service';
       const isStaffDiscountCartItem = item.product.id === 'prod-staff-discount';
       const rate = this.selectedCustomer.price_tier === 'WHOLESALE' ? item.product.cost_price * 1.15 : item.product.sell_price;
       const lineDiscount = Math.max(0, Number(item.discount_amount) || 0);
       const total = Math.max(0, rate * item.qty - lineDiscount);
 
-      div.innerHTML = `
+      const markup = `
         <div class="cart-item-header" style="display: flex; align-items: center; gap: 8px;">
           ${item.product.image_data ? `<img src="${item.product.image_data}" style="width: 24px; height: 24px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(200, 130, 42, 0.2);">` : `<div style="width: 24px; height: 24px; border-radius: 4px; background: rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--text-muted);">📷</div>`}
           <span class="cart-item-title" style="flex: 1;">${item.product.name}</span>
@@ -1215,12 +1250,35 @@ export class TillView {
             (isStaffDiscountCartItem ? '<span style="font-size:11px;color:var(--accent-green);font-weight:700;">-20% Staff Disc</span>' : `
           <div class="cart-item-qty-control">
             <button class="qty-btn dec" data-idx="${index}">-</button>
-            <span class="qty-val">${item.qty}</span>
+            <span class="qty-val"></span>
             <button class="qty-btn inc" data-idx="${index}">+</button>
           </div>`)}
-          <span class="cart-item-price">${isVipCartItem ? 'VIP' : (isStaffDiscountCartItem ? '-20%' : 'KES ' + total.toFixed(2))}</span>
+          <span class="cart-item-price"></span>
         </div>
       `;
+
+      const updateValues = (element) => {
+        const quantity = element.querySelector('.qty-val');
+        if (quantity && quantity.textContent !== String(item.qty)) quantity.textContent = String(item.qty);
+        const price = element.querySelector('.cart-item-price');
+        const label = isVipCartItem ? 'VIP' : (isStaffDiscountCartItem ? '-20%' : 'KES ' + total.toFixed(2));
+        if (price.textContent !== label) price.textContent = label;
+      };
+
+      const cached = this.cartRows.get(item);
+      if (cached?.markup === markup) {
+        // Keep quantity buttons connected even if another tap updates this
+        // item between a finger going down and coming up.
+        updateValues(cached.element);
+        if (list.children[index] !== cached.element) {
+          list.insertBefore(cached.element, list.children[index] || null);
+        }
+        return;
+      }
+      const div = document.createElement('div');
+      div.className = 'cart-item';
+      div.innerHTML = markup;
+      updateValues(div);
 
       // Remove item listener
       div.querySelector('.cart-item-remove').addEventListener('click', (e) => {
@@ -1254,8 +1312,12 @@ export class TillView {
         });
       }
 
-      list.appendChild(div);
+      const previous = list.children[index];
+      if (previous) previous.replaceWith(div);
+      else list.appendChild(div);
+      this.cartRows.set(item, { element: div, markup });
     });
+    while (list.children.length > this.cart.length) list.lastElementChild.remove();
 
     this.recomputeTotals();
   }
@@ -1299,23 +1361,23 @@ export class TillView {
 
     const total = Math.max(0, subtotal + vipSurcharge - staffDiscount - discount);
 
-    document.getElementById('summary-subtotal').innerText = `KES ${subtotal.toFixed(2)}`;
+    document.getElementById('summary-subtotal').textContent = `KES ${subtotal.toFixed(2)}`;
     
     const vipRow = document.getElementById('summary-vip-row');
     if (vipRow) {
       vipRow.style.display = hasVip ? '' : 'none';
-      if (hasVip) document.getElementById('summary-vip-charge').innerText = `KES ${vipSurcharge.toFixed(2)}`;
+      if (hasVip) document.getElementById('summary-vip-charge').textContent = `KES ${vipSurcharge.toFixed(2)}`;
     }
 
     const staffRow = document.getElementById('summary-staff-disc-row');
     if (staffRow) {
       staffRow.style.display = hasStaffDiscount ? '' : 'none';
-      if (hasStaffDiscount) document.getElementById('summary-staff-disc-amount').innerText = `-KES ${staffDiscount.toFixed(2)}`;
+      if (hasStaffDiscount) document.getElementById('summary-staff-disc-amount').textContent = `-KES ${staffDiscount.toFixed(2)}`;
     }
 
-    document.getElementById('summary-discount').innerText = `KES ${discount.toFixed(2)}`;
-    document.getElementById('summary-tax').innerText = `KES ${tax.toFixed(2)}`;
-    document.getElementById('summary-total').innerText = `KES ${total.toFixed(2)}`;
+    document.getElementById('summary-discount').textContent = `KES ${discount.toFixed(2)}`;
+    document.getElementById('summary-tax').textContent = `KES ${tax.toFixed(2)}`;
+    document.getElementById('summary-total').textContent = `KES ${total.toFixed(2)}`;
 
     // Store calculations on class reference
     this.totals = { subtotal, discount, tax, total, vipSurcharge, staffDiscount };
@@ -1694,8 +1756,37 @@ export class TillView {
       vipSurcharge: 0,
       staffDiscount: 0
     };
-    this.openCheckoutModal();
+    await this.startPrintedCheckout();
     return true;
+  }
+
+  async startPrintedCheckout() {
+    if (this.preparingPrintedCheckout) return;
+    this.preparingPrintedCheckout = true;
+    requirePrintedReceipt(async () => {
+      if (!firebaseConfigured) throw new Error('Reconnect to print the receipt before payment.');
+      if (!this.activeTabId && !this.pendingSale) await this.registerPendingOrder();
+      const ids = await this.roundsBeingSettled();
+      if (!ids.length) throw new Error('Save the order before printing the receipt.');
+      const rounds = [];
+      for (const id of ids) rounds.push(await state.syncManager.publishSale(id));
+      return { saleUuids: rounds.map(round => round.sale_uuid) };
+    }, {
+        isActive: () => this.container.isConnected && !this.disposed,
+        onReady: () => { this.preparingPrintedCheckout = false; this.openCheckoutModal(); },
+        onCancel: () => {
+          this.preparingPrintedCheckout = false;
+          // Registration froze this bill. Leave it in Pending instead of
+          // letting a changed cart settle the earlier printed amount.
+          if (!this.pendingSale) return;
+          this.pendingSale = null;
+          this.pendingRegistration = null;
+          this.cartDraftId = null;
+          this.releaseHeldLease();
+          this.clearCart();
+          showNotification('Order saved in Pending. Open it in Orders to continue.', 'info');
+        },
+    });
   }
 
   openCheckoutModal() {
@@ -1773,6 +1864,7 @@ export class TillView {
   selectPaymentMethod(method) {
     if (method !== this.selectedPaymentMethod) this.invalidateMpesaAttempt();
     this.selectedPaymentMethod = method;
+    document.getElementById('pay-mpesa-amount').value = '';
     this.container.querySelectorAll('#payment-modal .payment-method-card').forEach(card => {
       const selected = card.dataset.method === method;
       card.classList.toggle('selected', selected);
@@ -1814,6 +1906,7 @@ export class TillView {
       document.getElementById('pay-trigger-stk').disabled = true;
     } else if (method === 'MPESA_CODE') {
       document.getElementById('payment-inputs-mpesa-code').classList.remove('hidden');
+      document.getElementById('pay-confirm-btn').disabled = false;
     } else if (method === 'CREDIT') {
       document.getElementById('payment-inputs-credit').classList.remove('hidden');
       this.applyCreditLimit();
@@ -2498,12 +2591,35 @@ export class TillView {
   async assertTabNameFree(tableNo) {
     const table = String(tableNo || '').trim();
     if (!table) return;
-    if (openTabAt(await db.tabs.where('status').equals(OPEN).toArray(), state.currentBranch?.id, table)) return;
-    const elsewhere = (await pullOpenOrders(DEVICE_ID).catch(() => []))
+    // Shared sales outlive the advisory open_orders snapshot. Refresh those
+    // before deciding a missing local header means a new tab can be opened.
+    let refreshError;
+    if (firebaseConfigured) {
+      try { await pullSales(undefined, undefined, { tableNumber: table, branchId: state.currentBranch?.id }); }
+      catch (error) { refreshError = error; }
+    }
+    const matching = (await readOpenTabs(state.currentBranch?.id)).filter(tab => tabKey(tab.table) === tabKey(table));
+    const owing = matching.filter(tab => tab.dueMinor > 0);
+    if (owing.length > 1) throw new Error('This table has multiple unpaid bills. Consolidate them before adding another round.');
+    const tab = owing[0] || matching[0];
+    if (tab) {
+      if (tab.recoveryRequired) {
+        if (tab.id.startsWith('recovered-')) throw new Error('This unpaid order has no tab identity. Repair its tab before adding items.');
+        await db.tabs.put({
+          ...newTab({ id: tab.id, tenantId: state.currentTenant?.id, branchId: state.currentBranch?.id,
+            tableNo: tab.table, staffId: tab.opened_by, now: tab.opened_at }),
+          order_no: tab.order_no,
+        });
+      }
+      this.activeTabId = tab.id;
+      return;
+    }
+    if (refreshError) throw refreshError;
+    const elsewhere = (await pullOpenOrders(DEVICE_ID))
       .find((order) => order.branchId === state.currentBranch?.id && order.paymentStatus === 'unpaid'
         && order.tableNumber && tabKey(order.tableNumber) === tabKey(table));
     if (elsewhere) {
-      throw new Error(`A tab called "${elsewhere.tableNumber}" is already open on another till. Add to it from Tab Management, or give this tab a different name.`);
+      throw new Error(`Table ${elsewhere.tableNumber} has a round still uploading from another till. Wait for it to sync before adding items.`);
     }
   }
 
@@ -2511,7 +2627,10 @@ export class TillView {
     const table = String(tableNo || '').trim();
     if (!table) return null;
 
-    const existing = openTabAt(await db.tabs.where('status').equals(OPEN).toArray(), state.currentBranch?.id, table);
+    const headers = await db.tabs.where('status').equals(OPEN).toArray();
+    const selected = headers.find(tab => tab.id === this.activeTabId);
+    const existing = openTabAt(selected ? [selected] : [], state.currentBranch?.id, table)
+      || openTabAt(headers, state.currentBranch?.id, table);
     if (existing) return existing.id;
 
 
@@ -2558,7 +2677,7 @@ export class TillView {
     pay.classList.toggle('hidden', Boolean(this.tabOnly && onTab));
     pay.innerText = onTab && dueMinor > 0
       ? `Settle Table ${this.activeTable} · KES ${(settlingTotal / 100).toFixed(2)}`
-      : 'Pay Now';
+      : 'Print Receipt & Pay';
     // An empty cart can still settle a tab that already has rounds on it.
     if (onTab && dueMinor > 0) pay.disabled = false;
 
@@ -2597,6 +2716,10 @@ export class TillView {
     if (this.finalizingInvoice) return false;
     if (!this.selectedPaymentMethod) {
       showNotification('Choose a payment method first.', 'warning');
+      return false;
+    }
+    if (this.selectedPaymentMethod === 'MPESA_CODE' && !firebaseConfigured) {
+      showNotification('Reconnect before recording M-Pesa payment.', 'error');
       return false;
     }
     if (this.selectedPaymentMethod === 'MPESA_CODE'
@@ -2945,7 +3068,68 @@ export class TillView {
     return (await billableCheckoutRounds(selected, db)).map(sale => sale.id);
   }
 
+  async settlePendingByCode() {
+    let receipt;
+    try { receipt = manualReceipt(document.getElementById('pay-mpesa-code').value, document.getElementById('pay-mpesa-amount').value); }
+    catch (error) { showNotification(error.message, 'error'); return false; }
+    if (!firebaseConfigured) { showNotification('Reconnect before recording M-Pesa payment.', 'error'); return false; }
+    const { reference, receiptAmountMinor } = receipt;
+    const ids = await this.roundsBeingSettled();
+    const rounds = [];
+    for (const id of ids) rounds.push(await state.syncManager.publishSale(id));
+    this.settlementRequestId ||= crypto.randomUUID();
+    const claim = await claimSalePayment({ saleUuids: rounds.map(round => round.sale_uuid),
+      checkoutId: this.settlementRequestId, deviceId: DEVICE_ID, method: 'mpesa' });
+    this.receiptCheckoutRoundIds ||= ids;
+    this.receiptCheckoutTotalMinor ||= claim.dueMinor;
+    let availableMinor = Infinity, appliedMinor = 0, last;
+    for (const round of rounds) {
+      if (availableMinor <= 0) break;
+      const ledger = await db.payments.where('sale_id').equals(round.id).toArray();
+      const due = ledger.filter(p => isReceivable(p.method) && !p.settled_at)
+        .reduce((sum, p) => sum + toMinor(p.amount), 0);
+      if (!due) continue;
+      last = await settleSale({ saleUuid: round.sale_uuid, checkoutId: this.settlementRequestId,
+        requestId: `${this.settlementRequestId}-${reference}-${round.sale_uuid}`, method: 'mpesa', reference,
+        receiptAmountMinor });
+      await recordReceiptSettlement(round, last);
+      appliedMinor += last.settledMinor;
+      availableMinor = last.availableMinor;
+    }
+    const remainingMinor = claim.dueMinor - appliedMinor;
+    this.releaseHeldLease();
+    if (remainingMinor > 0) {
+      this.totals.total = remainingMinor / 100;
+      document.getElementById('checkout-due-amount').innerText = `KES ${(remainingMinor / 100).toFixed(2)}`;
+      document.getElementById('pay-mpesa-code').value = '';
+      document.getElementById('pay-mpesa-amount').value = '';
+      showNotification(`Applied KES ${(appliedMinor / 100).toFixed(2)}. KES ${(remainingMinor / 100).toFixed(2)} still due. Enter the next code.`, 'info');
+      return false;
+    }
+    const printed = this.pendingSale?.saleRecord || await db.sales.get(ids[ids.length - 1]);
+    const allRoundIds = this.receiptCheckoutRoundIds;
+    // Use the whole paid bill on the printed receipt after several codes.
+    this.totals.total = this.receiptCheckoutTotalMinor / 100;
+    if (this.selectedCustomer?.id && this.selectedCustomer.id !== WALK_IN_CUSTOMER_ID) {
+      const customer = await db.customers.get(this.selectedCustomer.id);
+      if (customer) {
+        const loyalty = Math.max(0, (customer.loyalty_points || 0) + Math.floor(this.totals.total / 100) - (this.redeemedPoints || 0));
+        await db.customers.update(customer.id, { loyalty_points: loyalty });
+        this.selectedCustomer.loyalty_points = loyalty;
+      }
+    }
+    const freed = await freeSettledTab(this.activeTabId);
+    this.pendingSale = null;
+    if (freed) this.clearActiveTab();
+    this.completeRegisteredOrder({ saleRecord: { ...printed, status: 'COMPLETED' },
+      paymentRecord: { method: 'MPESA', reference, amount: last.settledMinor / 100 }, settledRoundIds: allRoundIds });
+    this.receiptCheckoutRoundIds = null;
+    this.receiptCheckoutTotalMinor = null;
+    return true;
+  }
+
   async settlePendingOrder() {
+    if (this.selectedPaymentMethod === 'MPESA_CODE') return await this.settlePendingByCode();
     // Settling a tab there is no cart for: the rounds are already written, so
     // this payment has no order of its own to anchor to.
     const { saleId, saleRecord } = this.pendingSale || {};

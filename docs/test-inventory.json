@@ -1,0 +1,878 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "f05bd1b",
+  "scope": "Immutable committed baseline plus Phase 0 tooling changes. Concurrent application edits and their new tests are excluded.",
+  "date": "2026-11-20",
+  "counts": {
+    "tooling-unit": 2,
+    "frontend-unit": 41,
+    "backend-unit": 19,
+    "playwright": 13,
+    "browser-standalone": 5,
+    "emulator": 3,
+    "rules-client": 1
+  },
+  "entries": [
+    {
+      "file": "scripts/test/emulator-runner.test.cjs",
+      "suite": "tooling-unit",
+      "command": "npm run test:tooling",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "facef9fe49274ec62801797c251229d3571215757966ed1a40008a8b686b8efc",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "scripts/test/test-tooling.test.cjs",
+      "suite": "tooling-unit",
+      "command": "npm run test:tooling",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "bac9d7bb72ae3f82547ea5979f07232f5e1c04636915f53a2dd2ab92ef0b13d6",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/context.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "945ec4129611e2708151286d21d59611f6bd44f88943cd6794e89e58d4c9eb9c",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/navigation.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "b1b2b011ddb2e20a09c2cb8d1366713970044a9cf976f5053079ee81de9b8344",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/catalogue.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "7f8c7202c03d3f94d04b80cb96de70c0be70bf31f48ebacf4459a9d4acef8d18",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/checkout-rounds.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "61aecfbe84757c0c1710fadc83071153484c3c895a1122e1f3a6a28674957514",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/csv.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "964c0defa5ba9cc3fbb873e7707093de7223e833e72ee14d709122fb3604219f",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/customer-directory-loading.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "dc86fc89d72294fcc3678b20739369bdc847c79c7b31f6fb53cf1fd46b0b4fcb",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/customer-orders.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "4c1e45683885ab7ecbd1ec65955488595cdd0205c33e1332f3015b1ff148105c",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/event-proforma.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "54bbab57cc354ef8dfe244aa948be7558f8b18908d791aff9d8d11fe2dfb78b7",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/financial-period.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "b4fca165471ca7df6c6f73ead4abaa5c77265ef9794087183d8a3133709e87d5",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/financial-snapshot.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "901c3707616370cad6145f2e2f624ce4a4545e4c1796770ae7a20dec4f7b824d",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/financial-sync.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "ec26d69a82db665f1c529fed2124f511e24a8e3a67b2d182cb9e0c10092c1317",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/firebase.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "83530185888ff8b11aaa3451d1fbc11b4ed5221791123446009104ca1b34e820",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/inventory-loading.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "f7d8f6c1bdda91009389899c8ae7ac0cd08f5d68cd58f74f203178d88141bab7",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/mpesa-initiation.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "9b1dead9e3058dd635ada6498dca17b63db92b5aa1848a4a494cf6548a51962f",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/mpesa-state.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "9899508580083725b987effa86d38e71b856df4fb874a40cfacfea31c67bf2f4",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/open-order-publisher.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "6ae5114b6f1caf9662d4b65db68616f3e42ab4e83b27b822b22f5aabba54111d",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/open-orders-board.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "250b46b66f116a6c6a646bf49ac81eb2e6f097e621ebd4429fe1a78a24b91607",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/order-publishing.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "d3d5af849d62929c374000a3fb6f9472ce1f22c580b7764ba8b55fb9e4216a66",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/order-visibility.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "f4507458bd0e3aad0e201b953a0d13e333033dfaf1f2663545da36a9431ecc0e",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/orders-loading.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "8a56d6d24997cb74027f919fa12ae2e3a9647e5e166147552c7f63f1f770ee0d",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/paginate.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "dc3141bd9ef327757650da2f6a559c8899a0631ead131379c4cd6bf2a55dcef9",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/print-queue.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "f06530b0d5298fcdb04921365fb75f58f4f47a20e760ae50c741f8e26c56f623",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/print-receipt.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "e5a9d6aeb4100114e1186afb30cc501157265285bf3f9c6a2c29463ace2c53da",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/proforma-financials.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "a7ac9b8565d12760988bb6aadfd270c49b71207affd2c6a77e1074412c540e20",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/sale-history.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "82734c0de5894f93493b09b59f4aa114ea3d37df6a57a2c52467aada81929ce4",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/sale-payload.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "c90789829e54b415becfa860d2b093b93c1c660b88ef61335522b68cf6f0ab23",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/screen-readiness.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "c58b184184e1aa48dc3387033995e0b97e2dd0663e7504814aa2a3d7a117a7ba",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/service-charges.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "661ed9fb3e7fb5c53416550e7899f9b08aed85d4360fbe2e7d4dda91eb452b6a",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/staff.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "006059153a8cdf168b015677eecd82cadab72d35111cd2132d0fcdf5e3dd7838",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/stock-actions.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "41c0203a572e3d87e0bd780bf17971e560d911390b854c73cd996d62a7533286",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/stock-loading.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "57b25b646ddd5b78d54a53ec86038a842a28f5af00e2f82e929005ff8130b348",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/sync-outbox.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "897d67423a36a1b5e28020c77eb3e6dfaf882f44b1cdf0e20f118aa5fe60f6e3",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/tab-data.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "68b8cbb1665cff7bc39213357b0db28d6921d297591e1f7c8dd62bddde4b7ee4",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/tab-voided-rounds.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "9569c667796aaf9e99ee5722d60c324bef467cbf33206462578a07ac5e349c07",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/tabs.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "35e39cb7751bc3be9592283efa8bc8d3ec74ba2ac14d03a1b5116e56e3b51107",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/takings.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "a63dc3264f29164ac5ea59563a545f3e4f952251abc06fdd8681704500d8ce4f",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/tenant-cache.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "952eded9dfd76ebea99f78d42056a2084b4eeccb26ecb3d97ea7eceb3cfd4a64",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/tender.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "70e8ebf800aa0e685937887ed90d2fcefcb490b7c4d92d39452a20510902afd0",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/till-checkout.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "530006dc3be3277f28a56ba779140b22d9fe3ef6cd0e756ee31d427fed758869",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/till-draft.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "41ed693b597673d477cb7ef8a384f5e109fe0cd2a2287d15defa3747cb97848b",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/src/services/xlsx.test.mjs",
+      "suite": "frontend-unit",
+      "command": "npm run test:frontend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "1ea1a2f17fb512bbd4244fc4642a6be407d77521a6616345c84fc68d4789a41d",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/catalogue-delete.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "a9383bcf9682838b839410d463e3402fc5c48d0182527c4abbe8d227d1dcc0a3",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/catalogue.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "3be536fcf94911f6b84a2589625849ed9e4aee0a8c58629d320e6ba09e0054cf",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/customer-orders.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "fa105e09f23785c2533f0af6bb19e40150cb49413b73e5b1a410cca004b6bc48",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/customers.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "5fadbbff9e73ee55fffcf7975a56f92662306a20bb2e80306b8b49c14174bd17",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/discounted-checkout.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "0815fed3826d0dce656a3e2d23f896ed069db9be95d4feded056579bd3df4c60",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/etims.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "cc64c21900f35d2b29b379d08250aee5a42cf9ad64ca2fa84f53e9e9b43a5b15",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/mpesa-c2b.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "e8af579d2f40b96c7598558b4f38f8b2b40736aa0c6a3b07bf045712fabeeff0",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/mpesa-settlement.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "79e5cc09cd4e90a254066868843e774a31ef4e5af222bac9f987614e669dc050",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/mpesa.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "670775dd46416e2dec04a8770b6981ab51ca8aef16f37fc63b6f69083ecf997b",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/open-orders.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "d731cea5cbf84a597f4309d8405d1c8c192740deb3cfb746b677596cd812f79e",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/platform.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "f1eef878ff183f18f2f7b95667b24a50de94c63b070091a5fd680417510af844",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/proformas.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "adb68a22712a70b3d5d6e5ce289022a5d766a9cfe13848bbb913d880a4ad1e2f",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/provisioning.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "071a9cebed424f896f073e2e130fe7c7d88b15eba1a9e50afeff40607a69d1d3",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/roles.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "f5afa8100dde95ed93b62a2e0e98f068cc83b675033d44bdd281cdc232b9d5af",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/sale-settlement.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "97081227eba20211e36b61c65b678716e4045aefbe898b9daf1940f2eee3ca74",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/sales-domain.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "e122585c3e29862d5ccc754b318df60fb79cf924c4f6b980ef403b3b953e37bf",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/staff-credential.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "5940b2c3e0af1742e51cb2483860f5a364b90a89c229b044098dee09d296fe16",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/staff-rehire.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "0b70b2b29ef79fbe85022671f0c622301a4a2297af2960a636c472f9dabb4942",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/test/stock.test.cjs",
+      "suite": "backend-unit",
+      "command": "npm run test:backend",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "f4be09145811d64a658a94d7b932586d76a9752f7e9a6ea0b90fa49b79987413",
+      "auditRunStatus": "diagnostic_pass_node24",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/checkout-recovery.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "6c8965fb59ed6fc045c7bf3725644493eee4a1091255a18f57794000a28fa3e4",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/mobile-filters.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "ce150efed5985d4a73767e650ebd51593ebb26c089e5bbc5a3ce0a9b2d2aecd7",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/mobile.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "00222d7b6acffaedadcb616c5284013f8b234e612b7bcda0d12421ecb3a1c6cc",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/payment-choice.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "af1fa7ae16051cbdf52fcb815134d843922e4154a669540f9dca75603ac7242c",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/payment-commit.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "94d72293771707c39adc0d2424176647e914376e70bee57a91829f0574e063b8",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/phone-boards.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "ccfcd90b735b17b5b82f02fe4d31ff9e727409118f527a02e6d73ad8e73dfaec",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/platform.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "4e367feb87ea5ec7d6175012313d43fdd0045706bb8aae254704e9df1d9d5bad",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/proforma-register.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "479c17f7281212d4bd9a7ec8eb85c3bf4929f9a1d1a7a37afb2efb32da369f55",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/running-orders.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "9f1e953eb62c32544365fb4e39a914714be2c2a02229044e7153c7f560435e37",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/screens.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "877e9f59ff7f0451aa261fa82d839d517eab23b4f21b279aa914b959c0b235fe",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/select-controls.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "07301a0d4d0cf71a0afc40d615e9ec86ad39b17dc9758666e786a8b627416237",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/stock-counts.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "c0ecf62962138656747be6cc527e9a7c8cb42c453363d443c60853b1af04a68b",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/visual/till-catalogue.spec.ts",
+      "suite": "playwright",
+      "command": "npm --prefix frontend run visual",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "700c7957f2c64aaeaa4e94849cbc8c95b5f879046df9d1c1b96576f021d7fdad",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/e2e/cross-device-payment-check.mjs",
+      "suite": "browser-standalone",
+      "command": "Run the documented per-file entrypoint",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "b37f41024dccc1a6abcc13ad928833de13b9e0e902d17e0035bb6f63ef7398b4",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/e2e/order-integrity-check.mjs",
+      "suite": "browser-standalone",
+      "command": "Run the documented per-file entrypoint",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "58084c09dfe0658d54d01ab8a21a8d2f3c4812692f58ece9d338828667209eee",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/e2e/performance-check.mjs",
+      "suite": "browser-standalone",
+      "command": "Run the documented per-file entrypoint",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "99e8e3775bf6ba4c8fb347709f2f8eec673a2ffb369bd7a4faaf41a0e32abd53",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/e2e/stock-loading-check.mjs",
+      "suite": "browser-standalone",
+      "command": "Run the documented per-file entrypoint",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "a2c971e0635db77e369f8e3bfea346b116ca92edb7493961b46689c07c79c814",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/e2e/till-draft-check.mjs",
+      "suite": "browser-standalone",
+      "command": "Run the documented per-file entrypoint",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": true,
+      "sha256": "cb2d32197ac6ec09fdcc4ae9f07f6c1294551711dc653549f08fcb0fe47718d2",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/e2e/esther-receipt-reconciliation.cjs",
+      "suite": "emulator",
+      "command": "npm run test:emulator",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "d362de3bd09defb365074a9ce673ce33b444c0a106059dd6634693bf921e587e",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/e2e/scenario.mjs",
+      "suite": "emulator",
+      "command": "npm run test:emulator",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "46dc6728e34537f8aac23bd57ba07812ac05dc41a080485cbe6d91f40d22af4e",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "backend/functions/e2e/stock-requests.cjs",
+      "suite": "emulator",
+      "command": "npm run test:emulator",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "d3c880f540ca38c1339deb6ec85b364e6ef6d0536e8f0f987eda4cc61a30c639",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    },
+    {
+      "file": "frontend/e2e/settings-rules-check.mjs",
+      "suite": "rules-client",
+      "command": "npm run test:emulator",
+      "requiredNodeMajor": 22,
+      "sourceExtraction": false,
+      "sha256": "8bd6e4364f022b9530cd945ed34888ca8fd5a368f3d48c0ae2dc1685424221ae",
+      "auditRunStatus": "not_run",
+      "lastAuditVerifiedCommit": null
+    }
+  ],
+  "supportFixtures": [
+    "backend/functions/e2e/seed-settings.mjs"
+  ],
+  "diagnosticRun": {
+    "runtime": "v24.21.0",
+    "platform": "Linux Docker",
+    "externalNetwork": false,
+    "hostCredentials": false,
+    "sourceReadOnly": true,
+    "scratchOnlyWrites": true,
+    "toolingTestsPassed": 11,
+    "frontendTestsPassed": 239,
+    "backendTestsPassed": 182,
+    "backendCompilation": "passed",
+    "frontendTypecheck": "passed",
+    "wrongRuntimeGate": "rejected Node 24 as expected",
+    "node22Baseline": "needs_validation",
+    "productionBuild": "not_run",
+    "emulatorSuite": "not_run",
+    "browserSuite": "not_run"
+  }
+}

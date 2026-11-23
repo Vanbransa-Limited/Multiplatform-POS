@@ -733,6 +733,9 @@ export const initiateMpesaStk = onCall(
   async (request) => {
     const caller = callerClaims(request.auth);
     const input = parseInitiateInput(request.data);
+      if (!input.settlementSaleUuids?.length) {
+        throw new HttpsError('failed-precondition', 'Print the receipt before taking payment.');
+      }
     const reservation = await reserveAttempt(caller, input);
     return startReservedMpesa(reservation);
   },

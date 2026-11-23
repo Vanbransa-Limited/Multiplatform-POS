@@ -7,6 +7,7 @@ import { financialAnswer, timestamp, paymentAttemptLabel } from '../services/fin
 import { quickFinancialPeriod, tradingRange } from '../services/financial-period.js';
 import { pullTradingHours, cachedTradingHours } from '../services/trading-hours.js';
 import { ProformaRegister } from './proformas.js';
+import { financeLayout, FINANCE_SECTIONS } from './finance-layout.js';
 
 export class FinanceView {
   constructor(container) {
@@ -22,169 +23,21 @@ export class FinanceView {
     this.hours = cachedTradingHours();
     this.render();
     this.bindEvents();
-    this.proformaRegister = new ProformaRegister(this.container.querySelector('#fin-proformas'), { onPaid: () => this.loadMetrics() });
-    void this.proformaRegister.load();
     this.hoursReady = pullTradingHours().then(hours => {
       if (!this.disposed) this.hours = hours;
     }).catch(() => {});
     this.filterSheet = createMobileFilters({
-      container: this.container, toolbar: this.container.querySelector('.fin-card'),
+      container: this.container, toolbar: this.container.querySelector('.fin-toolbar'),
       controls: [this.container.querySelector('.fin-date-bar')], title: 'Report filters',
       count: () => Number(this.container.querySelector('[data-fin-range].active')?.dataset.finRange !== 'today') + Number((this.session || 'full') !== 'full'),
       reset: () => { this.container.querySelector('[data-fin-session="full"]').click(); this.container.querySelector('[data-fin-range="today"]').click(); },
     });
+    this.selectSection(this.sectionFromLocation(), { updateLocation: false });
     void this.loadMetrics();
   }
 
   render() {
-    this.container.innerHTML = [
-      '<style>',
-      '.finance-shell { display: flex; gap: 16px; height: 100%; padding: 16px; box-sizing: border-box; overflow: hidden; }',
-      '.finance-left { flex: 2; min-width: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }',
-      '.finance-right { flex: 1; min-width: 280px; display: flex; flex-direction: column; background: linear-gradient(180deg, rgba(30,30,60,0.98) 0%, rgba(15,15,35,0.98) 100%); border-radius: 16px; border: 1px solid rgba(120,100,255,0.3); overflow: hidden; }',
-      '.fin-card { background: var(--surface); border-radius: 12px; padding: 20px; }',
-      '.fin-date-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }',
-      '.fin-date-bar label { font-size: 13px; color: var(--text-secondary); }',
-      '.fin-date-bar input[type=date] { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 13px; }',
-      '.fin-load-btn { background: var(--accent); color: #000; border: none; padding: 9px 20px; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 13px; }',
-      '.fin-quick-ranges { display:flex; gap:6px; flex-wrap:wrap; margin-left:2px; }',
-      '.fin-range-btn { background:rgba(255,255,255,.06); color:var(--text-secondary); border:1px solid rgba(255,255,255,.13); padding:8px 11px; border-radius:8px; cursor:pointer; font-size:12px; font-weight:700; }',
-      '.fin-range-btn:hover,.fin-range-btn.active { color:#111; background:#f1b23c; border-color:#f1b23c; }',
-      '.fin-reconcile { color:#111; background:var(--accent); padding:6px 10px; border-radius:7px; text-decoration:none; font-size:11px; font-weight:800; white-space:nowrap; display:inline-block; }',
-      '.metrics-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }',
-      '.m-card { background: rgba(255,255,255,0.05); border-radius: 10px; padding: 16px; border-left: 4px solid var(--accent); }',
-      '.m-card.green { border-left-color: #4caf50; }',
-      '.m-card.blue { border-left-color: #2196f3; }',
-      '.m-card.orange { border-left-color: #ff9800; }',
-      '.m-card h5 { margin: 0 0 6px 0; font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }',
-      '.m-card .m-val { margin: 0; font-size: 22px; font-weight: 700; }',
-      /* AI Panel */
-      '.ai-header { display: flex; align-items: center; gap: 10px; padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); }',
-      '.ai-logo { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #6060ff, #a040ff); display: flex; align-items: center; justify-content: center; font-size: 16px; }',
-      '.ai-title { font-size: 15px; font-weight: 700; color: #c0b0ff; }',
-      '.ai-subtitle { font-size: 11px; color: rgba(255,255,255,0.4); }',
-      '.ai-msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }',
-      '.ai-bubble { background: rgba(100,80,255,0.15); border-left: 3px solid #8060ff; border-radius: 0 8px 8px 0; padding: 10px 12px; font-size: 13px; color: rgba(255,255,255,0.85); line-height: 1.5; }',
-      '.user-bubble { background: rgba(255,255,255,0.08); border-radius: 8px 8px 0 8px; padding: 10px 12px; font-size: 13px; align-self: flex-end; max-width: 85%; }',
-      '.ai-typing { display: flex; gap: 4px; padding: 8px 12px; align-items: center; }',
-      '.ai-typing span { width: 7px; height: 7px; background: #8060ff; border-radius: 50%; animation: aidot 1.2s infinite; }',
-      '.ai-typing span:nth-child(2) { animation-delay: 0.2s; }',
-      '.ai-typing span:nth-child(3) { animation-delay: 0.4s; }',
-      '@keyframes aidot { 0%,80%,100%{opacity:0.3;transform:scale(0.8)} 40%{opacity:1;transform:scale(1)} }',
-      '.ai-input-row { display: flex; gap: 8px; padding: 12px; border-top: 1px solid rgba(255,255,255,0.08); }',
-      '.ai-input-row input { flex: 1; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 13px; outline: none; }',
-      '.ai-input-row button { background: linear-gradient(135deg,#6060ff,#a040ff); color: #fff; border: none; padding: 0 16px; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 13px; }',
-      '.ai-suggest-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 12px 8px; }',
-      '.chip { background: rgba(120,80,255,0.2); border: 1px solid rgba(120,80,255,0.35); border-radius: 20px; padding: 4px 10px; font-size: 11px; cursor: pointer; color: #c0a0ff; white-space: nowrap; }',
-      '.chip:hover { background: rgba(120,80,255,0.4); }',
-      '@media(max-width:768px){ .finance-shell{flex-direction:column;} .finance-right{min-width:unset;height:400px;} }',
-      '.fin-table th { padding: 10px 12px; border-bottom: 2px solid rgba(255,255,255,0.08); font-size: 11px; text-transform: uppercase; color: var(--text-secondary); }',
-      '.fin-table td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.05); }',
-      '.fin-table tr:hover { background: rgba(255,255,255,0.02); }',
-      '</style>',
-
-      '<div class="finance-shell">',
-
-      '  <div class="finance-left">',
-      '    <div class="fin-card">',
-      '      <h2 style="margin:0 0 14px 0;font-size:18px;">📊 Financial Report</h2>',
-      '      <div class="fin-date-bar">',
-      '        <label>From:</label>',
-      '        <input type="date" id="fin-start" />',
-      '        <label>To:</label>',
-      '        <input type="date" id="fin-end" />',
-      '        <button class="fin-load-btn" id="fin-load-btn">Load Report</button>',
-      '        <div class="fin-quick-ranges" role="group" aria-label="Quick report period">',
-      '          <button type="button" class="fin-range-btn active" data-fin-range="today">Today</button>',
-      '          <button type="button" class="fin-range-btn" data-fin-range="yesterday">Yesterday</button>',
-      '          <button type="button" class="fin-range-btn" data-fin-range="week">Past week</button>',
-      '          <button type="button" class="fin-range-btn" data-fin-range="month">Past month</button>',
-      '        </div>',
-      '        <div class="fin-quick-ranges" role="group" aria-label="Trading session">',
-      '          <button type="button" class="fin-range-btn active" data-fin-session="full">Full day</button>',
-      '          <button type="button" class="fin-range-btn" data-fin-session="morning">Morning</button>',
-      '          <button type="button" class="fin-range-btn" data-fin-session="night">Night</button>',
-      '        </div>',
-      '      </div>',
-      '      <p style="margin:10px 0 0;color:var(--text-secondary);font-size:12px;">A trading day runs from the morning opening to the next morning, so a night that crosses midnight stays on the day it started.</p>',
-      '    </div>',
-      '    <p id="fin-source" role="status">Loading transaction records...</p>',
-      '    <div class="metrics-row">',
-      '      <div class="m-card"><h5>Payments Received</h5><p class="m-val" id="fin-collected">KES 0</p></div>',
-      '      <div class="m-card green"><h5>M-Pesa Received</h5><p class="m-val" id="fin-mpesa">KES 0</p><small id="fin-mpesa-held"></small></div>',
-      '      <div class="m-card blue"><h5>Cash Received</h5><p class="m-val" id="fin-cash">KES 0</p><small id="fin-cash-held"></small></div>',
-      '      <div class="m-card green"><h5>Bank Transfers</h5><p class="m-val" id="fin-bank">KES 0</p><small id="fin-bank-held">Statement references, unverified</small></div>',
-      '      <div class="m-card"><h5>Card &amp; Other</h5><p class="m-val" id="fin-other">KES 0</p><small id="fin-other-held"></small></div>',
-      '      <div class="m-card blue"><h5>Confirmed Payments</h5><p class="m-val" id="fin-payment-count">0</p></div>',
-      '      <div class="m-card orange"><h5>Received Without Sale / Order</h5><p class="m-val" id="fin-unmatched">KES 0</p></div>',
-      '      <div class="m-card"><h5>Failed / Cancelled Attempts</h5><p class="m-val" id="fin-failed">KES 0</p></div>',
-      '      <div class="m-card orange"><h5>Received Without A Date</h5><p class="m-val" id="fin-undated">KES 0</p><small id="fin-undated-count">Not counted in any period</small></div>',
-      '      <div class="m-card orange"><h5>Held On A Till</h5><p class="m-val" id="fin-held">KES 0</p><small id="fin-held-count">Settled but not yet reached the business — not counted above</small></div>',
-      '      <div class="m-card"><h5>Unpaid Orders / Proformas</h5><p class="m-val" id="fin-pending">KES 0</p><small id="fin-pending-count">0 orders · unreceived</small></div>',
-      '      <div class="m-card"><h5>Gross Recorded Sales</h5><p class="m-val" id="fin-gross">KES 0</p></div>',
-      '      <div class="m-card"><h5>Total Discounts</h5><p class="m-val" id="fin-disc">KES 0</p></div>',
-      '      <div class="m-card green"><h5>Recorded Sales After Discounts</h5><p class="m-val" id="fin-net">KES 0</p></div>',
-      '      <div class="m-card orange"><h5>Unreceived Cash</h5><p class="m-val" id="fin-unpaid">KES 0</p><small>Awaiting reconciliation to an order</small></div>',
-      '      <div class="m-card orange"><h5>Completed Sales</h5><p class="m-val" id="fin-count">0</p></div>',
-      '    </div>',
-      '    <div class="fin-card">',
-      '      <h3 style="margin:0 0 6px;font-size:15px;color:#fff;">Unpaid orders and proforma invoices</h3>',
-      '      <p style="margin:0 0 12px;color:var(--text-secondary);font-size:12px;">Unpaid orders for the selected period, plus currently outstanding proforma invoices across all invoice dates. Reconcile each when payment arrives. Proforma payments count in Total Received on the day recorded.</p>',
-      '      <div id="fin-unpaid-orders" style="overflow:auto"></div>',
-      '    </div>',
-      '    <div class="fin-card">',
-      '      <h3 style="margin:0 0 6px 0;font-size:15px;color:#fff;">👥 Staff rundown</h3>',
-      '      <p style="margin:0 0 12px;color:var(--text-secondary);font-size:12px;">Everyone who handled money or an order in the selected period: what they completed, what they took, and what is still open against their name.</p>',
-      '      <div style="overflow-x:auto;">',
-      '        <table class="fin-table" style="width:100%; border-collapse:collapse; text-align:left; font-size:13px;">',
-      '          <thead>',
-      '            <tr>',
-      '              <th>Staff member</th>',
-      '              <th style="text-align:center;">Completed sales</th>',
-      '              <th style="text-align:right;">Sales value</th>',
-      '              <th style="text-align:center;">Payments</th>',
-      '              <th style="text-align:right;">Received</th>',
-      '              <th style="text-align:right;">Still unpaid</th>',
-      '            </tr>',
-      '          </thead>',
-      '          <tbody id="cashier-report-body">',
-      '            <tr>',
-      '              <td colspan="6" style="padding:16px;text-align:center;color:var(--text-secondary);">No data loaded yet.</td>',
-      '            </tr>',
-      '          </tbody>',
-      '        </table>',
-      '      </div>',
-      '    </div>',
-      '    <div class="fin-card" id="fin-proformas"></div>',
-      '    <div class="fin-card"><h3>Transactions in selected period</h3><p>Payments are filtered by receipt date. Sales are filtered by sale date. Failed and pending attempts are excluded from money received. Unmatched payments are received money awaiting a sale/order record.</p><div id="fin-transactions" style="overflow:auto"></div></div>',
-      '  </div>',
-
-      '  <div class="finance-right">',
-      '    <div class="ai-header">',
-      '      <div class="ai-logo">✨</div>',
-      '      <div><div class="ai-title">Vanbransa AI</div><div class="ai-subtitle">Offline Analytics Assistant</div></div>',
-      '    </div>',
-      '    <div class="ai-msgs" id="ai-msgs">',
-      '      <div class="ai-bubble">Hello! I\'m your Vanbransa AI assistant. Load a date range and I\'ll analyze your financials. Ask about revenue, tenders, discounts, or order counts.</div>',
-      '    </div>',
-      '    <div class="ai-suggest-chips">',
-      '      <div class="chip" data-q="performance">Performance</div>',
-      '      <div class="chip" data-q="cash vs mpesa">Cash vs M-Pesa</div>',
-      '      <div class="chip" data-q="discount">Discounts</div>',
-      '      <div class="chip" data-q="unpaid and pending">Unpaid</div>',
-      '      <div class="chip" data-q="proforma invoices">Proformas</div>',
-      '      <div class="chip" data-q="staff rundown">Staff</div>',
-      '      <div class="chip" data-q="bank transfers">Bank</div>',
-      '      <div class="chip" data-q="insight">Insights</div>',
-      '    </div>',
-      '    <div class="ai-input-row">',
-      '      <input type="text" id="ai-inp" placeholder="Ask about your business..." />',
-      '      <button id="ai-send">Ask</button>',
-      '    </div>',
-      '  </div>',
-
-      '</div>'
-    ].join('\n');
+    this.container.innerHTML = financeLayout();
 
     // Set default date = today in the business's local calendar.
     const today = quickFinancialPeriod('today', new Date(), this.hours);
@@ -194,9 +47,59 @@ export class FinanceView {
     if (finEnd) finEnd.value = today.end;
   }
 
-  dispose() { this.disposed = true; this.loadRequest = (this.loadRequest || 0) + 1; this.proformaRegister?.dispose(); this.filterSheet?.dispose(); }
+  dispose() {
+    this.disposed = true;
+    this.loadRequest = (this.loadRequest || 0) + 1;
+    this.proformaRegister?.dispose(); this.filterSheet?.dispose();
+    window.removeEventListener('hashchange', this.locationHandler);
+    this.container.removeEventListener('click', this.sectionClickHandler);
+  }
+
+  sectionFromLocation() {
+    const section = window.location.hash.slice(1);
+    return FINANCE_SECTIONS.some(([id]) => id === section) ? section : 'overview';
+  }
+
+  selectSection(section, { updateLocation = true, focus = false } = {}) {
+    if (this.disposed || !FINANCE_SECTIONS.some(([id]) => id === section)) return;
+    this.activeSection = section;
+    this.container.querySelectorAll('[data-fin-section]').forEach(button => {
+      const active = button.dataset.finSection === section;
+      button.setAttribute('aria-selected', String(active));
+      button.tabIndex = active ? 0 : -1;
+      if (active && focus) button.focus();
+    });
+    this.container.querySelectorAll('[data-fin-panel]').forEach(panel => { panel.hidden = panel.dataset.finPanel !== section; });
+    // Report controls belong to financial sections, not invoices or the AI workspace.
+    const showReportControls = section !== 'invoices' && section !== 'ai';
+    this.container.querySelector('.fin-toolbar').hidden = !showReportControls;
+    this.container.querySelector('.fin-coverage').hidden = !showReportControls;
+    if (updateLocation && window.location.hash !== `#${section}`) {
+      window.history.pushState(null, '', `${window.location.pathname}${window.location.search}#${section}`);
+    }
+    if (section === 'invoices' && !this.proformaRegister) {
+      this.proformaRegister = new ProformaRegister(this.container.querySelector('#fin-proformas'), { onPaid: () => this.loadMetrics() });
+      void this.proformaRegister.load();
+    }
+  }
 
   bindEvents() {
+    this.sectionClickHandler = event => {
+      const button = event.target.closest('[data-fin-section], [data-fin-open]');
+      if (button && this.container.contains(button)) this.selectSection(button.dataset.finSection || button.dataset.finOpen);
+    };
+    this.container.addEventListener('click', this.sectionClickHandler);
+    this.locationHandler = () => this.selectSection(this.sectionFromLocation(), { updateLocation: false });
+    window.addEventListener('hashchange', this.locationHandler);
+    this.container.querySelector('.fin-tabs').addEventListener('keydown', event => {
+      const tabs = [...this.container.querySelectorAll('[data-fin-section]')];
+      const index = tabs.indexOf(event.target);
+      if (index < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+        : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      this.selectSection(tabs[next].dataset.finSection, { focus: true });
+    });
     const loadBtn = document.getElementById('fin-load-btn');
     if (loadBtn) loadBtn.addEventListener('click', () => this.loadMetrics());
 
@@ -210,7 +113,11 @@ export class FinanceView {
       });
     });
     for (const id of ['fin-start', 'fin-end']) {
-      document.getElementById(id)?.addEventListener('change', () => this.setActiveRange(null));
+      document.getElementById(id)?.addEventListener('change', () => {
+        this.setActiveRange(null);
+        this.container.querySelector('#fin-source-summary').textContent = 'Dates changed. Load Report to refresh.';
+        this.container.querySelector('.fin-coverage').dataset.state = 'warning';
+      });
     }
 
     document.querySelectorAll('[data-fin-session]').forEach((button) => {
@@ -218,6 +125,7 @@ export class FinanceView {
         this.session = button.dataset.finSession;
         document.querySelectorAll('[data-fin-session]').forEach((other) => {
           other.classList.toggle('active', other === button);
+          other.setAttribute('aria-pressed', String(other === button));
         });
         void this.loadMetrics();
       });
@@ -246,6 +154,7 @@ export class FinanceView {
   setActiveRange(range) {
     document.querySelectorAll('[data-fin-range]').forEach((button) => {
       button.classList.toggle('active', button.dataset.finRange === range);
+      button.setAttribute('aria-pressed', String(button.dataset.finRange === range));
     });
   }
 
@@ -277,6 +186,8 @@ export class FinanceView {
     const { from: startTs, to: endTs } = tradingRange(startStr, endStr, session, this.hours);
 
     document.getElementById('fin-source').textContent = 'Refreshing sales and payment confirmations...';
+    this.container.querySelector('#fin-source-summary').textContent = 'Loading report…';
+    this.container.querySelector('.fin-coverage').dataset.state = 'loading';
     try {
       // The roster is only pulled by Orders/Users, so a phone that opens
       // Finance directly printed staff ids instead of names.
@@ -315,6 +226,25 @@ export class FinanceView {
         ? ` ⚠ ${report.outsideCount} confirmed payment(s) worth ${fmt(report.outsideTotal)} fall outside this window — widen the dates or choose Full day.`
         : '';
       set('fin-source', report.dataSource + sessionNote + missedNote);
+      const incomplete = report.dataSource.startsWith('Incomplete report');
+      set('fin-source-summary', incomplete ? 'Some records could not be refreshed. Open for details.' : 'Report up to date');
+      const coverage = this.container.querySelector('.fin-coverage');
+      coverage.dataset.state = incomplete ? 'warning' : 'ready';
+      if (incomplete) { coverage.open = true; coverage.dataset.errorOpen = 'true'; }
+      else if (coverage.dataset.errorOpen) { coverage.open = false; delete coverage.dataset.errorOpen; }
+      const dateLabel = value => new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+      set('fin-period-caption', `${dateLabel(startStr)}${startStr === endStr ? '' : ` to ${dateLabel(endStr)}`} · ${session === 'morning' ? 'Morning' : session === 'night' ? 'Night' : 'Full day'}`);
+      set('fin-overview-sales', fmt(net));
+      set('fin-overview-unpaid', fmt(report.pending));
+      set('fin-overview-payments', report.paymentCount);
+      const attention = [
+        [report.unmatched > 0, 'Payments without a matching order', report.unmatched],
+        [report.heldCount > 0, 'Payments still on a till', report.heldTotal],
+        [report.undatedCount > 0, 'Payments missing a date', report.undatedTotal],
+      ].filter(([needed]) => needed);
+      this.container.querySelector('#fin-attention').innerHTML = attention.length
+        ? `<ul>${attention.map(([, label, amount]) => `<li><span>${label}</span><button type="button" class="fin-text-link" data-fin-open="payments">${fmt(amount)} · Review</button></li>`).join('')}</ul>`
+        : '<p>No payment issues flagged in this report.</p>';
       const details = document.getElementById('fin-transactions');
       // The order number the customer was given comes before the raw document
       // id, so a row reads as the invoice or table reference somebody can act
@@ -404,12 +334,16 @@ export class FinanceView {
       }
 
       this.currentMetrics = { ...report, startStr, endStr, session };
-      this.addAIMsg(financialAnswer(this.currentMetrics));
+      this.addAIMsg(`${incomplete ? 'Some records could not be refreshed. ' : 'Report ready. '}Payments received: ${fmt(collected)}. Unpaid orders and invoices: ${fmt(report.pending)}. Ask a question for a breakdown.`, { reportContext: true });
 
     } catch (err) {
       if (request !== this.loadRequest) return;
       this.currentMetrics = null;
       document.getElementById('fin-source').textContent = 'Report failed to load. Reload before using these figures.';
+      this.container.querySelector('#fin-source-summary').textContent = 'Report could not be refreshed. Try again.';
+      this.container.querySelector('.fin-coverage').dataset.state = 'warning';
+      this.container.querySelector('.fin-coverage').open = true;
+      this.container.querySelector('.fin-coverage').dataset.errorOpen = 'true';
       console.error('Finance load error:', err);
       showNotification('Error loading financial data', 'error');
     }
@@ -439,11 +373,12 @@ export class FinanceView {
     area.scrollTop = area.scrollHeight;
   }
 
-  addAIMsg(text) {
+  addAIMsg(text, { reportContext = false } = {}) {
     const area = document.getElementById('ai-msgs');
     if (!area) return;
-    const d = document.createElement('div');
+    const d = (reportContext && area.querySelector('#ai-report-context')) || document.createElement('div');
     d.className = 'ai-bubble';
+    if (reportContext) d.id = 'ai-report-context';
     d.innerText = text;
     area.appendChild(d);
     area.scrollTop = area.scrollHeight;

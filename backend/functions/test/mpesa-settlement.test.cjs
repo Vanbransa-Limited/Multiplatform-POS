@@ -2,26 +2,40 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { claimedBillAmount } = require('../lib/modules/mpesa/settlement');
 const { db } = require('../lib/lib/firebase');
+const { printedBill } = require('./fixtures/printed-bill.cjs');
 const actor = { tenantId: 'tenant', staffId: 'staff' };
 const input = { saleUuids: ['original'], branchId: 'branch', checkoutId: 'checkout', stkKey: 'key' };
-const bill = () => ({ tenantId: 'tenant', branchId: 'branch', checkoutId: 'checkout', checkoutStaffId: 'staff',
+const bill = () => printedBill({ tenantId: 'tenant', branchId: 'branch', checkoutId: 'checkout', checkoutStaffId: 'staff',
   checkoutStkKey: 'key', checkoutExpiresAt: { toMillis: () => 2000 }, totalMinor: 105000 });
 
 test('saved invoice payment uses its original 1050 balance without repricing catalogue items', async () => {
   const original = db.collection;
   const collections = [];
-  db.collection = name => { collections.push(name); return { doc: id => ({ id }), where: () => ({}) }; };
+  db.collection = name => { collections.push(name); return { doc: id => ({ id }), where: () => ({ name }) }; };
   try {
     const tx = { getAll: async () => [{ id: 'sale', exists: true, data: bill }],
+      get: async query => ({ docs: query.name === 'sale_lines' ? [] : [{ data: () => ({ method: 'credit', amountMinor: 105000 }) }] }) };
+    assert.deepEqual(await claimedBillAmount(tx, actor, input, 1000), { dueMinor: 105000, saleIds: ['sale'] });
+    // No sale_lines read: the printed-receipt check is off (PRINT_BEFORE_PAYMENT).
+    assert.deepEqual(collections, ['sales', 'payments']);
+  } finally { db.collection = original; }
+});
+
+test('a bill whose receipt was never printed can still be paid while print-first is off', async () => {
+  const original = db.collection;
+  db.collection = name => ({ doc: id => ({ id }), where: () => ({ name }) });
+  try {
+    const { printedReceipt, ...unprinted } = bill();
+    assert.ok(printedReceipt, 'fixture really was printed before the field was removed');
+    const tx = { getAll: async () => [{ id: 'sale', exists: true, data: () => unprinted }],
       get: async () => ({ docs: [{ data: () => ({ method: 'credit', amountMinor: 105000 }) }] }) };
     assert.deepEqual(await claimedBillAmount(tx, actor, input, 1000), { dueMinor: 105000, saleIds: ['sale'] });
-    assert.deepEqual(collections, ['sales', 'payments']);
   } finally { db.collection = original; }
 });
 
 test('saved invoice payment refuses foreign, expired, changed, cancelled and already-paid bills', async () => {
   const original = db.collection;
-  db.collection = () => ({ doc: id => ({ id }), where: () => ({}) });
+  db.collection = name => ({ doc: id => ({ id }), where: () => ({ name }) });
   try {
     for (const patch of [{ tenantId: 'other' }, { branchId: 'other' }, { checkoutStkKey: 'changed' },
       { checkoutStaffId: 'other' }, { checkoutExpiresAt: { toMillis: () => 1 } }, { status: 'VOIDED' }, { proformaId: 'pf' }]) {
@@ -29,6 +43,6 @@ test('saved invoice payment refuses foreign, expired, changed, cancelled and alr
       await assert.rejects(claimedBillAmount(tx, actor, input, 1000));
     }
     await assert.rejects(claimedBillAmount({ getAll: async () => [{ id: 'sale', exists: true, data: bill }],
-      get: async () => ({ docs: [{ data: () => ({ method: 'credit', amountMinor: 105000, settledAt: 'paid' }) }] }) }, actor, input, 1000), /already paid/);
+      get: async query => ({ docs: query.name === 'sale_lines' ? [] : [{ data: () => ({ method: 'credit', amountMinor: 105000, settledAt: 'paid' }) }] }) }, actor, input, 1000), /already paid/);
   } finally { db.collection = original; }
 });

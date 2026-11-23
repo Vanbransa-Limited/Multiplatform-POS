@@ -29,6 +29,26 @@ test('a shared snapshot handed over to sales cannot fall between the two cloud r
   assert.equal(view.posOrders[0].id, 'handoff');
 });
 
+test('overlapping refreshes share one server read, and later reads fetch only recent and unpaid sales', async () => {
+  const pulls = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const unpaid = { id: 'tab', status: 'PENDING_PAYMENT', grand_total: 50, sale_uuid: 'round-1', tab_id: null };
+  const read = make({ transaction: async () => [[unpaid], [], [], [], [], [], [], []] }, {
+    pullOpenOrders: async () => [],
+    pullSales: async (since, uuids) => { pulls.push([since, uuids]); await gate; return 1; },
+  });
+  const view = { posOrders: [] };
+  const first = read.call(view), second = read.call(view);
+  release();
+  await Promise.all([first, second]);
+  assert.deepEqual(pulls, [[undefined, undefined]]);
+  await read.call(view);
+  assert.equal(pulls.length, 3);
+  assert.ok(Date.parse(pulls[1][0]) > Date.now() - 20 * 60_000, 'recent window only');
+  assert.deepEqual(pulls[2], [undefined, ['round-1']]);
+});
+
 test('an IndexedDB refresh failure keeps the last displayed order instead of clearing the floor', async () => {
   const saved = [{ id: 'table-20', ref: 'ORD-20' }];
   const view = { posOrders: saved };

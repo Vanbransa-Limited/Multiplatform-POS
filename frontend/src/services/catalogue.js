@@ -144,7 +144,7 @@ export async function pullCatalogue() {
  *
  * Returns the number of sales cached, or null when there is no backend.
  */
-export async function pullSales(sinceIso, saleUuids) {
+export async function pullSales(sinceIso, saleUuids, tableSelection) {
   const { getFirebase } = await import('./firebase.js');
   const fb = await getFirebase();
   if (!fb) return null;
@@ -159,7 +159,14 @@ export async function pullSales(sinceIso, saleUuids) {
   const since = new Date(sinceIso || Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
   const { readSaleChildren, readSalesSince } = await import('./sale-history.js');
   let sales;
-  if (saleUuids) {
+  if (tableSelection) {
+    const snapshot = await fb.firestore.getDocsFromServer(fb.firestore.query(
+      fb.firestore.collection(fb.dbInstance, 'sales'),
+      fb.firestore.where('tenantId', '==', tenantId),
+      fb.firestore.where('tableNumber', '==', tableSelection.tableNumber),
+    ));
+    sales = { docs: snapshot.docs.filter(entry => entry.data().branchId === tableSelection.branchId) };
+  } else if (saleUuids) {
     const ids = [...new Set(saleUuids.filter(Boolean))];
     const docs = [];
     for (let start = 0; start < ids.length; start += 30) {
@@ -215,7 +222,7 @@ export async function pullSales(sinceIso, saleUuids) {
         fiscal_status: doc.fiscalStatus || 'SENT',
       };
     })
-    .filter((row) => row.sold_at && (saleUuids || row.sold_at >= since));
+    .filter((row) => row.sold_at && (saleUuids || tableSelection || row.sold_at >= since));
 
   const ids = rows.map(row => row.id);
   const [payments, lines] = await Promise.all([
@@ -233,7 +240,7 @@ export async function pullSales(sinceIso, saleUuids) {
 
   // One local transaction avoids a disk commit per sale and publishes a
   // consistent snapshot to other readers. All network work finishes above.
-  return db.transaction('rw', [db.sales, db.payments, db.sale_lines], async () => {
+  return db.transaction('rw', [db.sales, db.payments, db.sale_lines, db.tabs], async () => {
 
   /**
    * A sale this device sold, it already has - under its own id.
@@ -251,6 +258,7 @@ export async function pullSales(sinceIso, saleUuids) {
   const localById = new Map(localSales.map(row => [row.id, row]));
 
   const fresh = [];
+  const movedTabs = new Map();
   for (const row of rows) {
     const localId = localIdByUuid.get(String(row.sale_uuid));
     if (!localId) {
@@ -258,6 +266,8 @@ export async function pullSales(sinceIso, saleUuids) {
       continue;
     }
     localIdFor.set(row.id, localId);
+    const oldTabId = localById.get(localId)?.tab_id;
+    if (oldTabId && row.tab_id && oldTabId !== row.tab_id) movedTabs.set(oldTabId, row.tab_id);
     // Never a wholesale overwrite: the local row carries things the server
     // does not, such as the kitchen status this device is driving.
     const updates = {
@@ -267,6 +277,9 @@ export async function pullSales(sinceIso, saleUuids) {
       synced_at: row.synced_at,
       staff_id: row.staff_id,
       status: row.status,
+      tab_id: row.tab_id,
+      order_reference: row.order_reference,
+      table_no: row.table_no,
     };
     if (Object.entries(updates).some(([key, value]) => localById.get(localId)?.[key] !== value)) {
       await db.sales.update(localId, updates);
@@ -292,6 +305,7 @@ export async function pullSales(sinceIso, saleUuids) {
       reference: doc.reference || '',
       provider_txn_id: doc.providerTransactionId || doc.reference || '',
       verified: doc.verified === false ? 0 : 1,
+      receipt_allocation_id: doc.receiptAllocationId || null, receipt_limit_minor: doc.receiptLimitMinor || null,
       // Set on a receivable once the money it stood for actually arrived.
       settled_at: asIso(doc.settledAt),
       received_at: asIso(doc.paidAt) || null,
@@ -300,6 +314,14 @@ export async function pullSales(sinceIso, saleUuids) {
 
   // bulkPut so a device's own unsynced sales are not wiped by the pull.
   if (fresh.length) await db.sales.bulkPut(fresh);
+  // A server consolidation must also retire the old local header; otherwise
+  // it remains an empty duplicate and can receive the next round again.
+  for (const [oldTabId, canonicalTabId] of movedTabs) {
+    const remaining = await db.sales.where('tab_id').equals(oldTabId).toArray();
+    if (remaining.every(sale => sale.status === 'VOIDED')) {
+      await db.tabs.update(oldTabId, { status: 'MERGED', merged_into: canonicalTabId });
+    }
+  }
   if (paymentRows.length) await db.payments.bulkPut(paymentRows);
   const selectedIds = new Set(rows.map(row => row.id));
   const lineRows = lines.docs.flatMap(entry => {
@@ -316,18 +338,28 @@ export async function pullSales(sinceIso, saleUuids) {
   });
   if (lineRows.length) await db.sale_lines.bulkPut(lineRows);
 
-  // A receivable settled anywhere is settled here: without this the till that
-  // raised the proforma keeps reporting it outstanding for good.
-  const settledCreditIds = new Set(payments.docs.flatMap(entry => {
+  // The selling device keeps its original tender IDs. Mirror the server's
+  // remaining receivable as well as full settlement, including payments made
+  // from another device while this one was offline.
+  const creditBySale = new Map();
+  for (const entry of payments.docs) {
     const doc = entry.data();
-    return doc.method === 'credit' && doc.settledAt ? [doc.saleId] : [];
-  }));
+    if (String(doc.method).toLowerCase() !== 'credit') continue;
+    const remaining = !doc.settledAt && doc.status !== 'voided' ? Number(doc.amountMinor || 0) : 0;
+    creditBySale.set(doc.saleId, (creditBySale.get(doc.saleId) || 0) + remaining);
+  }
   for (const [serverSaleId, localId] of localIdFor) {
-    if (!settledCreditIds.has(serverSaleId)) continue;
-    const rowsHere = await db.payments.where('sale_id').equals(localId).toArray();
+    if (serverSaleId === localId || !creditBySale.has(serverSaleId)) continue;
+    const rowsHere = (await db.payments.where('sale_id').equals(localId).toArray())
+      .filter(row => ['CREDIT', 'PROFORMA'].includes(String(row.method).toUpperCase()));
+    let remainingMinor = creditBySale.get(serverSaleId);
     for (const row of rowsHere) {
-      if (row.settled_at || !['CREDIT', 'PROFORMA'].includes(String(row.method).toUpperCase())) continue;
-      await db.payments.update(row.id, { settled_at: new Date().toISOString() });
+      if (remainingMinor > 0) {
+        await db.payments.update(row.id, { amount: remainingMinor / 100, settled_at: null });
+        remainingMinor = 0;
+      } else if (!row.settled_at) {
+        await db.payments.update(row.id, { settled_at: new Date().toISOString() });
+      }
     }
   }
 

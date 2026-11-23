@@ -222,9 +222,10 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
       // Only the server's shared allocation proves several ledger rows are
       // portions of one receipt. Legacy repeated codes stay deduplicated.
       if (payment.receipt_allocation_id && previous.receipt_allocation_id === payment.receipt_allocation_id
-        && !previous.allocated_sale_ids?.includes(payment.sale_id) && mine(payment)) {
+        && !previous.allocated_payment_ids?.includes(payment.id) && mine(payment)) {
         previous.amount = Math.min(previous.amount + payment.amount, Number(payment.receipt_limit_minor) / 100);
         previous.allocated_sale_ids.push(payment.sale_id);
+        previous.allocated_payment_ids.push(payment.id);
         previous.invoice_no = [...new Set([...String(previous.invoice_no || '').split(' / '), saleMap.get(payment.sale_id)?.invoice_no].filter(Boolean))].join(' / ');
         previous.verified = previous.verified && payment.verified;
       }
@@ -232,7 +233,7 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
     }
     const sale = saleMap.get(payment.sale_id);
     const order = orders.get(payment.customer_order_id);
-    const row = { ...payment, allocated_sale_ids: [payment.sale_id], received_at: payment.received_at || payment.created_at || sale?.sold_at,
+    const row = { ...payment, allocated_sale_ids: [payment.sale_id], allocated_payment_ids: [payment.id], received_at: payment.received_at || payment.created_at || sale?.sold_at,
       staff_id: payment.staff_id || sale?.staff_id || orderStaff(order), invoice_no: sale?.invoice_no,
       // What this money actually paid for: the invoice the till printed, or the
       // reference the customer was handed at the table.

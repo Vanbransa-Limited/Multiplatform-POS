@@ -1,5 +1,32 @@
 # Business onboarding
 
+## Shared checkout standard
+
+Titanium, Artesano and new businesses use the same code-only M-Pesa checkout and
+short payment messages. Platform onboarding creates an ongoing, recorded-only
+receipt policy (`policyVersion: 2`) in the same transaction as the tenant and its
+first branch. Its authorization links to that tenant's onboarding audit record.
+Cashiers enter only a code; amounts come from saved payments. Unknown codes and
+exhausted balances cannot pay a bill. Remaining balances may be applied across
+bills within the existing receipt/branch restrictions.
+
+The policy covers active branches belonging to that tenant, including branches
+added later. The server reads branch ownership and status before allowing that
+scope; another business's branch or payments cannot supply a balance. Merchant
+credentials, accepted tenders, stock, users and prices remain business-specific.
+
+Existing businesses use the reviewed rollout tool:
+`node scripts/rollout-receipt-standard.cjs --project vanbransa-pos`. It previews
+active tenants and branches, then requires `--apply --expected-hash <fingerprint>`
+to update only receipt controls and audit records. It does not rewrite payment
+history. Validate with `node scripts/check-receipt-standard.cjs` and the read-only
+ledger audit, using `--tenant <tenant-id>` when checking a specific business.
+
+This workflow needs a saved payment amount; it does not create an incoming amount
+feed, automatically enable STK, or verify historical manual entries with Safaricom.
+
+## Sign-in
+
 Everyone signs in at `/till/`. Authenticated platform administrators are routed
 to `/platform/`; business staff enter their own POS. Opening `/platform/`
 without an appropriate session returns to the central sign-in page.

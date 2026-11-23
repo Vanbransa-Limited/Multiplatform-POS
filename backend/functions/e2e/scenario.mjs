@@ -13,11 +13,11 @@
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
+import { emulatorTestTarget } from '../../../scripts/lib/test-target.cjs';
 
-process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8380';
-process.env.FIREBASE_AUTH_EMULATOR_HOST = '127.0.0.1:9399';
-const PROJECT = 'vanbransa-pos';
-const FN = `http://127.0.0.1:5301/${PROJECT}/europe-west1`;
+const target = emulatorTestTarget();
+const PROJECT = target.projectId;
+const FN = target.functionsBase;
 
 initializeApp({ projectId: PROJECT });
 const db = getFirestore();
@@ -46,7 +46,7 @@ async function tokenFor(uid, claims) {
   await auth.createUser({ uid }).catch(() => {});
   await auth.setCustomUserClaims(uid, claims);
   const res = await fetch(
-    `http://127.0.0.1:9399/identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=fake`,
+    `${target.authBase}/identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=fake`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: await auth.createCustomToken(uid, claims), returnSecureToken: true }) },
   );
@@ -103,6 +103,10 @@ const sale = (person, uuid, payments, lines) => ({
   tableNumber: '7', lines, payments,
 });
 const beer = (qty) => ({ productId: 'prod-beer', qty, unitPriceMinor: 40000 });
+async function printBill(target, deviceId, token) {
+  const job = await call('prepareCheckoutReceipt', { ...target, queue: true }, token);
+  if (!job.printed) await call('confirmCheckoutReceiptPrinted', { jobId: job.jobId, deviceId, confirmed: true }, token);
+}
 
 const run = async () => {
   await seed();
@@ -114,18 +118,22 @@ const run = async () => {
   const moved = { cash: 0, mpesa: 0, bank: 0, card: 0 };
 
   log('\n== 1. Akashi rings up a cash sale ==');
-  const cashSale = await call('createSale', sale(A, 'uuid-cash', [{ method: 'cash', amountMinor: 80000 }], [beer(2)]), akashi);
+  const cashSale = await call('createSale', sale(A, 'uuid-cash', [{ method: 'credit', amountMinor: 80000 }], [beer(2)]), akashi);
+  // Never printed: print-first is off (PRINT_BEFORE_PAYMENT), so payment must still go through.
+  await call('settleSale', { saleUuid: 'uuid-cash', requestId: 'req-cash', method: 'cash' }, akashi);
   moved.cash += 800;
   log(`   ${cashSale.sale.invoiceNumber} — KES 800 cash`);
 
   log('\n== 2. Akashi rings up a proforma and settles it by BANK ==');
   const proformaA = await call('createSale', sale(A, 'uuid-bank', [{ method: 'credit', amountMinor: 120000 }], [beer(3)]), akashi);
+  await printBill({ saleUuids: ['uuid-bank'] }, A.device, akashi);
   const bank = await call('settleSale', { saleUuid: 'uuid-bank', requestId: 'req-bank', method: 'bank_transfer', reference: 'FT26091234' }, akashi);
   moved.bank += 1200;
   log(`   ${proformaA.sale.invoiceNumber} — settled by bank, ref ${bank.reference}`);
 
   log('\n== 3. Clemente rings up a proforma and settles it in CASH ==');
   await call('createSale', sale(B, 'uuid-cash2', [{ method: 'credit', amountMinor: 40000 }], [beer(1)]), clemente);
+  await printBill({ saleUuids: ['uuid-cash2'] }, B.device, clemente);
   await call('settleSale', { saleUuid: 'uuid-cash2', requestId: 'req-cash2', method: 'cash' }, clemente);
   moved.cash += 400;
   log('   settled in cash');
@@ -141,6 +149,7 @@ const run = async () => {
     lines: [{ productId: 'prod-water', qty: 2, unitPriceMinor: 10000 }],
   }, clemente).catch((error) => { problems.push(`submitCustomerOrder: ${error.message}`); return null; });
   if (menu) {
+    await printBill({ customerOrderId: menu.orderId }, B.device, clemente);
     await call('settleCustomerOrderBank', { orderId: menu.orderId, reference: 'FT26095555' }, clemente);
     moved.bank += menu.totalMinor / 100;
     log(`   ${menu.ref} — settled by bank`);
@@ -159,29 +168,31 @@ const run = async () => {
   log('   published: KES 100 bank, held on the till');
 
   log('\n== 6b. The till path: a sale tendered straight to BANK, with a reference ==');
-  // The Orders Viewer settles through settleSale, which never reaches the
-  // provider-intent check. A till that takes a bank transfer at checkout goes
-  // through createSale instead, and that is where every one of them was being
-  // refused as "not verified or was already consumed".
+  // Till and Orders both save an unpaid bill, print it, then record the tender.
   const tillBank = await call('createSale', sale(B, 'uuid-till-bank',
-    [{ method: 'bank_transfer', amountMinor: 40000, reference: '54756376' }], [beer(1)]), clemente);
+    [{ method: 'credit', amountMinor: 40000 }], [beer(1)]), clemente);
+  await printBill({ saleUuids: ['uuid-till-bank'] }, B.device, clemente);
+  await call('settleSale', { saleUuid: 'uuid-till-bank', requestId: 'req-till-bank', method: 'bank_transfer', reference: '54756376' }, clemente);
   moved.bank += 400;
   log(`   ${tillBank.sale.invoiceNumber} — KES 400 taken by bank transfer at the till`);
 
   log('\n== 6c. And one on the CARD terminal, likewise ==');
   const tillCard = await call('createSale', sale(A, 'uuid-till-card',
-    [{ method: 'card', amountMinor: 40000, reference: 'TERM-42' }], [beer(1)]), akashi);
+    [{ method: 'credit', amountMinor: 40000 }], [beer(1)]), akashi);
+  await printBill({ saleUuids: ['uuid-till-card'] }, A.device, akashi);
+  await call('settleSale', { saleUuid: 'uuid-till-card', requestId: 'req-till-card', method: 'card', reference: 'TERM-42' }, akashi);
   moved.card += 400;
   log(`   ${tillCard.sale.invoiceNumber} — KES 400 taken on the card terminal`);
 
   log('\n== 7. Akashi settles another proforma on the CARD terminal ==');
   await call('createSale', sale(A, 'uuid-card', [{ method: 'credit', amountMinor: 40000 }], [beer(1)]), akashi);
+  // Also unprinted, as above.
   await call('settleSale', { saleUuid: 'uuid-card', requestId: 'req-card', method: 'card', reference: 'TERM-88' }, akashi);
   moved.card += 400;
   log('   settled on the card terminal');
 
   log('\n== 8. Integrity: the same sale submitted twice must not bill twice ==');
-  const replay = await call('createSale', sale(A, 'uuid-cash', [{ method: 'cash', amountMinor: 80000 }], [beer(2)]), akashi);
+  const replay = await call('createSale', sale(A, 'uuid-cash', [{ method: 'credit', amountMinor: 80000 }], [beer(2)]), akashi);
   checkText('a replayed sale returns the original invoice', replay.sale.invoiceNumber, 'INV-BH001-000001');
 
   log('\n== 9. Integrity: a settled sale cannot be settled again ==');
@@ -195,17 +206,17 @@ const run = async () => {
   if (!refused) problems.push('a sale that was already settled accepted a second settlement');
   else log('   OK   double settlement refused');
 
-  log('\n== 9b. A tender the business has not enabled is refused, and says which ==');
+  log('\n== 9b. A direct paid checkout cannot bypass printing ==');
   await db.doc(`tenant_settings/${TENANT}`).update({ acceptedPaymentMethods: ['cash', 'mpesa'] });
   let named = false;
   try {
     await call('createSale', sale(A, 'uuid-nobank', [{ method: 'bank_transfer', amountMinor: 40000 }], [beer(1)]), akashi);
   } catch (error) {
-    named = /bank_transfer is not enabled/.test(error.message);
+    named = /Print the receipt/.test(error.message);
     log(`   refused: ${error.message}`);
   }
-  if (!named) problems.push('a disabled tender was not refused with a message naming it');
-  else log('   OK   refused, and the cashier is told which tender to enable');
+  if (!named) problems.push('a direct paid checkout bypassed the print requirement');
+  else log('   OK   refused, and the cashier is told to print first');
   await db.doc(`tenant_settings/${TENANT}`).update({ acceptedPaymentMethods: ['cash', 'mpesa', 'card', 'bank_transfer'] });
 
   // ---- The owner reads it all back, exactly as Financials does ----

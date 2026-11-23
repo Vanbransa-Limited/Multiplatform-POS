@@ -17,6 +17,7 @@ export { importProducts, upsertProduct, upsertCategory, retireProduct, deletePro
 export { createSale } from "./modules/sales";
 export { generateEtr, setupEtims } from "./modules/etims";
 export { settleSale, voidSale, claimSalePayment } from "./modules/sales/settle";
+export { prepareCheckoutReceipt, confirmCheckoutReceiptPrinted } from "./modules/sales/checkout-print";
 // Open tabs, published for observation only. Never read back as money.
 export { publishOpenOrders } from "./modules/sales/open-orders";
 export { deleteCustomer, saveCustomer } from "./modules/customers";
@@ -53,3 +54,5 @@ export { bootstrapOwner } from "./modules/staff-admin";
 // again, re-add the export below, deploy, run scripts/provision-tenant.mjs, then
 // remove the export and redeploy:
 //   export { provisionTenant } from "./modules/provisioning";
+
+export { lookupMpesaReceipt } from "./modules/sales/receipt-balance";

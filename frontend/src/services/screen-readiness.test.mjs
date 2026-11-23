@@ -55,7 +55,8 @@ test('Finance renders filters without waiting for trading-hour or ledger request
     cachedTradingHours: () => ({ dayStartHour: 6 }), pullTradingHours: stalled, createMobileFilters: () => ({}),
     ProformaRegister: class { async load() {} dispose() {} },
   });
-  await load.call({ container: { querySelector() {} }, render: () => calls.push('render'), bindEvents: () => calls.push('bind'), loadMetrics: () => { calls.push('metrics'); return stalled(); } });
+  await load.call({ container: { querySelector() {} }, render: () => calls.push('render'), bindEvents: () => calls.push('bind'),
+    sectionFromLocation: () => 'overview', selectSection() {}, loadMetrics: () => { calls.push('metrics'); return stalled(); } });
   assert.deepEqual(calls, ['render', 'bind', 'metrics']);
 });
 

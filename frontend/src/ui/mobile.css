@@ -206,7 +206,7 @@
 
 @media screen and (min-width: 768px) and (max-width: 1180px) {
   .till-grid {
-    grid-template-columns: minmax(0, 1fr) 330px;
+    grid-template-columns: minmax(0, 1fr) 356px;
     gap: 14px;
     height: calc(100dvh - 86px);
   }
@@ -217,29 +217,29 @@
   }
   .product-card {
     padding: 12px;
-    height: 280px;
-    min-height: 280px;
+    height: 224px;
+    min-height: 224px;
   }
   .product-card .card-media {
-    height: 104px !important;
+    height: 108px !important;
   }
   .product-card .card-summary-tabs,
   .product-card .card-tab-content {
     display: none;
   }
   .cart-item-qty-control .qty-btn {
-    width: 36px;
-    height: 36px;
-    font-size: 18px;
+    width: 40px;
+    height: 40px;
+    font-size: 19px;
   }
   .cart-item-remove {
-    min-width: 36px;
-    min-height: 36px;
+    min-width: 40px;
+    min-height: 40px;
     font-size: 16px;
   }
   .checkout-btn {
     min-height: 52px;
-    font-size: 16px;
+    font-size: 15px;
   }
   #payment-modal .modal-content {
     max-width: min(94vw, 720px) !important;
@@ -255,8 +255,73 @@
   }
 }
 
+/* 1-Tap Quick Table Selector Chips & In-Cart Product Badges for Tablet Speed */
+.till-quick-table-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 6px 0 2px;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.till-quick-table-chips::-webkit-scrollbar {
+  display: none;
+}
+.till-table-chip {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 6px 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(200, 130, 42, 0.28);
+  background: rgba(255, 255, 255, 0.04);
+  color: #dcc6ad;
+  font: 700 12px var(--font-main);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.08s ease, background 0.12s ease, border-color 0.12s ease;
+}
+.till-table-chip:active {
+  transform: scale(0.96);
+}
+.till-table-chip.has-open-tab {
+  border-color: rgba(232, 165, 53, 0.65);
+  background: rgba(232, 165, 53, 0.12);
+  color: #ffca75;
+}
+.till-table-chip.active {
+  border-color: var(--accent-amber, #e8a535);
+  background: var(--accent-amber, #e8a535);
+  color: #1a1008;
+  box-shadow: 0 2px 8px rgba(232, 165, 53, 0.28);
+}
+.product-card.in-cart {
+  border-color: var(--accent-amber, #e8a535) !important;
+  box-shadow: 0 0 0 1px rgba(232, 165, 53, 0.45);
+}
+.product-in-cart-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 13px;
+  background: var(--accent-amber, #e8a535);
+  color: #1a1008;
+  font: 800 12px var(--font-main);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+.product-in-cart-badge.hidden {
+  display: none !important;
+}
+
 /* Global touch-action optimization to eliminate 300ms tap delay on tablets and phones */
-.product-card, .filter-chip, .qty-btn, .checkout-btn, .payment-method-card, .quick-cash-btn, .sidebar-nav-btn, .mnav-btn, button {
+.product-card, .filter-chip, .qty-btn, .checkout-btn, .payment-method-card, .quick-cash-btn, .till-table-chip, .sidebar-nav-btn, .mnav-btn, button {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   user-select: none;

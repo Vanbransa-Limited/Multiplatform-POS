@@ -245,10 +245,12 @@ export class TillView {
             <div class="till-tab-row">
               <!-- Open tables are suggested as one is typed; the floor itself
                    lives in Tab Management rather than as chips over the cart. -->
-              <input type="text" id="till-table-input" list="till-table-options" placeholder="Takeaway — type a table to open a tab">
+              <input type="text" id="till-table-input" list="till-table-options" placeholder="Takeaway — tap a table chip or type table">
               <datalist id="till-table-options"></datalist>
               <button type="button" class="sec-btn" id="till-tab-clear">Takeaway</button>
             </div>
+            <!-- 1-Tap Quick Table Selector Chips for Tablet Speed (no virtual keyboard needed) -->
+            <div id="till-quick-table-chips" class="till-quick-table-chips" aria-label="Quick table selector"></div>
             <a href="/tabs" id="till-open-tabs-label" class="till-tab-label hidden"></a>
             <!-- Everything on the table so far, so an item nobody ordered can
                  be taken off before the bill is asked for. -->
@@ -320,7 +322,7 @@ export class TillView {
             <!-- The round that is not being paid for yet. Without this the
                  only exits from a cart were pay it or cancel it, so every
                  round a table did not settle on the spot was voided. -->
-            <button class="sec-btn hidden" id="till-add-to-tab-btn" style="width:100%;margin-bottom:8px;">Add to Tab</button>
+            <button class="sec-btn hidden" id="till-add-to-tab-btn" style="width:100%;margin-bottom:8px;min-height:46px;font-weight:700;">+ Add Round to Tab</button>
             <button class="checkout-btn" id="till-pay-now-btn" disabled>Print Receipt &amp; Pay</button>
             <p id="till-tab-due-note" class="hidden" style="margin-top:8px;text-align:center;font-size:11px;color:var(--text-secondary);"></p>
           </div>
@@ -664,6 +666,19 @@ export class TillView {
       this.renderOpenTabs();
     });
 
+    // 1-Tap Quick Table Selector Chips for Tablet Speed
+    document.getElementById('till-quick-table-chips')?.addEventListener('click', (event) => {
+      const chip = event.target.closest('[data-quick-table]');
+      if (!chip) return;
+      const picked = chip.getAttribute('data-quick-table');
+      if (!picked) {
+        this.clearActiveTab();
+        showNotification('Switched to Takeaway — direct counter sale.', 'info');
+        return;
+      }
+      this.addToTab(picked);
+    });
+
     // Leaves the tab alone and starts a sale of its own.
     document.getElementById('till-tab-clear').addEventListener('click', () => {
       this.clearActiveTab();
@@ -868,6 +883,12 @@ export class TillView {
     const { houseStockByProduct, barcodeByProduct, categoryMap } = this;
     const fragment = document.createDocumentFragment();
 
+    const inCartByProduct = new Map();
+    for (const item of this.cart || []) {
+      const pid = String(item.product?.id ?? '');
+      if (pid) inCartByProduct.set(pid, (inCartByProduct.get(pid) || 0) + Number(item.qty || 0));
+    }
+
     for (const prod of page.rows) {
       const productId = String(prod.id);
       const name = String(prod.name ?? 'Unnamed product');
@@ -876,13 +897,14 @@ export class TillView {
       const sellPrice = Number.isFinite(numericPrice) ? numericPrice : 0;
       const imageData = typeof prod.image_data === 'string' ? prod.image_data : '';
       const stock = houseStockByProduct.get(productId) || 0;
+      const inCartQty = inCartByProduct.get(productId) || 0;
       const normalizedProduct = { ...prod, name, sku, sell_price: sellPrice };
       
       const rawCatName = categoryMap.get(String(prod.category_id)) || String(prod.source_category || prod.category_id || '');
       const canonicalCatName = getCanonicalCategoryName(rawCatName);
 
       const card = document.createElement('div');
-      card.className = `product-card ${prod.is_batch_tracked ? 'batch-tracked' : ''}`;
+      card.className = `product-card ${prod.is_batch_tracked ? 'batch-tracked' : ''} ${inCartQty > 0 ? 'in-cart' : ''}`;
       card.setAttribute('data-id', prod.id);
       card.setAttribute('role', 'button');
       card.tabIndex = 0;
@@ -898,22 +920,13 @@ export class TillView {
       const isVipItem = prod.id === 'prod-table-service';
       const isStaffDiscountItem = prod.id === 'prod-staff-discount';
       card.innerHTML = `
-        <div class="card-media" style="height: 120px; flex-shrink: 0; border-radius: 8px; margin-bottom: 8px; background: url('${imageData ? (imageData.includes('?') ? imageData : imageData + '?v=2') : '/ai_images/juice_glass.jpg'}') center/cover no-repeat; border: 1px solid rgba(255, 255, 255, 0.05); display: flex; align-items: center; justify-content: center;">
+        <div class="card-media" style="position: relative; height: 112px; flex-shrink: 0; border-radius: 8px; margin-bottom: 8px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255, 255, 255, 0.05); display: flex; align-items: center; justify-content: center;">
           ${!imageData ? '<span style="font-size:24px; opacity:0.3;">📷</span>' : ''}
+          <span class="product-in-cart-badge ${inCartQty > 0 ? '' : 'hidden'}" data-cart-badge-for="${escapeHtml(productId)}">${inCartQty > 0 ? `×${inCartQty}` : ''}</span>
         </div>
-        <div>
-          <h4>${name}</h4>
-          <p class="sku">${sku}</p>
-        </div>
-        
-        <div class="card-summary-tabs">
-          <div class="c-tab active">Info</div>
-          <div class="c-tab">Stock</div>
-          <div class="c-tab">Stats</div>
-        </div>
-        <div class="card-tab-content">
-          <div><strong style="color:#fff">Tax:</strong> ${prod.tax_code} | <strong style="color:#fff">UOM:</strong> ${prod.uom}</div>
-          <div style="margin-top:4px"><strong style="color:#fff">Origin:</strong> ${prod.origin_country || 'N/A'}</div>
+        <div style="flex:1;min-height:0;">
+          <h4>${escapeHtml(name)}</h4>
+          <p class="sku">${escapeHtml(sku)} · ${escapeHtml(canonicalCatName)}</p>
         </div>
 
         <div class="card-footer">
@@ -926,15 +939,15 @@ export class TillView {
 
       // Only the current page gets image elements; off-screen images load on demand.
       const media = card.querySelector('.card-media');
-      media.style.background = 'rgba(255,255,255,0.03)';
       if (imageData) {
+        const badge = media.querySelector('.product-in-cart-badge');
         const image = document.createElement('img');
         image.src = imageData;
         image.alt = '';
         image.loading = 'lazy';
         image.decoding = 'async';
         image.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:8px';
-        media.replaceChildren(image);
+        media.replaceChildren(image, badge);
       }
       card.addEventListener('click', () => {
         this.addToCart(normalizedProduct);
@@ -1234,14 +1247,39 @@ export class TillView {
     this.updateCartUI();
   }
 
+  syncProductCardBadges() {
+    const grid = document.getElementById('till-prod-grid');
+    if (!grid) return;
+    const inCartByProduct = new Map();
+    for (const item of this.cart || []) {
+      const pid = String(item.product?.id ?? '');
+      if (pid) inCartByProduct.set(pid, (inCartByProduct.get(pid) || 0) + Number(item.qty || 0));
+    }
+    grid.querySelectorAll('.product-card').forEach((card) => {
+      const pid = String(card.getAttribute('data-id') ?? '');
+      const qty = inCartByProduct.get(pid) || 0;
+      card.classList.toggle('in-cart', qty > 0);
+      const badge = card.querySelector('.product-in-cart-badge');
+      if (badge) {
+        badge.classList.toggle('hidden', qty <= 0);
+        badge.textContent = qty > 0 ? `×${qty}` : '';
+      }
+    });
+  }
+
   updateCartUI() {
     this.persistDraft();
+    this.syncProductCardBadges();
     const count = this.cart.reduce((sum, item) => sum + Number(item.qty || 0), 0);
     const cartCount = document.getElementById('cart-item-count');
     if (cartCount) cartCount.textContent = `${count} ${count === 1 ? 'Item' : 'Items'}`;
     const mobileSummary = document.getElementById('mobile-sale-summary');
     if (mobileSummary) {
       mobileSummary.textContent = `${count} ${count === 1 ? 'item' : 'items'}`;
+    }
+    const cartCountBadge = document.getElementById('cart-item-count');
+    if (cartCountBadge) {
+      cartCountBadge.textContent = `${count} ${count === 1 ? 'Item' : 'Items'}`;
     }
     const list = document.getElementById('cart-list');
     const payBtn = document.getElementById('till-pay-now-btn');
@@ -2397,6 +2435,45 @@ export class TillView {
     })));
     label.classList.toggle('hidden', tabs.length === 0);
     label.textContent = `${tabs.length} open tab${tabs.length === 1 ? '' : 's'} · Manage tabs →`;
+
+    // Populate 1-Tap Quick Table Chips so tablet users can switch tables without opening virtual keyboard
+    const quickStrip = document.getElementById('till-quick-table-chips');
+    if (quickStrip) {
+      const openMap = new Map(tabs.map((tab) => [tabKey(tab.table), tab]));
+      const presetTables = ['1', '2', '3', '4', '5', '6', '7', '8', 'VIP 1', 'VIP 2', 'Bar 1', 'Bar 2'];
+      const mergedTables = [...tabs.map((t) => String(t.table))];
+      for (const preset of presetTables) {
+        if (!mergedTables.some((existing) => tabKey(existing) === tabKey(preset))) {
+          mergedTables.push(preset);
+        }
+      }
+      const activeKey = tabKey(this.activeTable);
+      const takeawaySelected = !this.activeTable;
+      const chipNodes = [];
+
+      const takeawayChip = document.createElement('button');
+      takeawayChip.type = 'button';
+      takeawayChip.className = `till-table-chip ${takeawaySelected ? 'active' : ''}`;
+      takeawayChip.setAttribute('data-quick-table', '');
+      takeawayChip.textContent = 'Takeaway';
+      chipNodes.push(takeawayChip);
+
+      for (const tableName of mergedTables) {
+        const key = tabKey(tableName);
+        const openTab = openMap.get(key);
+        const isSelected = Boolean(this.activeTable && key === activeKey);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `till-table-chip ${isSelected ? 'active' : ''} ${openTab ? 'has-open-tab' : ''}`;
+        btn.setAttribute('data-quick-table', tableName);
+        const shortLabel = /^(vip|bar|patio|table)/i.test(tableName) ? tableName : `T${tableName}`;
+        btn.textContent = openTab
+          ? `${shortLabel} · ${Math.round(openTab.dueMinor / 100).toLocaleString()}`
+          : shortLabel;
+        chipNodes.push(btn);
+      }
+      quickStrip.replaceChildren(...chipNodes);
+    }
 
     // Never while it is being typed into, or the cursor jumps mid-word.
     const input = document.getElementById('till-table-input');

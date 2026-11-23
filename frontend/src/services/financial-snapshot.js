@@ -400,7 +400,7 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
     const rawTable = String(order.table_no || '').trim();
     const normTable = rawTable.toLowerCase().replace(/\s+/g, ' ').replace(/^table\s*/, '');
     if (!normTable) {
-      consolidatedUnpaidOrders.push({ ...order, roundCount: 1, references: [order.reference] });
+      consolidatedUnpaidOrders.push({ ...order, roundCount: 1, references: [order.reference], staff_ids: order.staff_id ? [order.staff_id] : [] });
       continue;
     }
     const groupKey = `${order.branch_id || ''}:${normTable}`;
@@ -411,6 +411,8 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
         table_no: rawTable,
         roundCount: 1,
         references: [order.reference],
+        // Every cashier who put a round on the table, so the bill is owned by name.
+        staff_ids: order.staff_id ? [order.staff_id] : [],
         amountMinor: minor(order.amount),
       };
       tableGroups.set(groupKey, grouped);
@@ -418,6 +420,7 @@ export function financialSnapshot({ tenantId, from, to, localSales = [], localPa
     } else {
       existingGroup.roundCount += 1;
       existingGroup.references.push(order.reference);
+      if (order.staff_id && !existingGroup.staff_ids.includes(order.staff_id)) existingGroup.staff_ids.push(order.staff_id);
       existingGroup.amountMinor += minor(order.amount);
       existingGroup.amount = existingGroup.amountMinor / 100;
     }

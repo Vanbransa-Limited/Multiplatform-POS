@@ -85,9 +85,12 @@ export class FinanceView {
       '.fin-view-all-btn { background: linear-gradient(135deg, #e8a535 0%, #c8822a 100%); color: #160d04; border: none; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 800; cursor: pointer; transition: filter 0.15s; }',
       '.fin-view-all-btn:hover { filter: brightness(1.1); }',
       '.fin-side-list { background: #0b0704; border: 1px solid rgba(200,130,42,0.12); border-radius: 16px; padding: 6px 14px; display: flex; flex-direction: column; flex: 1; justify-content: center; }',
-      '.fin-side-item { display: grid; grid-template-columns: 1.2fr 0.9fr auto; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid rgba(200,130,42,0.1); font-size: 12px; }',
+      '.fin-side-item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid rgba(200,130,42,0.1); font-size: 12px; }',
       '.fin-side-item:last-child { border-bottom: none; }',
-      '.fin-side-ref { font-weight: 700; color: #f5ece0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '.fin-side-ref { font-weight: 700; color: #f5ece0; overflow-wrap: anywhere; min-width: 0; }',
+      '.fin-side-cashier { display: block; font-weight: 500; font-size: 11px; color: #c7b299; white-space: normal; }',
+      /* Phones: each unpaid bill becomes a stacked row so the cashier, amount and action stay on screen. */
+      '@media (max-width: 640px) { #fin-unpaid-orders thead { display: none; } #fin-unpaid-orders table, #fin-unpaid-orders tbody { display: block; width: 100%; } #fin-unpaid-orders tr { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 12px 2px; border-bottom: 1px solid rgba(200,130,42,0.1); } #fin-unpaid-orders td { display: block; padding: 0; border: none; overflow-wrap: anywhere; } #fin-unpaid-orders td, #fin-unpaid-orders td * { white-space: normal; } #fin-unpaid-orders td:nth-child(2) { grid-column: 1 / -1; order: -2; } #fin-unpaid-orders td:nth-child(1) { order: -1; font-size: 12px; color: #a89074; } #fin-unpaid-orders td:nth-child(4) { order: -1; text-align: right; } #fin-unpaid-orders td:nth-child(3), #fin-unpaid-orders td:nth-child(5), #fin-unpaid-orders td[colspan] { grid-column: 1 / -1; font-size: 12px; } #fin-unpaid-orders td:nth-child(5) { margin-top: 6px; } }',
       '.fin-side-time { color: #a89074; font-size: 11px; text-align: center; }',
       '.fin-side-amt { color: #e8a535; font-weight: 700; text-align: right; text-decoration: none; }',
       /* Main Table Card — Deep Espresso Brown & Black */
@@ -495,13 +498,15 @@ export class FinanceView {
     const { from: startTs, to: endTs } = tradingRange(startStr, endStr, session, this.hours);
 
     try {
-      void pullStaff().catch(() => null);
-      const report = await loadFinancialSnapshot(startTs, endTs, session);
+      const [report] = await Promise.all([
+        loadFinancialSnapshot(startTs, endTs, session),
+        pullStaff().catch(() => null),
+      ]);
       const { sales, transactions, gross, discounts, net, cash, mpesa, other, collected } = report;
       const [users, shifts] = await Promise.all([db.users.toArray(), db.shifts.toArray()]);
       const userMap = new Map(users.map(u => [u.id, u]));
       const shiftUserMap = new Map(shifts.map(sh => [sh.id, userMap.get(sh.user_id)]));
-      const staffName = row => userMap.get(row.staff_id)?.name || shiftUserMap.get(row.shift_id)?.name || row.staff_id || 'Staff';
+      const staffName = row => userMap.get(row.staff_id)?.name || shiftUserMap.get(row.shift_id)?.name || (row.staff_id ? 'Unknown staff' : 'Staff');
       report.staffRundown = report.staffRundown.map(row => ({ ...row, name: staffName(row) }));
       const fmtInt = v => Math.round(Number(v || 0)).toLocaleString();
       const fmtKes = v => `${Math.round(Number(v || 0)).toLocaleString()} KES`;
@@ -636,6 +641,7 @@ export class FinanceView {
     if (!listEl || !this.currentMetrics) return;
     const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
     const rows = (this.currentMetrics.consolidatedUnpaidOrders || this.currentMetrics.unpaidOrdersOnly || []).slice(0, 4);
+    const cashiers = this.cashierNames.bind(this);
     if (!rows.length) {
       listEl.innerHTML = '<div style="color:#a89074;font-size:12px;text-align:center;padding:14px 0;">All table bills settled</div>';
       return;
@@ -649,11 +655,18 @@ export class FinanceView {
         : 'Open';
       const href = `/orders?order=${encodeURIComponent(order.reference)}`;
       return `<div class="fin-side-item">
-        <span class="fin-side-ref">${escape(label)}</span>
+        <span class="fin-side-ref">${escape(label)}<span class="fin-side-cashier">${escape(cashiers(order))}</span></span>
         <span class="fin-side-time">${escape(timeStr)}</span>
         <a class="fin-side-amt" href="${href}" style="color:#e8a535;">${Math.round(Number(order.amount || 0)).toLocaleString()} KES →</a>
       </div>`;
     }).join('');
+  }
+
+  /** Who owns an unpaid bill: every cashier on a combined table, or nobody yet for a customer's own menu order. */
+  cashierNames(order) {
+    const staffName = this.staffNameResolver || (() => 'Unknown staff');
+    const ids = order.staff_ids || (order.staff_id ? [order.staff_id] : []);
+    return ids.length ? ids.map(id => staffName({ staff_id: id })).join(', ') : 'No cashier yet';
   }
 
   renderUnpaidOrdersTable() {
@@ -661,20 +674,19 @@ export class FinanceView {
     if (!unpaidOrdersEl || !this.currentMetrics) return;
     const report = this.currentMetrics;
     const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-    const staffName = this.staffNameResolver || (r => r.staff_id || 'Unassigned');
-
     const rows = this.consolidateByTable
       ? (report.consolidatedUnpaidOrders || report.unpaidOrdersOnly || [])
       : (report.unpaidOrdersOnly || report.unpaidOrders?.filter(o => o.source !== 'proforma') || []);
 
     unpaidOrdersEl.innerHTML = '<table class="fin-clean-table">'
-      + '<thead><tr><th>TIME</th><th>TABLE / REFERENCE</th><th>BILLS CONSOLIDATED</th><th>STAFF</th><th>AMOUNT (KES)</th><th>ACTION</th></tr></thead><tbody>'
+      + '<thead><tr><th>TIME</th><th>TABLE / REFERENCE · CASHIER</th><th>BILLS CONSOLIDATED</th><th>AMOUNT (KES)</th><th>ACTION</th></tr></thead><tbody>'
       + rows.map(order => {
         const isConsolidated = (order.roundCount || 1) > 1;
         const tableBadge = order.table_no
           ? `<span style="display:inline-block;background:#3a2410;color:#ffdfa8;border:1px solid rgba(232,165,53,0.45);padding:3px 10px;border-radius:999px;font-size:11px;font-weight:800;margin-right:8px;">Table ${escape(order.table_no)}</span>`
           : '';
-        const refLabel = `${tableBadge}<span class="fin-ref-code">${escape(order.reference)}</span>${order.customer_name ? ` · <span style="color:#a89074;">${escape(order.customer_name)}</span>` : ''}`;
+        const refLabel = `${tableBadge}<span class="fin-ref-code">${escape(order.reference)}</span>${order.customer_name ? ` · <span style="color:#a89074;">${escape(order.customer_name)}</span>` : ''}`
+          + `<div style="margin-top:4px;font-size:12px;color:#c7b299;">👤 ${escape(this.cashierNames(order))}</div>`;
         const billsInfo = isConsolidated
           ? `<strong style="color:#e8a535;">${order.roundCount} bills combined</strong> <span style="color:#a89074;font-size:11px;">(${escape((order.references || [order.reference]).join(', '))})</span>`
           : 'Single bill';
@@ -684,12 +696,11 @@ export class FinanceView {
           + '<td>' + escape(this.formatCleanTime(order.placed_at || order.invoice_date)) + '</td>'
           + '<td>' + refLabel + '</td>'
           + '<td>' + billsInfo + '</td>'
-          + '<td>' + escape(order.staff_id ? staffName(order) : 'Unassigned') + '</td>'
           + '<td style="font-weight:800;color:#fff;">' + Math.round(Number(order.amount || 0)).toLocaleString() + '</td>'
           + '<td><a class="fin-reconcile" href="' + actionHref + '">' + actionText + '</a></td>'
           + '</tr>';
       }).join('')
-      + (rows.length ? '' : '<tr><td colspan="6" style="text-align:center;color:#a89074;padding:24px;">No unpaid table or counter bills in this period. Formal Proforma Invoices are under the Proforma Invoices tab.</td></tr>')
+      + (rows.length ? '' : '<tr><td colspan="5" style="text-align:center;color:#a89074;padding:24px;">No unpaid table or counter bills in this period. Formal Proforma Invoices are under the Proforma Invoices tab.</td></tr>')
       + '</tbody></table>';
   }
 

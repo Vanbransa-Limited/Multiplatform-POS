@@ -553,3 +553,17 @@ test('a member of staff sees only their own money; the owner sees the whole orga
   assert.deepEqual(akashi.staffRundown.map(row => row.staff_id), ['akashi']);
   assert.equal(akashi.staffScope, 'akashi');
 });
+
+test('unpaid bills keep every cashier who served them, so a combined table names each one', () => {
+  const order = (id, table, staff) => ({ id, tenantId: 'tenant', branchId: 'b1', ref: id, tableNumber: table, totalMinor: 10000,
+    paymentStatus: 'unpaid', status: 'received', createdAt: date, ...(staff ? { updatedByStaffId: staff } : {}) });
+  const report = snapshot({ customerOrders: [
+    order('R1', '7', 'wanjiku'), order('R2', 'Table 7', 'mercy'), order('R3', '7', 'wanjiku'),
+    order('COUNTER', '', 'jane'), order('MENU', '', null),
+  ] });
+  const byRef = Object.fromEntries(report.consolidatedUnpaidOrders.map(row => [row.reference, row]));
+  assert.equal(byRef.R1.roundCount, 3);
+  assert.deepEqual(byRef.R1.staff_ids, ['wanjiku', 'mercy']);
+  assert.deepEqual(byRef.COUNTER.staff_ids, ['jane']);
+  assert.deepEqual(byRef.MENU.staff_ids, []);
+});

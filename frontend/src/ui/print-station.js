@@ -13,6 +13,15 @@ const RETRY_MS = [2_000, 4_000, 8_000, 15_000, 30_000];
 /** A job that fails to print this many times stops blocking the ones behind it. */
 const MAX_ATTEMPTS = 3;
 
+/** Per machine: the station starts itself unless Stop was pressed here. */
+const AUTO_START_KEY = 'pos_print_station_auto_start';
+function readAutoStart() {
+  try { return localStorage.getItem(AUTO_START_KEY) !== '0'; } catch { return true; }
+}
+function writeAutoStart(on) {
+  try { localStorage.setItem(AUTO_START_KEY, on ? '1' : '0'); } catch { /* defaults to on */ }
+}
+
 /**
  * The counter print station.
  *
@@ -160,10 +169,10 @@ export class PrintStationView {
     document.addEventListener('visibilitychange', this.onVisible);
     this.log(`Station opened. Branch: ${state.currentBranch?.name || 'none selected'}.`);
 
-    // Watching is not printing. The queue is listed as soon as this screen
-    // opens so somebody can walk up to the counter machine and print what is
-    // waiting; starting the station is what makes it print by itself.
-    await this.connect();
+    // Always on: opening this page starts printing, unless somebody pressed
+    // Stop on this machine. Otherwise the station lists the queue only.
+    if (readAutoStart()) await this.start();
+    else await this.connect();
   }
 
   /** Timestamped record of what the station actually did. */
@@ -189,6 +198,7 @@ export class PrintStationView {
     }
     this.running = true;
     this.retries = 0;
+    writeAutoStart(true);
     this.log('Station started.');
     this.container.querySelector('#station-toggle').textContent = 'Stop station';
 
@@ -276,7 +286,9 @@ export class PrintStationView {
    * Stops printing. The queue listener stays attached, because the list of
    * what is waiting is the reason somebody walks over to this machine.
    */
-  stop() {
+  stop({ remember = true } = {}) {
+    // Leaving the page is not pressing Stop; only the button turns auto-start off.
+    if (remember) writeAutoStart(false);
     this.running = false;
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = null;
@@ -290,7 +302,7 @@ export class PrintStationView {
 
   dispose() {
     this.disposed = true;
-    this.stop();
+    this.stop({ remember: false });
     if (this.unsubscribe) this.unsubscribe();
     this.unsubscribe = null;
     clearTimeout(this.retry);

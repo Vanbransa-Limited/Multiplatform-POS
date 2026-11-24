@@ -1,0 +1,177 @@
+/* Manager code sheet, Approval codes pane, and the till's order-details block. */
+
+.mcs-overlay { position: fixed; inset: 0; z-index: 3000; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(6, 4, 2, 0.74); backdrop-filter: blur(6px); }
+.mcs-sheet { width: 440px; max-width: 100%; max-height: calc(100vh - 32px); overflow-y: auto; box-sizing: border-box; padding: 30px 32px 22px; border-radius: 28px; background: linear-gradient(180deg, #21160c 0%, #150e08 100%); border: 1px solid rgba(232, 165, 53, 0.28); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 220, 170, 0.08); color: #f5ece0; text-align: center; outline: none; }
+.mcs-entry, .mcs-done { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.mcs-entry.hidden, .mcs-done.hidden, .mcs-keypad.hidden { display: none; }
+.mcs-icon { width: 72px; height: 72px; border-radius: 22px; display: flex; align-items: center; justify-content: center; background: linear-gradient(145deg, #f0b450, #b8701f); color: #1a1008; box-shadow: 0 10px 26px rgba(200, 131, 42, 0.35); }
+.mcs-sheet h2 { margin: 0; font-family: var(--font-display); font-size: 26px; font-weight: 700; }
+.mcs-sub { margin: 0; font-size: 14px; line-height: 1.5; color: #d9c4a8; }
+.mcs-chip { padding: 8px 14px; border-radius: 999px; background: rgba(232, 165, 53, 0.1); border: 1px solid rgba(232, 165, 53, 0.25); font-size: 13px; font-weight: 700; color: #e8a535; }
+.mcs-cells { display: flex; gap: 10px; margin-top: 4px; }
+.mcs-cell { width: 46px; height: 56px; box-sizing: border-box; border-radius: 14px; display: flex; align-items: center; justify-content: center; background: #0f0a06; border: 1px solid rgba(180, 120, 60, 0.22); }
+.mcs-cell.current { border: 2px solid #e8a535; box-shadow: 0 0 0 4px rgba(232, 165, 53, 0.12); }
+.mcs-cell.filled { background: rgba(232, 165, 53, 0.08); border-color: rgba(232, 165, 53, 0.4); }
+.mcs-cell.filled::after { content: ''; width: 12px; height: 12px; border-radius: 50%; background: #e8a535; box-shadow: 0 0 12px rgba(232, 165, 53, 0.6); }
+.mcs-cell.wrong { background: rgba(192, 74, 53, 0.12); border-color: rgba(243, 160, 140, 0.6); }
+.mcs-msg { margin: 0; min-height: 20px; font-size: 13px; color: #b99a78; }
+.mcs-msg.error { color: #f3a08c; }
+.mcs-keypad { display: grid; grid-template-columns: repeat(3, 66px); gap: 12px 24px; }
+.mcs-key, .mcs-key-gap { width: 66px; height: 66px; }
+.mcs-key { border-radius: 50%; border: 1px solid rgba(180, 120, 60, 0.2); background: rgba(255, 236, 210, 0.05); color: #f5ece0; font-family: var(--font-display); font-size: 26px; font-weight: 600; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.08s; }
+.mcs-key:active { transform: scale(0.94); }
+.mcs-key.hit { background: linear-gradient(180deg, #eeb04a, #c8832a); color: #1a1008; border: none; box-shadow: 0 8px 20px rgba(200, 131, 42, 0.35); }
+.mcs-key-del { background: transparent; border: none; }
+.mcs-key:focus-visible, .mcs-foot button:focus-visible { outline: 2px solid #e8a535; outline-offset: 3px; }
+.mcs-foot { width: 100%; margin-top: 4px; padding-top: 14px; border-top: 1px solid rgba(180, 120, 60, 0.14); display: flex; flex-direction: column; gap: 10px; font-size: 12px; color: #b99a78; }
+.mcs-foot-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.mcs-foot button { height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center; gap: 8px; font: 600 14px var(--font-main); cursor: pointer; }
+.mcs-keep { border: 1px solid rgba(180, 120, 60, 0.3); background: rgba(255, 236, 210, 0.03); color: #d9c4a8; }
+.mcs-remove { border: 1px solid rgba(243, 160, 140, 0.45); background: rgba(192, 74, 53, 0.14); color: #f3a08c; font-weight: 700 !important; }
+.mcs-done { padding: 24px 0 12px; }
+.mcs-done-icon { width: 80px; height: 80px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(125, 170, 90, 0.16); border: 1px solid rgba(125, 170, 90, 0.5); color: #b9d49f; }
+
+@media (max-width: 767px) {
+  .mcs-overlay { padding: 0; align-items: stretch; }
+  .mcs-sheet { width: 100%; max-height: none; border-radius: 0; border: none; padding: 28px 20px calc(20px + env(safe-area-inset-bottom, 0px)); background: radial-gradient(120% 60% at 50% 0%, #2a1a0c 0%, #0a0705 60%); display: flex; flex-direction: column; }
+  .mcs-entry { flex: 1; }
+  .mcs-cell { width: 44px; height: 54px; }
+  .mcs-keypad { grid-template-columns: repeat(3, 74px); gap: 14px 28px; }
+  .mcs-key, .mcs-key-gap { width: 74px; height: 74px; font-size: 28px; }
+  .mcs-foot { margin-top: auto; border-top: none; }
+  .mcs-foot button { height: 52px; border-radius: 16px; }
+}
+
+/* ---------- Till cart panel ---------- */
+#till-sale-panel { background: #140e08; border-radius: 20px; }
+#till-sale-panel .cart-header { padding: 16px 20px; border-bottom: 1px solid rgba(180, 120, 60, 0.12); }
+#till-sale-panel .till-tab-bar { padding: 14px 20px 6px; gap: 8px; border-bottom: none; background: transparent; box-shadow: none; }
+.till-field-label { font-size: 12px; font-weight: 600; color: #d9c4a8; }
+.till-order-type { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 4px; border-radius: 14px; background: #0f0a06; border: 1px solid rgba(180, 120, 60, 0.18); }
+.till-type-btn { min-height: 40px; border-radius: 10px; border: none; background: transparent; color: #d9c4a8; font: 700 14px var(--font-main); cursor: pointer; }
+.till-type-btn.active { background: linear-gradient(180deg, #eeb04a, #c8832a); color: #1a1008; box-shadow: 0 6px 16px rgba(200, 131, 42, 0.28); }
+.till-type-btn:focus-visible { outline: 2px solid #e8a535; outline-offset: 2px; }
+.till-table-field { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.till-table-field.hidden { display: none; }
+.till-table-select-wrap { position: relative; --select-bg: #0f0a06; --select-border: rgba(232, 165, 53, 0.45); }
+.till-table-select-wrap .pos-select-trigger { min-height: 46px; border-radius: 12px !important; font-weight: 600 !important; }
+.till-table-select-wrap:has(.till-table-badge:not(.hidden)) .pos-select-trigger { padding-right: 168px !important; }
+.till-table-badge { position: absolute; right: 38px; top: 50%; transform: translateY(-50%); pointer-events: none; padding: 3px 8px; border-radius: 999px; background: rgba(125, 170, 90, 0.16); color: #b9d49f; font-size: 11px; font-weight: 700; white-space: nowrap; }
+#till-table-input { min-height: 44px; padding: 0 12px; border-radius: 12px; background: #0f0a06; color: #f5ece0; border: 1px solid rgba(180, 120, 60, 0.3); font: 14px var(--font-main); }
+#till-sale-panel .till-tab-label { font-size: 12px; }
+
+#till-sale-panel .cart-list { padding: 8px 20px 12px; gap: 10px; }
+#till-sale-panel .cart-item { flex-direction: row; align-items: center; gap: 12px; padding: 10px; border-radius: 14px; background: rgba(42, 28, 14, 0.7); border: 1px solid rgba(180, 120, 60, 0.12); }
+.ci-thumb { width: 48px; height: 48px; flex-shrink: 0; border-radius: 10px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: linear-gradient(150deg, #3a2614, #1c1209); color: #e8a535; font: 700 14px var(--font-display); }
+.ci-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.ci-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.ci-top, .ci-bottom { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#till-sale-panel .ci-top .cart-item-title { font-size: 14px; font-weight: 600; line-height: 1.3; }
+#till-sale-panel .ci-top .cart-item-price { font-size: 14px; font-weight: 700; white-space: nowrap; color: #f5ece0; }
+.ci-each { font-size: 12px; color: #b99a78; }
+#till-sale-panel .cart-item-qty-control { display: flex; align-items: center; gap: 2px; padding: 0; border-radius: 999px; background: #0f0a06; border: 1px solid rgba(180, 120, 60, 0.22); }
+#till-sale-panel .qty-btn { width: 34px; height: 34px; border-radius: 50%; border: none; background: transparent; color: #f5ece0; font-size: 16px; }
+#till-sale-panel .qty-val { min-width: 18px; text-align: center; font-size: 13px; font-weight: 700; }
+#till-sale-panel .cart-item > .cart-item-remove { align-self: flex-start; width: 28px; height: 28px; border-radius: 8px; border: none; background: transparent; color: #b99a78; }
+
+#till-sale-panel .ci-discount { flex-direction: column; align-items: stretch; gap: 10px; }
+#till-sale-panel .ci-discount.awaiting { background: rgba(232, 165, 53, 0.07); border: 1px dashed rgba(232, 165, 53, 0.7); }
+#till-sale-panel .ci-discount.approved { background: rgba(125, 170, 90, 0.1); border: 1px solid rgba(125, 170, 90, 0.45); }
+.ci-discount-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.ci-discount-text { display: flex; flex-direction: column; gap: 2px; }
+.ci-discount-text .cart-item-title { font-size: 14px; font-weight: 600; }
+.ci-discount-state { font-size: 12px; color: #e8a535; }
+.ci-discount.approved .ci-discount-state { color: #b9d49f; }
+#till-sale-panel .ci-discount .cart-item-price { font-size: 14px; font-weight: 700; color: #e8a535; }
+#till-sale-panel .ci-discount.approved .cart-item-price { color: #b9d49f; }
+.ci-discount-actions { display: flex; gap: 8px; }
+.ci-approve { flex: 1.4; min-height: 42px; border-radius: 10px; border: none; background: #e8a535; color: #1a1008; font: 700 14px var(--font-main); cursor: pointer; }
+#till-sale-panel .ci-discount-remove { flex: 1; width: auto; min-height: 42px; border-radius: 10px; border: 1px solid rgba(243, 160, 140, 0.5); background: transparent; color: #f3a08c; font: 600 14px var(--font-main); cursor: pointer; }
+.ci-discount.approved .ci-discount-actions { justify-content: flex-end; }
+#till-sale-panel .ci-discount.approved .ci-discount-remove { flex: 0 0 auto; padding: 0 14px; }
+
+.till-discount-note { margin: 0 0 8px; font-size: 12px; color: #e8a535; text-align: center; }
+.till-discount-note.hidden { display: none; }
+#till-sale-panel .cart-customer-section { padding: 12px 20px; }
+#till-sale-panel .cart-summary { padding: 16px 20px 20px; background: #120c07; border-top: 1px solid rgba(180, 120, 60, 0.14); }
+#till-sale-panel .summary-row.total span:last-child { font-family: var(--font-display); font-size: 24px; font-weight: 800; }
+#till-sale-panel .checkout-btn { border-radius: 14px; min-height: 52px; background: linear-gradient(180deg, #eeb04a, #c8832a); color: #1a1008; font-weight: 800; box-shadow: 0 8px 20px rgba(200, 131, 42, 0.3); }
+#till-sale-panel .checkout-btn:disabled { opacity: 0.42; box-shadow: none; }
+#till-sale-panel #till-add-to-tab-btn { border-radius: 14px; border-color: rgba(232, 165, 53, 0.5); }
+
+/* ---------- QR & Tools › Approval codes ---------- */
+.acp { max-width: 880px; display: flex; flex-direction: column; gap: 22px; color: #f5ece0; }
+.acp-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.acp-head h2 { margin: 0 0 6px; font-family: var(--font-display); font-size: 28px; font-weight: 800; }
+.acp-muted { margin: 0; font-size: 13px; color: #b99a78; }
+.acp-pad { padding: 20px 22px; }
+.acp-error { margin: 0; padding: 12px 14px; border-radius: 12px; background: rgba(192, 74, 53, 0.14); color: #f3a08c; font-size: 13px; }
+.acp-primary { min-height: 46px; padding: 0 18px; border-radius: 14px; border: none; background: linear-gradient(180deg, #eeb04a, #c8832a); color: #1a1008; font: 800 14px var(--font-main); cursor: pointer; box-shadow: 0 10px 24px rgba(200, 131, 42, 0.28); }
+.acp-primary:disabled { opacity: 0.42; box-shadow: none; cursor: not-allowed; }
+.acp-secondary { min-height: 46px; padding: 0 16px; border-radius: 14px; border: 1px solid rgba(180, 120, 60, 0.3); background: transparent; color: #d9c4a8; font: 600 14px var(--font-main); cursor: pointer; }
+.acp-ghost { min-height: 44px; border-radius: 12px; border: 1px dashed rgba(232, 165, 53, 0.6); background: transparent; color: #e8a535; font: 700 14px var(--font-main); cursor: pointer; }
+.acp-wide { width: 100%; }
+.acp-tabs { display: inline-flex; align-self: flex-start; gap: 4px; padding: 4px; border-radius: 14px; background: #140e08; border: 1px solid rgba(180, 120, 60, 0.18); }
+.acp-tab { min-height: 38px; padding: 0 16px; border-radius: 10px; border: none; background: transparent; color: #b99a78; font: 700 14px var(--font-main); cursor: pointer; }
+.acp-tab.active { background: #2b1d10; color: #f5ece0; box-shadow: inset 0 0 0 1px rgba(232, 165, 53, 0.45); }
+.acp-card { border-radius: 20px; background: #140e08; border: 1px solid rgba(180, 120, 60, 0.14); overflow: hidden; }
+.acp-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 16px 20px; }
+.acp-row + .acp-row, .acp-log + .acp-log, .acp-rule + .acp-rule { border-top: 1px solid rgba(180, 120, 60, 0.12); }
+.acp-avatar { width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%; background: #2b1d10; display: flex; align-items: center; justify-content: center; font: 700 15px var(--font-display); color: #e8a535; }
+.acp-who { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.acp-name { font-size: 15px; font-weight: 600; }
+.acp-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.acp-access { min-width: 74px; text-align: right; font-size: 13px; font-weight: 600; color: #b99a78; }
+.acp-access.on { color: #b9d49f; }
+.acp-switch { width: 50px; height: 28px; padding: 3px; border-radius: 999px; border: none; background: #3a2a1a; display: flex; justify-content: flex-start; cursor: pointer; }
+.acp-switch.on { background: #7daa5a; justify-content: flex-end; }
+.acp-switch span { width: 22px; height: 22px; border-radius: 50%; background: #f5ece0; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4); }
+.acp-rotate { min-height: 40px; padding: 0 14px; border-radius: 12px; border: 1px solid rgba(232, 165, 53, 0.45); background: transparent; color: #f5ece0; font: 700 13px var(--font-main); display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.acp-rotate svg { color: #e8a535; }
+.acp-create { min-height: 40px; padding: 0 14px; border-radius: 12px; border: none; background: rgba(232, 165, 53, 0.14); color: #e8a535; font: 700 13px var(--font-main); cursor: pointer; }
+.acp-log { display: flex; gap: 16px; padding: 14px 20px; font-size: 14px; }
+.acp-log-time { flex: 0 0 110px; color: #b99a78; }
+.acp-log.refused span:last-child { color: #f3a08c; }
+.acp-rule { display: flex; justify-content: space-between; gap: 16px; padding: 14px 0; font-size: 14px; }
+.acp-rule span:last-child { font-weight: 600; text-align: right; }
+.acp-sheet { gap: 14px; display: flex; flex-direction: column; align-items: center; }
+.acp-form { width: 100%; display: flex; flex-direction: column; gap: 8px; text-align: left; }
+.acp-form label { font-size: 12px; font-weight: 600; color: #d9c4a8; }
+.acp-form select { min-height: 46px; }
+.acp-code-input { min-height: 60px; padding: 0 16px; border-radius: 14px; background: #0f0a06; border: 2px solid #e8a535; color: #f5ece0; font: 700 30px var(--font-display); letter-spacing: 16px; text-align: center; }
+.acp-hint { margin: 0; min-height: 18px; font-size: 12px; text-align: center; color: #b99a78; }
+.acp-hint.bad { color: #f3a08c; }
+.acp-hint.good { color: #b9d49f; }
+.acp-pair { width: 100%; display: grid; grid-template-columns: 1fr 1.4fr; gap: 8px; margin-top: 4px; }
+.acp-digits { display: flex; gap: 8px; }
+.acp-digits span { width: 46px; height: 58px; border-radius: 14px; display: flex; align-items: center; justify-content: center; background: rgba(232, 165, 53, 0.1); border: 1px solid rgba(232, 165, 53, 0.55); color: #e8a535; font: 800 30px var(--font-display); }
+.acp-once { margin: 0; font-size: 13px; color: #f3c58a; }
+.qt-pills { display: flex; flex-wrap: wrap; gap: 8px; padding: 16px 20px 0; }
+.qt-pill { min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(180, 120, 60, 0.25); background: transparent; color: #d9c4a8; font: 600 13px var(--font-main); cursor: pointer; }
+.qt-pill.active { background: #e8a535; border-color: #e8a535; color: #1a1008; font-weight: 700; }
+@media (max-width: 767px) {
+  .acp-row { padding: 14px; }
+  .acp-controls { width: 100%; justify-content: flex-end; }
+  .acp-rotate span { display: none; }
+  .acp-tabs { align-self: stretch; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .acp-head .acp-primary { width: 100%; }
+}
+
+/* Short screens (the counter machine): the panel scrolls as one column and the
+   totals with Add round / Pay stay pinned to its bottom edge. A fixed-height
+   panel that hid overflow pushed both buttons out of reach. */
+@media (min-width: 768px) {
+  #till-sale-panel { overflow-y: auto; overscroll-behavior: contain; }
+  #till-sale-panel .cart-list { flex: 1 0 auto; min-height: 96px; overflow: visible; }
+  #till-sale-panel .cart-summary { position: sticky; bottom: 0; z-index: 3; margin-top: auto; box-shadow: 0 -12px 24px rgba(0, 0, 0, 0.35); }
+}
+@media (min-width: 768px) and (max-height: 820px) {
+  #till-sale-panel .cart-header { padding: 10px 20px; }
+  #till-sale-panel .till-tab-bar { padding: 10px 20px 4px; gap: 6px; }
+  #till-sale-panel .till-type-btn { min-height: 36px; }
+  #till-sale-panel .cart-customer-section { padding: 8px 20px; }
+  #till-sale-panel .cart-summary { padding: 10px 20px 12px; }
+  #till-sale-panel .summary-row { font-size: 12px; }
+  #till-sale-panel .summary-row.total span:last-child { font-size: 20px; }
+  #till-sale-panel .checkout-btn, #till-sale-panel #till-add-to-tab-btn { min-height: 46px; }
+}

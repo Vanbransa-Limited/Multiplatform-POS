@@ -10,7 +10,9 @@ import { canSell } from '../navigation.js';
 const SELLING_OFF = 'Selling is switched off for your role. Ask the owner to switch it on in Settings → Staff & Access.';
 import { MpesaService } from '../services/mpesa';
 import { paginate, pagerHtml, bindPager } from '../services/paginate';
-import { DEVICE_ID, firebaseConfigured, openShift as openCloudShift } from '../services/firebase';
+import { DEVICE_ID, firebaseConfigured, openShift as openCloudShift, callFunction } from '../services/firebase';
+import { discountApprovalId, discountAwaitingCode, selfApproves, staffDiscountItem } from '../services/staff-discount';
+import { openManagerCodeSheet } from './manager-code-sheet';
 import {
   ensureMpesaAttempt,
   mpesaAttemptFingerprint,
@@ -24,11 +26,11 @@ import { escapeHtml, renderReceiptHtml } from '../services/print-receipt';
 import { etrFor, generateEtr } from '../services/etr';
 import { compareNames, pullCatalogue, pullSales } from '../services/catalogue';
 import { pullCustomers, saveCustomer } from '../services/customers';
-import { saleAsOrder, voidSale, settleSale, claimSalePayment } from '../services/customer-orders';
+import { saleAsOrder, voidSale, settleSale, claimSalePayment, roundKitchenTicket } from '../services/customer-orders';
 import { recordReceiptSettlement } from '../services/receipt-settlement';
 import { manualReceipt } from '../services/manual-receipt';
 import { pullStock } from '../services/stock';
-import { closingUpdate, newTab, OPEN, openTabAt, roundTotals, tabKey } from '../services/tabs';
+import { closingUpdate, newTab, OPEN, openTabAt, roundTotals, tabKey, tableChoices } from '../services/tabs';
 import { pullOpenOrders } from '../services/open-orders';
 import { removeTabLine, freeSettledTab, readOpenTabs } from '../services/tab-edit';
 import { tillDraftKey, readTillDraft, writeTillDraft } from '../services/till-draft';
@@ -63,9 +65,16 @@ export function getCanonicalCategoryName(rawName) {
   return rawName.trim();
 }
 
+const OTHER_TABLE = '__other__';
+/** The tables every floor has, offered even before anyone sits at them. */
+const PRESET_TABLES = ['1', '2', '3', '4', '5', '6', '7', '8', 'VIP 1', 'VIP 2', 'Bar 1', 'Bar 2'];
+
 export class TillView {
   constructor(container) {
     this.container = container;
+    // A refreshed menu reaches the product grid; the cart keeps what was rung.
+    this.onCatalogueUpdated = () => { if (!this.disposed && this.container.isConnected) void this.loadProducts().catch(() => {}); };
+    window.addEventListener('pos:catalogue-updated', this.onCatalogueUpdated);
     this.productPage = 1;
     this.catalogueProducts = [];
     this.filteredProducts = [];
@@ -118,6 +127,7 @@ export class TillView {
   }
 
   dispose() {
+    window.removeEventListener('pos:catalogue-updated', this.onCatalogueUpdated);
     clearTimeout(this.searchTimer);
     this.filterSheet?.dispose();
     this.persistDraft();
@@ -242,15 +252,22 @@ export class TillView {
                nobody can find. Always visible: the first tab of the night has
                to be openable from here, not only from inside checkout. -->
           <div id="till-tab-bar" class="till-tab-bar">
-            <div class="till-tab-row">
-              <!-- Open tables are suggested as one is typed; the floor itself
-                   lives in Tab Management rather than as chips over the cart. -->
-              <input type="text" id="till-table-input" list="till-table-options" placeholder="Takeaway — tap a table chip or type table">
-              <datalist id="till-table-options"></datalist>
-              <button type="button" class="sec-btn" id="till-tab-clear">Takeaway</button>
+            <span class="till-field-label" id="till-order-type-label">Order type</span>
+            <div class="till-order-type" role="radiogroup" aria-labelledby="till-order-type-label">
+              <button type="button" role="radio" class="till-type-btn" id="till-type-takeaway">Takeaway</button>
+              <button type="button" role="radio" class="till-type-btn" id="till-type-dine">Dine in</button>
             </div>
-            <!-- 1-Tap Quick Table Selector Chips for Tablet Speed (no virtual keyboard needed) -->
-            <div id="till-quick-table-chips" class="till-quick-table-chips" aria-label="Quick table selector"></div>
+            <!-- Open tabs first, then free tables. "Other table" types a name
+                 the list does not have, which opens a tab under it. -->
+            <div id="till-table-field" class="till-table-field hidden">
+              <label class="till-field-label" for="till-table-select">Table</label>
+              <div class="till-table-select-wrap">
+                <select id="till-table-select"></select>
+                <span id="till-table-badge" class="till-table-badge hidden"></span>
+              </div>
+              <input type="text" id="till-table-input" class="hidden" placeholder="Type a table name, e.g. Patio 3" aria-label="Other table name">
+            </div>
+            <datalist id="till-table-options"></datalist>
             <a href="/tabs" id="till-open-tabs-label" class="till-tab-label hidden"></a>
             <!-- Everything on the table so far, so an item nobody ordered can
                  be taken off before the bill is asked for. -->
@@ -323,6 +340,7 @@ export class TillView {
                  only exits from a cart were pay it or cancel it, so every
                  round a table did not settle on the spot was voided. -->
             <button class="sec-btn hidden" id="till-add-to-tab-btn" style="width:100%;margin-bottom:8px;min-height:46px;font-weight:700;">+ Add Round to Tab</button>
+            <p id="till-discount-note" class="till-discount-note hidden">Apply or remove the staff discount to continue.</p>
             <button class="checkout-btn" id="till-pay-now-btn" disabled>Print Receipt &amp; Pay</button>
             <p id="till-tab-due-note" class="hidden" style="margin-top:8px;text-align:center;font-size:11px;color:var(--text-secondary);"></p>
           </div>
@@ -666,23 +684,28 @@ export class TillView {
       this.renderOpenTabs();
     });
 
-    // 1-Tap Quick Table Selector Chips for Tablet Speed
-    document.getElementById('till-quick-table-chips')?.addEventListener('click', (event) => {
-      const chip = event.target.closest('[data-quick-table]');
-      if (!chip) return;
-      const picked = chip.getAttribute('data-quick-table');
-      if (!picked) {
-        this.clearActiveTab();
-        showNotification('Switched to Takeaway — direct counter sale.', 'info');
+    // Takeaway leaves any tab alone and starts a sale of its own; Dine in asks
+    // which table, from the open tabs and the free tables.
+    document.getElementById('till-type-takeaway').addEventListener('click', () => {
+      if (!this.activeTable && !this.dineIn) return;
+      this.clearActiveTab();
+    });
+    document.getElementById('till-type-dine').addEventListener('click', () => {
+      this.dineIn = true;
+      this.renderOpenTabs();
+      document.getElementById('till-table-select')?.focus();
+    });
+    document.getElementById('till-table-select').addEventListener('change', (event) => {
+      const picked = event.target.value;
+      const typed = document.getElementById('till-table-input');
+      if (picked === OTHER_TABLE) {
+        typed.classList.remove('hidden');
+        typed.value = '';
+        typed.focus();
         return;
       }
-      this.addToTab(picked);
-    });
-
-    // Leaves the tab alone and starts a sale of its own.
-    document.getElementById('till-tab-clear').addEventListener('click', () => {
-      this.clearActiveTab();
-      showNotification('Next sale is takeaway — its own order, not a round on a tab.', 'info');
+      typed.classList.add('hidden');
+      if (picked) this.addToTab(picked);
     });
 
     // Pay now triggers checkout modal
@@ -1205,17 +1228,14 @@ export class TillView {
       return;
     }
 
-    // Staff 20% Discount: toggle on/off, always qty 1. The server accepts it only
-    // from an owner or manager, so nobody else is offered it.
+    // Staff 20% Discount: toggle on/off, always qty 1. An owner or manager
+    // ringing the sale is their own approval; anyone else adds it as waiting
+    // and a manager types their code on this screen.
     if (product.id === 'prod-staff-discount') {
       if (existingIndex > -1) {
         this.cart.splice(existingIndex, 1);
         showNotification('Staff 20% Discount removed', 'warning');
         this.updateCartUI();
-        return;
-      }
-      if (!['Owner', 'Manager'].includes(state.currentUser?.role)) {
-        showNotification('Only the owner or a manager can give the staff discount.', 'error');
         return;
       }
       this.cart.unshift({
@@ -1225,8 +1245,9 @@ export class TillView {
         discount_percent: 20,
         batch: null
       });
-      showNotification('Staff 20% Discount applied', 'success');
       this.updateCartUI();
+      if (selfApproves(state.currentUser?.role)) showNotification('Staff 20% Discount applied', 'success');
+      else this.askManagerCode();
       return;
     }
 
@@ -1308,35 +1329,48 @@ export class TillView {
       const lineDiscount = Math.max(0, Number(item.discount_amount) || 0);
       const total = Math.max(0, rate * item.qty - lineDiscount);
 
-      const markup = `
-        <div class="cart-item-header" style="display: flex; align-items: center; gap: 8px;">
-          ${item.product.image_data ? `<img src="${item.product.image_data}" style="width: 24px; height: 24px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(200, 130, 42, 0.2);">` : `<div style="width: 24px; height: 24px; border-radius: 4px; background: rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--text-muted);">📷</div>`}
-          <span class="cart-item-title" style="flex: 1;">${item.product.name}</span>
-          <button class="cart-item-remove" data-idx="${index}">✕</button>
-        </div>
-        ${item.batch ? `
-          <div class="cart-item-batch-info">
-            <span>Batch: ${item.batch.batch_no}</span>
-            <span>Exp: ${item.batch.expiry_date}</span>
+      const awaiting = isStaffDiscountCartItem && discountAwaitingCode(this.cart, state.currentUser?.role);
+      const initials = String(item.product.name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join('').toUpperCase();
+      const removeButton = `<button type="button" class="cart-item-remove" data-idx="${index}" aria-label="Remove ${escapeHtml(item.product.name)}">✕</button>`;
+      const markup = isStaffDiscountCartItem ? `
+        <div class="ci-discount-head">
+          <div class="ci-discount-text">
+            <span class="cart-item-title">Staff 20% Discount</span>
+            <span class="ci-discount-state">${awaiting ? 'Waiting for a manager code'
+              : item.approval?.by ? `Approved by ${escapeHtml(item.approval.by)}` : 'Applied'}</span>
           </div>
-        ` : ''}
-        <div class="cart-item-details">
-          ${isVipCartItem ? '<span style="font-size:11px;color:var(--accent-amber);font-weight:700;">+30% Surcharge</span>' :
-            (isStaffDiscountCartItem ? '<span style="font-size:11px;color:var(--accent-green);font-weight:700;">-20% Staff Disc</span>' : `
-          <div class="cart-item-qty-control">
-            <button class="qty-btn dec" data-idx="${index}">-</button>
-            <span class="qty-val"></span>
-            <button class="qty-btn inc" data-idx="${index}">+</button>
-          </div>`)}
           <span class="cart-item-price"></span>
         </div>
+        <div class="ci-discount-actions">
+          ${awaiting ? `<button type="button" class="ci-approve">Enter manager code</button>` : ''}
+          <button type="button" class="cart-item-remove ci-discount-remove" data-idx="${index}">Remove</button>
+        </div>
+      ` : `
+        <div class="ci-thumb">${item.product.image_data ? `<img src="${item.product.image_data}" alt="">` : escapeHtml(initials)}</div>
+        <div class="ci-body">
+          <div class="ci-top">
+            <span class="cart-item-title">${escapeHtml(item.product.name)}</span>
+            <span class="cart-item-price"></span>
+          </div>
+          ${item.batch ? `<div class="cart-item-batch-info"><span>Batch: ${escapeHtml(item.batch.batch_no)}</span><span>Exp: ${escapeHtml(item.batch.expiry_date)}</span></div>` : ''}
+          <div class="ci-bottom">
+            <span class="ci-each">${isVipCartItem ? '+30% surcharge' : `KES ${Number(rate || 0).toFixed(2)} each`}</span>
+            ${isVipCartItem ? '' : `<div class="cart-item-qty-control">
+              <button type="button" class="qty-btn dec" data-idx="${index}" aria-label="One less ${escapeHtml(item.product.name)}">−</button>
+              <span class="qty-val"></span>
+              <button type="button" class="qty-btn inc" data-idx="${index}" aria-label="One more ${escapeHtml(item.product.name)}">+</button>
+            </div>`}
+          </div>
+        </div>
+        ${removeButton}
       `;
 
       const updateValues = (element) => {
         const quantity = element.querySelector('.qty-val');
         if (quantity && quantity.textContent !== String(item.qty)) quantity.textContent = String(item.qty);
         const price = element.querySelector('.cart-item-price');
-        const label = isVipCartItem ? 'VIP' : (isStaffDiscountCartItem ? '-20%' : 'KES ' + total.toFixed(2));
+        const amount = this.totals?.staffDiscount || this.totals?.staffDiscountPending || 0;
+        const label = isVipCartItem ? 'VIP' : (isStaffDiscountCartItem ? `−${amount.toFixed(2)}` : total.toFixed(2));
         if (price.textContent !== label) price.textContent = label;
       };
 
@@ -1351,17 +1385,18 @@ export class TillView {
         return;
       }
       const div = document.createElement('div');
-      div.className = 'cart-item';
+      div.className = isStaffDiscountCartItem ? `cart-item ci-discount ${awaiting ? 'awaiting' : 'approved'}` : 'cart-item';
       div.innerHTML = markup;
       updateValues(div);
 
       // Remove item listener
       div.querySelector('.cart-item-remove').addEventListener('click', (e) => {
         this.invalidateMpesaAttempt();
-        const idx = parseInt(e.target.getAttribute('data-idx'));
+        const idx = parseInt(e.currentTarget.getAttribute('data-idx'));
         this.cart.splice(idx, 1);
         this.updateCartUI();
       });
+      div.querySelector('.ci-approve')?.addEventListener('click', () => this.askManagerCode());
 
       // Quantity increment/decrement listener (VIP and Staff Discount items have no qty controls)
       const decBtn = div.querySelector('.qty-btn.dec');
@@ -1369,7 +1404,7 @@ export class TillView {
       if (decBtn) {
         decBtn.addEventListener('click', (e) => {
           this.invalidateMpesaAttempt();
-          const idx = parseInt(e.target.getAttribute('data-idx'));
+          const idx = parseInt(e.currentTarget.getAttribute('data-idx'));
           if (this.cart[idx].qty > 1) {
             this.cart[idx].qty--;
           } else {
@@ -1381,7 +1416,7 @@ export class TillView {
       if (incBtn) {
         incBtn.addEventListener('click', (e) => {
           this.invalidateMpesaAttempt();
-          const idx = parseInt(e.target.getAttribute('data-idx'));
+          const idx = parseInt(e.currentTarget.getAttribute('data-idx'));
           this.cart[idx].qty++;
           this.updateCartUI();
         });
@@ -1430,8 +1465,12 @@ export class TillView {
     if (hasVip) {
       vipSurcharge = subtotal * 0.30;
     }
+    // A discount still waiting for a manager's code is shown, not taken.
+    const awaitingCode = discountAwaitingCode(this.cart, state.currentUser?.role);
+    let staffDiscountPending = 0;
     if (hasStaffDiscount) {
-      staffDiscount = subtotal * 0.20;
+      if (awaitingCode) staffDiscountPending = subtotal * 0.20;
+      else staffDiscount = subtotal * 0.20;
     }
 
     const total = Math.max(0, subtotal + vipSurcharge - staffDiscount - discount);
@@ -1447,7 +1486,7 @@ export class TillView {
     const staffRow = document.getElementById('summary-staff-disc-row');
     if (staffRow) {
       staffRow.style.display = hasStaffDiscount ? '' : 'none';
-      if (hasStaffDiscount) document.getElementById('summary-staff-disc-amount').textContent = `-KES ${staffDiscount.toFixed(2)}`;
+      if (hasStaffDiscount) document.getElementById('summary-staff-disc-amount').textContent = awaitingCode ? 'waiting' : `-KES ${staffDiscount.toFixed(2)}`;
     }
 
     document.getElementById('summary-discount').textContent = `KES ${discount.toFixed(2)}`;
@@ -1455,7 +1494,7 @@ export class TillView {
     document.getElementById('summary-total').textContent = `KES ${total.toFixed(2)}`;
 
     // Store calculations on class reference
-    this.totals = { subtotal, discount, tax, total, vipSurcharge, staffDiscount };
+    this.totals = { subtotal, discount, tax, total, vipSurcharge, staffDiscount, staffDiscountPending };
     // The tab buttons quote the cart plus what is already owed, so they move
     // with the cart rather than only when the tab list reloads.
     this.renderTabActions();
@@ -2436,48 +2475,45 @@ export class TillView {
     label.classList.toggle('hidden', tabs.length === 0);
     label.textContent = `${tabs.length} open tab${tabs.length === 1 ? '' : 's'} · Manage tabs →`;
 
-    // Populate 1-Tap Quick Table Chips so tablet users can switch tables without opening virtual keyboard
-    const quickStrip = document.getElementById('till-quick-table-chips');
-    if (quickStrip) {
-      const openMap = new Map(tabs.map((tab) => [tabKey(tab.table), tab]));
-      const presetTables = ['1', '2', '3', '4', '5', '6', '7', '8', 'VIP 1', 'VIP 2', 'Bar 1', 'Bar 2'];
-      const mergedTables = [...tabs.map((t) => String(t.table))];
-      for (const preset of presetTables) {
-        if (!mergedTables.some((existing) => tabKey(existing) === tabKey(preset))) {
-          mergedTables.push(preset);
-        }
-      }
-      const activeKey = tabKey(this.activeTable);
-      const takeawaySelected = !this.activeTable;
-      const chipNodes = [];
-
-      const takeawayChip = document.createElement('button');
-      takeawayChip.type = 'button';
-      takeawayChip.className = `till-table-chip ${takeawaySelected ? 'active' : ''}`;
-      takeawayChip.setAttribute('data-quick-table', '');
-      takeawayChip.textContent = 'Takeaway';
-      chipNodes.push(takeawayChip);
-
-      for (const tableName of mergedTables) {
-        const key = tabKey(tableName);
-        const openTab = openMap.get(key);
-        const isSelected = Boolean(this.activeTable && key === activeKey);
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = `till-table-chip ${isSelected ? 'active' : ''} ${openTab ? 'has-open-tab' : ''}`;
-        btn.setAttribute('data-quick-table', tableName);
-        const shortLabel = /^(vip|bar|patio|table)/i.test(tableName) ? tableName : `T${tableName}`;
-        btn.textContent = openTab
-          ? `${shortLabel} · ${Math.round(openTab.dueMinor / 100).toLocaleString()}`
-          : shortLabel;
-        chipNodes.push(btn);
-      }
-      quickStrip.replaceChildren(...chipNodes);
+    // Order type and the Table dropdown, rebuilt from the same open tabs.
+    const dineIn = Boolean(this.activeTable || this.dineIn);
+    for (const [id, on] of [['till-type-takeaway', !dineIn], ['till-type-dine', dineIn]]) {
+      const button = document.getElementById(id);
+      if (!button) continue;
+      button.classList.toggle('active', on);
+      button.setAttribute('aria-checked', String(on));
     }
-
-    // Never while it is being typed into, or the cursor jumps mid-word.
+    document.getElementById('till-table-field')?.classList.toggle('hidden', !dineIn);
+    const select = document.getElementById('till-table-select');
     const input = document.getElementById('till-table-input');
-    if (input && document.activeElement !== input) input.value = this.activeTable || '';
+    if (select) {
+      const choices = tableChoices(tabs, PRESET_TABLES, this.activeTable);
+      const option = (value, text) => Object.assign(document.createElement('option'), { value, textContent: text });
+      const group = (label, items) => {
+        const node = document.createElement('optgroup');
+        node.label = label;
+        node.append(...items.map((item) => option(item.value, item.label)));
+        return node;
+      };
+      select.replaceChildren(
+        Object.assign(option('', 'Choose a table…'), { disabled: true }),
+        ...(choices.open.length ? [group('Open tabs', choices.open)] : []),
+        group('Free tables', choices.free),
+        option(OTHER_TABLE, 'Other table…'),
+      );
+      const typing = input && !input.classList.contains('hidden') && !this.activeTable;
+      select.value = choices.typed || typing ? OTHER_TABLE : choices.selected;
+      // Never while it is being typed into, or the cursor jumps mid-word.
+      if (input) {
+        input.classList.toggle('hidden', !(choices.typed || typing));
+        if (document.activeElement !== input) input.value = choices.typed ? this.activeTable : input.value;
+      }
+      const badge = document.getElementById('till-table-badge');
+      if (badge) {
+        badge.textContent = choices.badge;
+        badge.classList.toggle('hidden', !choices.badge);
+      }
+    }
 
     document.getElementById('till-tab-bar')?.classList.toggle('on-tab', Boolean(this.activeTable));
 
@@ -2528,6 +2564,59 @@ export class TillView {
       return true;
     } finally {
       this.finalizingInvoice = false;
+    }
+  }
+
+  /**
+   * Asks a manager for their code to approve the staff discount on this cart.
+   * The approval rides on the discount line and goes to the server with the
+   * sale, which checks it again and uses it up.
+   */
+  askManagerCode() {
+    const item = staffDiscountItem(this.cart);
+    if (!item || item.approval?.id) return;
+    const where = this.activeTable ? `Table ${this.activeTable}` : 'Takeaway';
+    openManagerCodeSheet({
+      subtitle: `Approve the Staff 20% Discount for ${state.currentUser?.name || 'this sale'}`,
+      chip: `−KES ${(this.totals?.staffDiscount || 0).toFixed(2)} · ${where}`,
+      approve: async (code) => {
+        const result = await callFunction('approveStaffDiscount', { code });
+        const current = staffDiscountItem(this.cart);
+        if (current) current.approval = { id: result.approvalId, by: result.approvedByName };
+        this.cartRows = new WeakMap();
+        this.updateCartUI();
+        return result.approvedByName;
+      },
+      onRemove: () => {
+        const index = this.cart.indexOf(staffDiscountItem(this.cart));
+        if (index > -1) this.cart.splice(index, 1);
+        this.invalidateMpesaAttempt();
+        this.updateCartUI();
+        showNotification('Staff discount removed.', 'warning');
+      },
+    });
+  }
+
+  /**
+   * Queues the round's kitchen ticket; a running print station prints it at
+   * once. Never blocks the round: it is already on the tab either way.
+   */
+  async sendRoundToKitchen(saleId, items, { pending = true } = {}) {
+    try {
+      const sale = await db.sales.get(saleId);
+      const tab = sale?.tab_id ? await db.tabs.get(sale.tab_id) : null;
+      const receipt = roundKitchenTicket({
+        ref: tab?.order_no || sale?.invoice_no, tableNumber: sale?.table_no || '',
+        customerName: this.selectedCustomer?.name, staffName: state.currentUser?.name, items,
+        onTab: Boolean(tab), paid: !pending, paymentMethod: pending ? '' : this.selectedPaymentMethod,
+      });
+      if (!receipt) return;
+      const branchId = state.currentBranch?.id;
+      const [jobId, online] = await Promise.all([enqueuePrintJob({ branchId, receipt }), isStationOnline(branchId)]);
+      if (!jobId) showNotification('Kitchen ticket was not queued. Tell the kitchen by hand.', 'error');
+      else if (!online) showNotification('Kitchen ticket queued, but the print station is off. Open Print Station on the counter machine.', 'warning');
+    } catch {
+      showNotification('Kitchen ticket was not queued. Tell the kitchen by hand.', 'error');
     }
   }
 
@@ -2682,6 +2771,7 @@ export class TillView {
   }
 
   clearActiveTab() {
+    this.dineIn = false;
     this.tabOnly = false;
     this.activeTable = null;
     this.activeTabId = null;
@@ -2795,6 +2885,16 @@ export class TillView {
     // An empty cart can still settle a tab that already has rounds on it.
     if (onTab && dueMinor > 0) pay.disabled = false;
 
+    // A staff discount waiting for a manager's code holds the sale until it is
+    // approved or removed; the server would refuse it anyway.
+    const awaiting = discountAwaitingCode(this.cart, state.currentUser?.role);
+    if (awaiting) { pay.disabled = true; add.disabled = true; }
+    const gate = document.getElementById('till-discount-note');
+    if (gate) gate.classList.toggle('hidden', !awaiting);
+    const discountPrice = document.querySelector('#cart-list .ci-discount .cart-item-price');
+    const amount = this.totals?.staffDiscount || this.totals?.staffDiscountPending || 0;
+    if (discountPrice) discountPrice.textContent = `−${amount.toFixed(2)}`;
+
     note.classList.toggle('hidden', !(onTab && dueMinor > 0));
     note.innerText = onTab && dueMinor > 0
       ? `${tab.unpaidRounds.length} round${tab.unpaidRounds.length === 1 ? '' : 's'} already on this tab · KES ${(dueMinor / 100).toFixed(2)}`
@@ -2864,6 +2964,11 @@ export class TillView {
    * it applies both once the money is real.
    */
   async registerOrder(paymentRecords, { pending }) {
+    if (discountAwaitingCode(this.cart, state.currentUser?.role)) {
+      showNotification('Apply or remove the staff discount first.', 'warning');
+      this.askManagerCode();
+      return false;
+    }
     if (!this.cart.some(item => !['prod-staff-discount', 'prod-table-service'].includes(item.product.id))) {
       showNotification('Add an item before saving a round. A discount or service charge cannot be a round on its own.', 'warning');
       return false;
@@ -2977,6 +3082,8 @@ export class TillView {
       // What ties this round to the nine o'clock one at the same table.
       tab_id: null,
       buyer_pin: buyerPin,
+      // A waiter's staff discount carries the manager approval it was given.
+      discount_approval_id: discountApprovalId(this.cart),
       // Recorded so that subtotal - discount is exactly what was charged.
       subtotal: recorded.subtotal,
       discount: recorded.discount,
@@ -3125,6 +3232,8 @@ export class TillView {
       }
     } catch {}
 
+    // Every new order reaches the kitchen: tab rounds, Pay Now and direct checkout.
+    void this.sendRoundToKitchen(registered.saleId, [...this.cart], { pending });
     return registered;
   }
 
@@ -3495,6 +3604,7 @@ export class TillView {
       tableNo: sale.table_no || null,
       buyerPin: sale.buyer_pin || null,
       lines: lines.map((line) => ({
+        productId: line.product_id,
         name: line.product_name || prodMap.get(line.product_id)?.name || 'Unknown Item',
         qty: line.qty,
         unitPrice: line.unit_price,
@@ -3504,8 +3614,8 @@ export class TillView {
       // A tab's bill totals every round it just settled, not the last one.
       // An ordinary sale keeps its own recorded figures untouched.
       ...(settledRoundIds?.length > 1
-        ? { subtotal: this.totals.subtotal, taxTotal: this.totals.tax, grandTotal: this.totals.total }
-        : { subtotal: sale.subtotal, taxTotal: sale.tax_total, grandTotal: sale.grand_total }),
+        ? { subtotal: recordedSaleTotals(this.totals).subtotal, discountTotal: recordedSaleTotals(this.totals).discount, taxTotal: this.totals.tax, grandTotal: this.totals.total }
+        : { subtotal: sale.subtotal, discountTotal: sale.discount, taxTotal: sale.tax_total, grandTotal: sale.grand_total }),
       paymentMethod: payment.method,
       paymentReference: payment.reference || null,
       // A proforma is a demand for money, not proof of it. The paper has to

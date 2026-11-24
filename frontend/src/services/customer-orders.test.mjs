@@ -228,3 +228,35 @@ test('an owner can drop the branch filter and see the whole business', () => {
   assert.equal(all.count, 2);
   assert.equal(orderStats(orders, 'b1').find((tile) => tile.id === 'all').count, 1);
 });
+
+test('a tab round becomes a priceless kitchen ticket without the till pseudo-products', async () => {
+  const { roundKitchenTicket } = await import('./customer-orders.js');
+  const { renderReceiptHtml } = await import('./print-receipt.js');
+  const ticket = roundKitchenTicket({
+    ref: 'ORD-12', tableNumber: 7, customerName: 'Walk-in', staffName: 'Kester', onTab: true,
+    items: [
+      { product: { id: 'p1', name: 'Tusker', sell_price: 350 }, qty: 2 },
+      { product: { id: 'prod-staff-discount', name: 'Staff discount' }, qty: 1 },
+      { product: { id: 'prod-table-service', name: 'VIP' }, qty: 1 },
+    ],
+  });
+  assert.deepEqual(ticket.lines, [{ name: 'Tusker', qty: 2 }]);
+  assert.equal(ticket.kind, 'kitchen');
+  assert.equal(ticket.tableNumber, '7');
+  const html = renderReceiptHtml(ticket);
+  assert.match(html, /KITCHEN ORDER/);
+  assert.match(html, /TABLE 7/);
+  assert.match(html, /ON TAB/);
+  assert.match(html, /Kester/);
+  assert.doesNotMatch(html, /350/);
+  assert.equal(roundKitchenTicket({ ref: 'x', items: [{ product: { id: 'prod-staff-discount' }, qty: 1 }] }), null);
+});
+
+test('a paid counter order prints as takeaway and paid', async () => {
+  const { roundKitchenTicket } = await import('./customer-orders.js');
+  const { renderReceiptHtml } = await import('./print-receipt.js');
+  const html = renderReceiptHtml(roundKitchenTicket({ ref: 'INV-1', paid: true, paymentMethod: 'CASH',
+    items: [{ product: { id: 'p1', name: 'Chips' }, qty: 1 }] }));
+  assert.match(html, /TAKEAWAY/);
+  assert.match(html, /PAID CASH/);
+});

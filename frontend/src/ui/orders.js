@@ -8,7 +8,7 @@ import {
   settleCustomerOrderBank, settleCustomerOrderCash, settleSale, claimSalePayment,
 } from '../services/customer-orders';
 import { pullSales } from '../services/catalogue';
-import { pullOpenOrders } from '../services/open-orders';
+import { pullOpenOrders, collapseOpenOrders } from '../services/open-orders';
 import { quickFinancialPeriod, tradingRange } from '../services/financial-period';
 import { pullTradingHours, cachedTradingHours } from '../services/trading-hours';
 import { pullStaff } from '../services/staff';
@@ -578,8 +578,10 @@ export class OrdersView {
     // Other tills' open tables, named the same way as everything else so the
     // board reads as one floor rather than as this device plus a footnote.
     const knownRounds = new Set(this.posOrders.flatMap(order => order.roundUuids || [order.saleUuid]).filter(Boolean));
-    const remote = (this.remoteOpenOrders || [])
-      .filter(order => !order.saleUuids?.length || !order.saleUuids.every(uuid => knownRounds.has(uuid)))
+    // Collapsed after the local filter so a merged bill never carries a round
+    // this board already shows from the ledger.
+    const remote = collapseOpenOrders((this.remoteOpenOrders || [])
+      .filter(order => !order.saleUuids?.length || !order.saleUuids.every(uuid => knownRounds.has(uuid))))
       .map((order) => ({
       ...order,
       cashierName: order.cashierName || handledBy(order, this.staffNames),
@@ -1661,7 +1663,7 @@ export class OrdersView {
     }
     const sum = (field) => rounds.reduce((total, round) => total + (Number(round[field]) || 0), 0);
     const sale = rounds.length > 1
-      ? { ...rounds[0], subtotal: sum('subtotal'), tax_total: sum('tax_total'), grand_total: sum('grand_total') }
+      ? { ...rounds[0], subtotal: sum('subtotal'), discount: sum('discount'), tax_total: sum('tax_total'), grand_total: sum('grand_total') }
       : rounds[0];
     if (!sale) {
       if (isTab) {
@@ -1689,7 +1691,7 @@ export class OrdersView {
         })),
       })));
       lines = combined.lines;
-      Object.assign(sale, { subtotal: combined.subtotal, tax_total: combined.tax_total, grand_total: combined.grand_total });
+      Object.assign(sale, { subtotal: combined.subtotal, discount: combined.discount, tax_total: combined.tax_total, grand_total: combined.grand_total });
     }
 
     // No invented identity: a placeholder here prints on a customer's receipt.
@@ -1768,6 +1770,10 @@ export class OrdersView {
           <span>Subtotal:</span>
           <span>KES ${isTab ? Number(sale.subtotal).toFixed(2) : sale.subtotal ? sale.subtotal.toFixed(2) : (sale.grand_total * 0.84).toFixed(2)}</span>
         </div>
+        ${Number(sale.discount) > 0 ? `<div style="display: flex; justify-content: space-between;">
+          <span>Discount:</span>
+          <span>-KES ${Number(sale.discount).toFixed(2)}</span>
+        </div>` : ''}
         <div style="display: flex; justify-content: space-between;">
           <span>VAT (16%):</span>
           <span>KES ${isTab ? Number(sale.tax_total).toFixed(2) : sale.tax_total ? sale.tax_total.toFixed(2) : (sale.grand_total * 0.16).toFixed(2)}</span>

@@ -205,7 +205,7 @@ export function tabOwes(rounds, paymentsBySale, asOrder) {
 /** One unpaid bill, preserving round totals even when product prices changed. */
 export function mergeTabLines(rounds) {
   const lines = new Map();
-  const totals = { subtotal: 0, tax_total: 0, grand_total: 0, dueMinor: 0, totalMinor: 0 };
+  const totals = { subtotal: 0, discount: 0, tax_total: 0, grand_total: 0, dueMinor: 0, totalMinor: 0 };
   for (const round of rounds || []) {
     if (round.paymentStatus !== 'unpaid' || round.status === 'VOIDED') continue;
     for (const field of Object.keys(totals)) totals[field] += Number(round[field]) || 0;
@@ -219,4 +219,34 @@ export function mergeTabLines(rounds) {
     }
   }
   return { lines: [...lines.values()], ...totals };
+}
+
+const tableLabel = (table) => (/^\d/.test(String(table)) ? `Table ${table}` : String(table));
+
+/**
+ * What the till's Table dropdown offers: open tabs first, with what each owes,
+ * then the preset tables nobody is sitting at. A table typed by hand that is
+ * in neither list stays selected as typed.
+ */
+export function tableChoices(tabs, presets, activeTable) {
+  const open = (tabs || []).map((tab) => {
+    const rounds = tab.rounds?.length || 0;
+    return {
+      value: String(tab.table),
+      label: `${tableLabel(tab.table)} · ${rounds} round${rounds === 1 ? '' : 's'} · KES ${Math.round((tab.dueMinor || 0) / 100).toLocaleString('en-KE')}`,
+      rounds,
+    };
+  });
+  const free = (presets || [])
+    .filter((table) => !open.some((tab) => tabKey(tab.value) === tabKey(table)))
+    .map((table) => ({ value: String(table), label: tableLabel(table) }));
+  const key = tabKey(activeTable);
+  const match = activeTable ? [...open, ...free].find((option) => tabKey(option.value) === key) : null;
+  const openMatch = match && open.find((option) => option.value === match.value);
+  return {
+    open, free,
+    selected: match ? match.value : '',
+    typed: Boolean(activeTable) && !match,
+    badge: openMatch ? `Open tab · ${openMatch.rounds} round${openMatch.rounds === 1 ? '' : 's'}` : '',
+  };
 }

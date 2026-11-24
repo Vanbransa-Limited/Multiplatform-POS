@@ -29,6 +29,8 @@ export function saleRequestFingerprint(input: SaleFingerprintInput): string {
       idempotencyKey: input.idempotencyKey,
       tableNumber: input.tableNumber,
       buyerKraPin: input.buyerKraPin,
+      // Absent on every older sale, so JSON leaves their fingerprints unchanged.
+      discountApprovalId: input.discountApprovalId,
       lines: input.lines,
       payments: input.payments,
     }))

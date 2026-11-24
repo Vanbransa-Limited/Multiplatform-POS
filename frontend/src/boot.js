@@ -276,6 +276,11 @@ export async function resumeStaffSession() {
       await ensureLocalShiftForUser(localUser);
       return localUser;
     }
+    // A reload while sign-out was still uploading orders finishes the sign-out.
+    if (localStorage.getItem('pos_sign_out_pending')) {
+      await endCloudSession();
+      return null;
+    }
     const restored = await restoreSession();
     if (restored) await ensureLocalShiftForUser(restored);
     return restored;
@@ -356,6 +361,7 @@ export async function endCloudSession() {
   state.cloudShiftId = null;
   if (typeof window !== 'undefined') {
     localStorage.removeItem('pos_local_staff_session');
+    try { localStorage.removeItem('pos_sign_out_pending'); } catch { /* nothing to clear */ }
   }
   try {
     const { firebaseConfigured, signOutTill } = await import('./services/firebase.js');

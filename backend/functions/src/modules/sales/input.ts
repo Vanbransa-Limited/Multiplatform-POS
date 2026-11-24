@@ -142,6 +142,7 @@ export function parseSaleInput(value: unknown): ParsedSaleInput {
     ...(input.tabId ? { tabId: documentId(input.tabId, 'tabId') } : {}),
     ...(input.orderReference ? { orderReference: optionalText(input.orderReference, 'orderReference', 60) ?? undefined } : {}),
     buyerKraPin,
+    ...(input.discountApprovalId ? { discountApprovalId: documentId(input.discountApprovalId, 'discountApprovalId') } : {}),
     lines: parseLines(input.lines),
     payments: parsePayments(input.payments),
   };

@@ -44,6 +44,9 @@ export class StockView {
    * server, which is what actually enforces it.
    */
   get canCount() { return ['Owner', 'Manager', 'Store Manager', 'Supervisor'].includes(state.currentUser?.role); }
+  // The server's upsertProduct rule: a store manager may add an item, unpriced.
+  get canAddItem() { return ['Owner', 'Manager', 'Store Manager'].includes(state.currentUser?.role); }
+  get canPriceItem() { return ['Owner', 'Manager'].includes(state.currentUser?.role); }
   /** Booking a delivery is Storeman's job; requesting stock into House is Barman's job. */
   get canWrite() {
     const role = state.currentUser?.role;
@@ -241,7 +244,7 @@ export class StockView {
 
         <div class="stk-actions" aria-label="Stock actions">
           ${this.canWrite ? `<button type="button" class="stk-action" data-stock-panel="entry" aria-controls="stk-entry-panel" aria-expanded="${this.openPanel === 'entry'}">${copy.formTitle}</button>` : ''}
-          ${this.canCount ? `<button type="button" class="stk-action" data-stock-panel="new" aria-controls="stk-new-panel" aria-expanded="${this.openPanel === 'new'}">Add new item</button>
+          ${this.canCount ? `${this.canAddItem ? `<button type="button" class="stk-action" data-stock-panel="new" aria-controls="stk-new-panel" aria-expanded="${this.openPanel === 'new'}">Add new item</button>` : ''}
           <button type="button" class="stk-action" data-stock-panel="adjust" aria-controls="stk-adjust-panel" aria-expanded="${this.openPanel === 'adjust'}">Add / Remove stock</button>
           <button type="button" class="stk-action" data-stock-panel="take" aria-controls="stk-take-panel" aria-expanded="${this.openPanel === 'take'}">Stock take</button>` : ''}
           ${this.canImport ? `<button type="button" class="stk-action" data-stock-panel="import" aria-controls="stk-import-panel" aria-expanded="${this.openPanel === 'import'}">${this.canReceiveImport ? `Import stock into ${this.location === 'STORE' ? 'Store' : 'House'}` : 'Import a House stock count'}</button>` : ''}
@@ -358,7 +361,7 @@ export class StockView {
             <div class="stk-field grow"><label for="stk-new-name">Name</label><input id="stk-new-name" name="name" type="text" maxlength="300" required></div>
             <div class="stk-field"><label for="stk-new-sku">SKU (optional)</label><input id="stk-new-sku" name="sku" type="text" maxlength="200"></div>
             <div class="stk-field"><label for="stk-new-category">Type</label><select id="stk-new-category" name="categoryId"><option value="">—</option>${(this.categories || []).map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></div>
-            <div class="stk-field"><label for="stk-new-price">Sell price (KES)</label><input id="stk-new-price" name="price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0 = not for sale yet"></div>
+            ${this.canPriceItem ? '<div class="stk-field"><label for="stk-new-price">Sell price (KES)</label><input id="stk-new-price" name="price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0 = not for sale yet"></div>' : ''}
             <div class="stk-field"><label for="stk-new-qty">Opening quantity</label><input id="stk-new-qty" name="qty" type="number" min="0" step="1" inputmode="numeric" value="0"></div>
             <div class="stk-field grow"><label for="stk-new-ref">Delivery reference</label><input id="stk-new-ref" name="reason" type="text" maxlength="300"></div>
             <div class="stk-field"><button class="primary-btn" type="submit">Add item</button></div>
@@ -454,7 +457,7 @@ export class StockView {
             return;
           }
         }
-        await after(`${name} added${qty ? ` with ${qty} in stock` : ''}.${priced ? '' : ' Set its price in Menu Admin before selling it.'}`);
+        await after(`${name} added${qty ? ` with ${qty} in stock` : ''}.${priced ? '' : this.canPriceItem ? ' Set its price in Menu Admin before selling it.' : ' It is not for sale until an owner or manager prices it in Menu Admin.'}`);
       });
     };
 

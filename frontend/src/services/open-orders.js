@@ -196,7 +196,52 @@ export async function pullOpenOrders(deviceId) {
       dueMinor: Number(row.dueMinor) || 0,
       lines: Array.isArray(row.lines) ? row.lines : [],
       createdAt: row.openedAt || null,
+      publishedAt: row.publishedAt?.toMillis?.() ?? (Number(row.publishedAt) || 0),
     }));
+}
+
+/**
+ * One row per real order, one unpaid bill per table.
+ *
+ * A tablet that loses its stored publisher id republishes its rounds under a
+ * new id while the old row stays, so the same order showed twice. Rounds of one
+ * table rung on several tablets arrived as separate bills. Newest row wins a
+ * round; unpaid rows at the same table are summed into one bill.
+ */
+export function collapseOpenOrders(rows) {
+  const time = (row) => Number(row.publishedAt) || 0;
+  const shown = new Set();
+  const fresh = [];
+  for (const row of [...rows].sort((a, b) => time(b) - time(a))) {
+    const uuids = Array.isArray(row.saleUuids) ? row.saleUuids : [];
+    // ponytail: a stale row overlapping only partly is kept whole; its lines are not tied to rounds.
+    if (uuids.length && uuids.every((uuid) => shown.has(uuid))) continue;
+    uuids.forEach((uuid) => shown.add(uuid));
+    fresh.push(row);
+  }
+
+  const table = (row) => String(row.tableNumber ?? '').trim().toLowerCase().replace(/^table\s*/, '');
+  const bills = new Map();
+  const result = [];
+  for (const row of fresh) {
+    const key = table(row) && row.paymentStatus !== 'paid' ? `${row.branchId}:${table(row)}` : '';
+    const bill = key && bills.get(key);
+    if (!bill) {
+      const copy = { ...row, saleUuids: [...(row.saleUuids || [])], lines: [...(row.lines || [])] };
+      if (key) bills.set(key, copy);
+      result.push(copy);
+      continue;
+    }
+    bill.kind = 'tab';
+    bill.paymentStatus = 'unpaid';
+    bill.saleUuids.push(...(row.saleUuids || []).filter((uuid) => !bill.saleUuids.includes(uuid)));
+    bill.lines.push(...(row.lines || []));
+    bill.totalMinor = (Number(bill.totalMinor) || 0) + (Number(row.totalMinor) || 0);
+    bill.dueMinor = (Number(bill.dueMinor) || 0) + (Number(row.dueMinor) || 0);
+    bill.roundCount = bill.saleUuids.length;
+    if (row.createdAt && (!bill.createdAt || row.createdAt < bill.createdAt)) bill.createdAt = row.createdAt;
+  }
+  return result;
 }
 
 // Explicit state distinguishes a paid zero-value sale from a zero-value

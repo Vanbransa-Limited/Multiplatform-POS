@@ -3,7 +3,7 @@ import { state } from '../context';
 import { escapeHtml } from '../services/print-receipt';
 import { mergeTabLines } from '../services/tabs';
 import { readOpenTabs } from '../services/tab-edit';
-import { pullOpenOrders } from '../services/open-orders';
+import { pullOpenOrders, collapseOpenOrders } from '../services/open-orders';
 import { pullSales } from '../services/catalogue';
 import { DEVICE_ID } from '../services/firebase';
 
@@ -65,7 +65,7 @@ export class TabManagementView {
     if (this.disposed) return;
     tabs = await readOpenTabs(state.currentBranch?.id);
     if (this.disposed) return;
-    const remoteTabs = remote
+    const remoteTabs = collapseOpenOrders(remote)
       .filter((order) => order.branchId === state.currentBranch?.id
         && (order.kind === 'tab' || (order.tableNumber && order.dueMinor > 0)))
       .map((order) => ({

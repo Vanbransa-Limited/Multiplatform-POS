@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import "@/ui/styles.css";
 import "@/ui/mobile.css";
+import "@/ui/approval.css";
 import "../public/select-control.css";
 import { SelectControls } from "@/components/select-controls";
 

@@ -29,6 +29,8 @@ export type ParsedSaleInput = {
   tabId?: string;
   orderReference?: string;
   buyerKraPin: string | null;
+  /** A manager's single-use approval for the fixed staff discount. */
+  discountApprovalId?: string;
   lines: InputLine[];
   payments: InputPayment[];
 };

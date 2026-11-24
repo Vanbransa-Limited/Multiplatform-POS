@@ -185,3 +185,32 @@ test('tab invoice totals equal the sum of unpaid rounds', () => {
   assert.equal(result.totalMinor, 35000);
   assert.equal(result.lines.reduce((sum, line) => sum + line.line_total, 0), result.grand_total);
 });
+
+// Table 001, 23 Nov: a 500 milkshake with the staff 20%, then rice and mbuzi.
+// The bill said Subtotal 1,100 and Total 1,000 with nothing between them.
+test('tab invoice carries the rounds\' discounts so subtotal - discount = total', () => {
+  const result = mergeTabLines([
+    billRound({ subtotal: 500, discount: 100, grand_total: 400, lines: [{ product_id: 'shake', name: 'Shake', qty: 1, line_total: 400 }] }),
+    billRound({ subtotal: 100, grand_total: 100, lines: [{ product_id: 'rice', name: 'Rice', qty: 1, line_total: 100 }] }),
+    billRound({ subtotal: 500, grand_total: 500, lines: [{ product_id: 'mbuzi', name: 'Mbuzi', qty: 1, line_total: 500 }] }),
+  ]);
+  assert.equal(result.discount, 100);
+  assert.equal(result.subtotal - result.discount, result.grand_total);
+});
+
+import { tableChoices } from './tabs.js';
+
+test('the table dropdown lists open tabs first, then free tables, and keeps a typed table', () => {
+  const tabs = [{ table: '7', dueMinor: 148000, rounds: [{}, {}] }, { table: 'Patio 3', dueMinor: 64000, rounds: [{}] }];
+  const choices = tableChoices(tabs, ['1', '7', 'VIP 1'], '7');
+  assert.deepEqual(choices.open.map(o => [o.value, o.label]), [['7', 'Table 7 · 2 rounds · KES 1,480'], ['Patio 3', 'Patio 3 · 1 round · KES 640']]);
+  assert.deepEqual(choices.free.map(o => o.value), ['1', 'VIP 1']);
+  assert.equal(choices.selected, '7');
+  assert.equal(choices.typed, false);
+  assert.equal(choices.badge, 'Open tab · 2 rounds');
+  const typed = tableChoices([], ['1'], 'Garden');
+  assert.equal(typed.typed, true);
+  assert.equal(typed.badge, '');
+  assert.equal(tableChoices([], ['1'], null).selected, '');
+  assert.equal(tableChoices(tabs, ['1'], 'table 7').selected, '7');
+});

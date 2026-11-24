@@ -302,6 +302,24 @@ export const kitchenTicket = (order, copy) => ({
 });
 
 /**
+ * The kitchen ticket for a round just put on a table's tab. Only the new lines,
+ * never prices, and none of the till's pseudo-products (VIP, staff discount).
+ * Null when nothing in the round is food or drink to make.
+ */
+export function roundKitchenTicket({ ref, tableNumber, customerName, staffName, items, onTab = false, paid = false, paymentMethod = '' }) {
+  const lines = (items || [])
+    .filter((item) => !['prod-staff-discount', 'prod-table-service'].includes(item?.product?.id))
+    .map((item) => ({ name: item.product.name, qty: item.qty }));
+  if (!lines.length || !ref) return null;
+  const table = tableNumber == null ? '' : String(tableNumber);
+  return {
+    kind: 'kitchen', ref, orderType: table ? 'dine_in' : 'takeaway', tableNumber: table,
+    customerName: customerName || '', placedAt: new Date().toLocaleString(),
+    paid, paymentMethod, onTab, note: staffName ? `Sent by ${staffName}` : '', lines, copy: 1,
+  };
+}
+
+/**
  * The board's tabs, and the stored statuses each one covers.
  *
  * `received` and `awaiting_print` are both shown as Pending because they mean

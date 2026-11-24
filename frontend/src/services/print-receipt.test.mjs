@@ -152,3 +152,12 @@ test('customer text on a ticket is printed as text, never as an element', () => 
   assert.ok(!html.includes('<img'));
   assert.ok(html.includes('&lt;script&gt;'));
 });
+
+test('a staff discount is printed so the lines reconcile to the total', () => {
+  const html = renderReceiptHtml({ ...receipt,
+    lines: [{ name: 'Tusker', qty: 2, unitPrice: 500, lineTotal: 1000 }, { productId: 'prod-staff-discount', name: 'Staff discount', qty: 1, unitPrice: 0, lineTotal: 0 }],
+    subtotal: 1000, discountTotal: 200, taxTotal: 110.34, grandTotal: 800 });
+  assert.match(html, /Discount<\/span><span>-200\.00/);
+  assert.doesNotMatch(html, /Staff discount/);
+  assert.doesNotMatch(renderReceiptHtml({ ...receipt, discountTotal: 0 }), /Discount</);
+});

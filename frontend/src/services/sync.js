@@ -145,6 +145,7 @@ export class SyncManager {
       tableNumber: sale.table_no || undefined,
       ...(sale.tab_id ? { tabId: sale.tab_id, orderReference: tab?.order_no || sale.order_reference || sale.invoice_no } : {}),
       buyerKraPin: sale.buyer_pin || undefined,
+      ...(sale.discount_approval_id ? { discountApprovalId: sale.discount_approval_id } : {}),
       lines: sellable,
       payments: mappedPayments
     };
@@ -208,6 +209,18 @@ export class SyncManager {
         this.onStatusChange(this.connectionStatus, remaining);
       }
     }
+  }
+
+  /**
+   * Gets held orders to the server before the cloud session ends. Signing out
+   * cut the session first, so an order rung just before an idle sign-out sat
+   * on the tablet, invisible everywhere else, until someone signed in again.
+   * Bounded: a dead network must not hold the session open for ever.
+   */
+  async drainBeforeSignOut(limitMs = 20_000) {
+    const until = Date.now() + limitMs;
+    while (this.isSyncing && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 250));
+    if (Date.now() < until) await readWithDeadline(() => this.syncOutbox(), until - Date.now()).catch(() => {});
   }
 
   /**
@@ -304,9 +317,21 @@ export class SyncManager {
 
   startSyncScheduler() {
     if (this.schedulerId) return;
+    let ticks = 0;
     this.schedulerId = setInterval(() => {
       this.syncOutbox().catch(() => {});
+      // Prices were read only at page load, so a tablet left open all day kept
+      // ringing yesterday's menu. Five minutes keeps it close at little cost.
+      if (++ticks % 30 === 0) void this.refreshCatalogue();
     }, 10000);
+  }
+
+  async refreshCatalogue() {
+    if (this.connectionStatus === 'OFFLINE') return;
+    try {
+      const { pullCatalogue } = await import('./catalogue.js');
+      if (await pullCatalogue()) window.dispatchEvent(new Event('pos:catalogue-updated'));
+    } catch { /* the last known menu stays in use */ }
   }
 
   stopSyncScheduler() {

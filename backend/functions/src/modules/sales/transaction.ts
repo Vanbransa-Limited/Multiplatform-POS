@@ -19,6 +19,7 @@ import { buildSaleRecords } from "./records";
 import { replaySale } from "./replay";
 import { newSaleResponse } from "./response";
 import { resolveSharedTab } from "./tab-identity";
+import { approvalUsable } from "../approval-codes/domain";
 import type { ParsedSaleInput } from "./types";
 
 export async function executeCreateSale(
@@ -64,6 +65,18 @@ export async function executeCreateSale(
       timestamp,
       context.settings,
     );
+    // A waiter's staff discount carries the manager approval it was given.
+    const approvalRef = input.discountApprovalId
+      ? db.collection("discount_approvals").doc(input.discountApprovalId) : null;
+    const approval = approvalRef ? (await transaction.get(approvalRef)).data() : undefined;
+    const managerApproved = Boolean(approvalRef) && approvalUsable(approval, input, timestamp.toMillis());
+    const discounted = preparedLines.some((line) => line.discountMinor > 0);
+    if (approvalRef && !managerApproved && discounted) {
+      throw new HttpsError(
+        "permission-denied",
+        "The manager approval for this discount has expired or was already used. Ask a manager to approve it again.",
+      );
+    }
     assertDiscountPermission(
       preparedLines,
       context.staff.role,
@@ -72,6 +85,7 @@ export async function executeCreateSale(
         preparedLines,
         dependencies.paymentIntentDocuments,
       ),
+      managerApproved,
     );
     const sharedTab = await resolveSharedTab(transaction, input);
     const records = buildSaleRecords({
@@ -87,6 +101,11 @@ export async function executeCreateSale(
     if (sharedTab) {
       Object.assign(records.sale, { tabId: sharedTab.data.tabId, orderReference: sharedTab.data.orderReference });
       transaction.set(sharedTab.ref, { ...sharedTab.data, updatedAt: timestamp });
+    }
+    if (approvalRef && managerApproved && discounted) {
+      // Consumed with the sale, in the same transaction: one approval, one sale.
+      Object.assign(records.sale, { discountApprovalId: approvalRef.id, discountApprovedByStaffId: approval?.approvedByStaffId ?? null });
+      transaction.update(approvalRef, { consumedSaleId: saleId, consumedAt: timestamp });
     }
     writeSaleRecords({
       transaction,

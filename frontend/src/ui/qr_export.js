@@ -6,6 +6,9 @@ import { proformaHtml, proformaTotals } from '../services/event-proforma.js';
 import { escapeHtml as esc } from '../services/print-receipt.js';
 import { issueProforma } from '../services/proformas.js';
 import { ProformaRegister } from './proformas.js';
+import { ApprovalCodesPane } from './approval-codes.js';
+
+const isOwner = () => state.currentUser?.role === 'Owner';
 
 /**
  * Customer menu lives beside the app, so derive it from wherever the till is
@@ -32,6 +35,12 @@ export class QrToolsView {
     this.bindEvents();
     if (this.activeTab === 'alerts') await this.runAlertCheck();
     if (this.activeTab === 'proforma') await this.loadProforma();
+    if (this.activeTab === 'codes') await this.loadCodes();
+  }
+
+  async loadCodes() {
+    const host = document.getElementById('qt-codes');
+    if (host) await new ApprovalCodesPane(host).load();
   }
 
   dispose() { this.proformaRegister?.dispose(); }
@@ -39,12 +48,11 @@ export class QrToolsView {
   render() {
     const t = this.activeTab;
     const rows = [
-      '<div class="settings-shell" style="display:flex;height:calc(100vh - 130px);gap:0;overflow:hidden;">',
-      '<div class="settings-nav" style="width:185px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border-color);display:flex;flex-direction:column;padding:12px 8px;gap:4px;">',
-      '<button class="pane-nav-btn ' + (t === 'qr' ? 'active' : '') + '" data-qtab="qr">\uD83D\uDCF1 QR Menu</button>',
-      '<button class="pane-nav-btn ' + (t === 'export' ? 'active' : '') + '" data-qtab="export">\uD83D\uDCCA Export Reports</button>',
-      '<button class="pane-nav-btn ' + (t === 'alerts' ? 'active' : '') + '" data-qtab="alerts">\uD83D\uDD14 Stock Alerts</button>',
-      '<button class="pane-nav-btn ' + (t === 'proforma' ? 'active' : '') + '" data-qtab="proforma">\uD83D\uDCC4 Event Proforma</button>',
+      '<div class="settings-shell" style="display:flex;flex-direction:column;height:calc(100vh - 130px);gap:0;overflow:hidden;">',
+      '<div class="qt-pills" role="tablist" aria-label="QR and tools">',
+      ...[['qr', 'QR Menu'], ['export', 'Export Reports'], ['alerts', 'Stock Alerts'], ['proforma', 'Event Proforma'],
+        ...(isOwner() ? [['codes', 'Approval codes']] : [])]
+        .map(([id, label]) => '<button type="button" role="tab" class="qt-pill' + (t === id ? ' active' : '') + '" aria-selected="' + (t === id) + '" data-qtab="' + id + '">' + label + '</button>'),
       '</div>',
       '<div class="settings-content" style="flex:1;min-width:0;overflow-y:auto;padding:20px;">',
 
@@ -104,6 +112,7 @@ export class QrToolsView {
       '</div>',
 
       '<div id="qt-proforma" style="display:' + (t === 'proforma' ? 'block' : 'none') + '"></div>',
+      '<div id="qt-codes" style="display:' + (t === 'codes' ? 'block' : 'none') + '"></div>',
       // ALERTS TAB
       '<div id="qt-alerts" style="display:' + (t === 'alerts' ? 'block' : 'none') + '">',
       '<div class="discount-section">',
@@ -136,6 +145,7 @@ export class QrToolsView {
         if (this.activeTab === 'qr') this.generateQR();
         if (this.activeTab === 'alerts') await this.runAlertCheck();
         if (this.activeTab === 'proforma') await this.loadProforma();
+        if (this.activeTab === 'codes') await this.loadCodes();
       });
     });
 

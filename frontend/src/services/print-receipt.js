@@ -98,7 +98,7 @@ export function renderKitchenTicketHtml(payload) {
     <div style="font-size:13px; margin-bottom:8px;">
       <div><b>Customer:</b> ${escapeHtml(payload.customerName)}</div>
       <div><b>Placed:</b> ${escapeHtml(payload.placedAt)}</div>
-      <div><b>Payment:</b> ${payload.paid ? `PAID ${escapeHtml(payload.paymentMethod || '')}` : 'UNPAID - COLLECT AT COUNTER'}</div>
+      <div><b>Payment:</b> ${payload.paid ? `PAID ${escapeHtml(payload.paymentMethod || '')}` : payload.onTab ? 'ON TAB' : 'UNPAID - COLLECT AT COUNTER'}</div>
       ${payload.copy > 1 ? `<div style="font-weight:bold;">*** REPRINT - COPY ${escapeHtml(payload.copy)} ***</div>` : ''}
     </div>
     <div class="receipt-divider"></div>
@@ -148,9 +148,13 @@ export function renderReceiptHtml(payload) {
       ${payload.buyerPin ? `<div><b>Buyer PIN:</b> ${escapeHtml(payload.buyerPin)}</div>` : ''}
     </div>
     <div class="receipt-divider"></div>
-    <div class="receipt-items">${payload.lines.map(line).join('')}</div>
+    <div class="receipt-items">${payload.lines
+      // The staff preset is a zero-priced marker line; its money is the Discount row.
+      .filter((item) => !(item?.productId === 'prod-staff-discount' && !Number(item?.lineTotal)))
+      .map(line).join('')}</div>
     <div class="receipt-divider"></div>
     <div class="receipt-totals-row"><span>Subtotal</span><span>${MONEY(payload.subtotal)}</span></div>
+    ${Number(payload.discountTotal) > 0 ? `<div class="receipt-totals-row"><span>Discount</span><span>-${MONEY(payload.discountTotal)}</span></div>` : ''}
     <div class="receipt-totals-row"><span>VAT Tax</span><span>${MONEY(payload.taxTotal)}</span></div>
     <div class="receipt-totals-row">
       <span>TOTAL DUE</span><span>KES ${MONEY(payload.grandTotal)}</span>

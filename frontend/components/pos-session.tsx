@@ -107,6 +107,7 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(async (nextUser: PosUser) => {
     signedOut.current = false;
+    try { localStorage.removeItem('pos_sign_out_pending'); } catch { /* nothing pending */ }
     state.currentUser = nextUser;
     setUser(nextUser);
     // Opening the shift and the stock sweep are both advisory; neither may
@@ -120,7 +121,12 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
     setResuming(false);
     state.currentUser = null;
     setUser(null);
-    void endCloudSession();
+    // The screen locks now; the cloud session stays until held orders upload,
+    // and is kept if somebody signs back in meanwhile.
+    try { localStorage.setItem('pos_sign_out_pending', '1'); } catch { /* reload may resume */ }
+    void Promise.resolve(state.syncManager?.drainBeforeSignOut())
+      .catch(() => {})
+      .finally(() => { if (signedOut.current) void endCloudSession(); });
   }, []);
 
   // Firebase keeps the session across reloads, so a refresh must not drop the
@@ -147,7 +153,8 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
   }, [ready, user, signIn]);
 
   useEffect(() => {
-    if (!user) return;
+    // The bar till stays with the barman all shift, so it never locks itself.
+    if (!user || user.role === 'Bar Staff') return;
 
     let timer = window.setTimeout(signOut, IDLE_LIMIT_MS);
     const reset = () => {

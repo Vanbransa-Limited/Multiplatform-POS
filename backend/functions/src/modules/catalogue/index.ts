@@ -18,6 +18,7 @@ import { FUNCTION_REGION } from "../../config/runtime";
 import { db } from "../../lib/firebase";
 import { deterministicId } from "../../shared/identifiers";
 import { ADMIN_ROLES } from "../../shared/roles";
+import { catalogueWriteRefusal } from "./write-rule";
 import { asRecord, documentId } from "../../shared/validation";
 import { productKey, stripDates } from "./product-key";
 import { SEED_PRODUCTS, isSeedProduct } from "./seed-products";
@@ -316,7 +317,7 @@ export const upsertProduct = onCall({ region: FUNCTION_REGION }, async (request)
   const staffId = typeof claims.staff_id === "string" ? claims.staff_id : null;
   const role = typeof claims.staff_role === "string" ? claims.staff_role : "";
   if (!tenantId || !staffId) throw new HttpsError("permission-denied", "This session carries no staff claims.");
-  if (!ADMIN_ROLES.has(role)) throw new HttpsError("permission-denied", "Only an owner or manager can change the catalogue.");
+  if (!ADMIN_ROLES.has(role) && role !== "store_manager") throw new HttpsError("permission-denied", "Only an owner or manager can change the catalogue.");
 
   const input = asRecord(request.data);
   const name = text(input.name);
@@ -349,6 +350,8 @@ export const upsertProduct = onCall({ region: FUNCTION_REGION }, async (request)
     if (existing.exists && existing.data()?.tenantId !== tenantId) {
       throw new HttpsError("permission-denied", "That product belongs to another business.");
     }
+    const refusal = catalogueWriteRefusal(role, { exists: existing.exists, sellPriceMinor });
+    if (refusal) throw new HttpsError("permission-denied", refusal);
     const now = Timestamp.now();
     transaction.set(ref, {
       id,

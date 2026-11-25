@@ -328,6 +328,21 @@ export const statusTab = (order) => TAB_FOR_STATUS.get(String(order.status)) || 
 export const statusLabel = (order) => statusTab(order)?.label || String(order.status || 'Unknown');
 
 /**
+ * What the card says: payment first, then where the order is. Display only.
+ * `received` and `awaiting_print` file under the Pending tab whether or not the
+ * customer paid, which read as a payment problem for a paid order waiting on
+ * its kitchen ticket.
+ */
+const PROGRESS = { received: 'awaiting print', awaiting_print: 'awaiting print', preparing: 'preparing', ready: 'served', completed: 'completed' };
+export function paymentStateLabel(order) {
+  const status = String(order.status || '');
+  const paid = order.paymentStatus === 'paid';
+  if (status === 'cancelled' || order.paymentStatus === 'void') return paid ? 'Cancelled · was paid' : 'Cancelled';
+  if (!paid) return ['preparing', 'ready', 'completed'].includes(status) ? `Pending payment · ${PROGRESS[status]}` : 'Pending payment';
+  return PROGRESS[status] ? `Paid · ${PROGRESS[status]}` : 'Paid';
+}
+
+/**
  * Whether an order belongs to the view.
  *
  * The board is a branch's work, so it shows a branch. An owner answering for
@@ -406,7 +421,7 @@ function renderSharedCard(order, images, tab, placed) {
     <div class="co-body">
       <div class="co-row">
         <span class="co-ref">Order #${escapeHtml(order.ref)}</span>
-        <span class="co-pill ${order.paymentStatus === 'paid' ? 'completed' : 'pending'}">${order.paymentStatus === 'paid' ? 'PAID' : 'RUNNING'}</span>
+        <span class="co-pill ${order.paymentStatus === 'paid' ? 'completed' : 'pending'}">${escapeHtml(paymentStateLabel(order))}</span>
       </div>
       <div class="co-meta">${escapeHtml(servingLabel(order))} · ${escapeHtml(order.customerName)}<br>
         ${order.cashierName
@@ -465,7 +480,7 @@ export function renderOrderCard(order, images) {
          ? `Voided${order.voidReason ? ` · ${escapeHtml(order.voidReason)}` : ''}`
          : paid ? escapeHtml(order.paymentMethod || 'Payment recorded') : (isConsolidatedTable ? `${order.roundIds.length} bills consolidated for Table ${escapeHtml(order.tableNumber)}` : 'Awaiting payment')}</span>`
     : `${closed ? '' : `${liveActions}
-       <select class="co-status-select" aria-label="Order status" data-customer-order="${escapeHtml(order.id)}"><option value="">Update status…</option><option value="preparing">Preparing</option><option value="ready">Ready</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option></select>`}
+       <select class="co-status-select" aria-label="Order status" data-customer-order="${escapeHtml(order.id)}"><option value="">Update status…</option><option value="preparing">Preparing</option><option value="ready">Ready</option>${paid ? '<option value="completed">Completed</option>' : ''}<option value="cancelled">Cancelled</option></select>`}
        <span class="co-meta" style="margin:0">${prints ? `Printed ${prints}×` : 'Not printed'}</span>`;
 
   return `<article class="co-card">
@@ -473,7 +488,7 @@ export function renderOrderCard(order, images) {
     <div class="co-body">
       <div class="co-row">
         <span class="co-ref">Order #${escapeHtml(order.ref)}${isConsolidatedTable ? ` <small style="font-size:11px;color:var(--accent-amber);">(${order.roundIds.length} bills consolidated)</small>` : ''}</span>
-        <span class="co-pill ${tab ? tab.id : 'pending'}">${escapeHtml(statusLabel(order))}</span>
+        <span class="co-pill ${tab ? tab.id : 'pending'}">${escapeHtml(paymentStateLabel(order))}</span>
       </div>
       <div class="co-meta">${escapeHtml(servingLabel(order))} · ${escapeHtml(order.customerName)}<br>
         ${isConsolidatedTable && order.roundRefs?.length ? `Bills: <b>${escapeHtml(order.roundRefs.join(', '))}</b><br>` : ''}
@@ -515,7 +530,13 @@ async function mutateLocalQrOrder(orderId, mutator) {
 export async function updateCustomerOrder(orderId, status) {
   const fb = await getFirebase(); const claims = await currentClaims();
   if (!fb || !claims?.tenant_id) {
-    return mutateLocalQrOrder(orderId, (o) => ({ ...o, status }));
+    // The same rule the server enforces: completing is not payment.
+    return mutateLocalQrOrder(orderId, (o) => {
+      if (status === 'completed' && o.paymentStatus !== 'paid') {
+        throw new Error('Take payment before completing this order, or cancel it if it will not be paid.');
+      }
+      return { ...o, status };
+    });
   }
   return callFunction('updateCustomerOrder', { orderId, status });
 }

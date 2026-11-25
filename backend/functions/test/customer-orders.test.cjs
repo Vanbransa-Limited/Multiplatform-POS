@@ -116,3 +116,53 @@ test('menu submission reaches shared orders, retries do not duplicate, staff can
     assert.equal(docs.get(`shifts/${shift.shiftId}`).expectedCashMinor, 0);
   } finally { db.collection = originalCollection; db.runTransaction = originalTransaction; }
 });
+
+test('completing is not payment: an unpaid menu order cannot be completed, but can be paid, cancelled or prepared', async () => {
+  const docs = new Map([
+    ['customer_orders/unpaid', { tenantId: 't1', branchId: 'b1', ref: 'WEB-1', totalMinor: 30000, status: 'received', paymentStatus: 'unpaid' }],
+    ['customer_orders/paid', { tenantId: 't1', branchId: 'b1', ref: 'WEB-2', totalMinor: 30000, status: 'awaiting_print', paymentStatus: 'paid' }],
+    // Completed while unpaid before this rule existed; the money is still collectable.
+    ['customer_orders/legacy', { tenantId: 't1', branchId: 'b1', ref: 'WEB-3', totalMinor: 30000, status: 'completed', paymentStatus: 'unpaid' }],
+    ['customer_orders/cancel-me', { tenantId: 't1', branchId: 'b1', ref: 'WEB-4', totalMinor: 30000, status: 'received', paymentStatus: 'unpaid' }],
+  ]);
+  const snapshot = (ref) => ({ id: ref.id, exists: docs.has(ref.path), data: () => printedSnapshotData(docs, ref.path) });
+  const original = { collection: db.collection, runTransaction: db.runTransaction };
+  db.collection = (name) => ({ doc: (id) => ({ id, path: `${name}/${id}` }) });
+  db.runTransaction = async (fn) => {
+    const writes = [];
+    const result = await fn({
+      getAll: async (...refs) => refs.map(snapshot), get: async (ref) => snapshot(ref),
+      create: (ref, data) => writes.push([ref.path, data]), set: (ref, data) => writes.push([ref.path, data]),
+      update: (ref, data) => writes.push([ref.path, { ...docs.get(ref.path), ...data }]),
+    });
+    writes.forEach(([path, data]) => docs.set(path, data));
+    return result;
+  };
+  const auth = { token: { tenant_id: 't1', staff_id: 's1', staff_role: 'cashier' } };
+  const payments = () => [...docs.keys()].filter(key => key.startsWith('payments/')).length;
+  const set = (orderId, status, as = auth) => updateCustomerOrder.run({ auth: as, data: { orderId, status } });
+  try {
+    await assert.rejects(set('unpaid', 'completed'), /Take payment before completing/);
+    assert.equal(docs.get('customer_orders/unpaid').status, 'received');
+    assert.equal(docs.get('customer_orders/unpaid').paymentStatus, 'unpaid');
+    // Kitchen progress and cancellation keep their existing rules.
+    await set('unpaid', 'preparing');
+    assert.equal(docs.get('customer_orders/unpaid').status, 'preparing');
+    await assert.rejects(set('unpaid', 'completed'), /Take payment before completing/);
+    await set('cancel-me', 'cancelled');
+    assert.equal(docs.get('customer_orders/cancel-me').status, 'cancelled');
+    // Paid orders complete as before; a repeat is refused and records no money.
+    await set('paid', 'completed');
+    assert.equal(docs.get('customer_orders/paid').status, 'completed');
+    await assert.rejects(set('paid', 'completed'), /already closed/);
+    assert.equal(payments(), 0, 'completion never creates a payment');
+    // Isolation and sign-in are unchanged.
+    await assert.rejects(set('paid', 'completed', { token: { ...auth.token, tenant_id: 't2' } }), /not found/);
+    await assert.rejects(updateCustomerOrder.run({ data: { orderId: 'unpaid', status: 'completed' } }), /Sign in/);
+    // Status and payment are independent: an already-completed unpaid order is still payable.
+    await settleCustomerOrderBank.run({ auth, data: { orderId: 'legacy', reference: 'BANK-REF-7' } });
+    assert.equal(docs.get('customer_orders/legacy').paymentStatus, 'paid');
+    assert.equal(docs.get('customer_orders/legacy').status, 'completed');
+    assert.equal(payments(), 1);
+  } finally { db.collection = original.collection; db.runTransaction = original.runTransaction; }
+});

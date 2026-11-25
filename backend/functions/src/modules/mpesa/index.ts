@@ -10,6 +10,7 @@ import { HttpsError, onCall, onRequest } from "firebase-functions/v2/https";
 import { FUNCTION_REGION } from "../../config/runtime";
 import { db } from "../../lib/firebase";
 import { claimedBillAmount } from './settlement';
+import { SAVE_FIRST_MESSAGE } from '../sales/printed-receipt';
 import { readReceiptUsage, receiptAllocation } from '../../shared/mpesa-receipt';
 import { deterministicId } from "../../shared/identifiers";
 import { safeSum } from "../../shared/money";
@@ -733,9 +734,8 @@ export const initiateMpesaStk = onCall(
   async (request) => {
     const caller = callerClaims(request.auth);
     const input = parseInitiateInput(request.data);
-      if (!input.settlementSaleUuids?.length) {
-        throw new HttpsError('failed-precondition', 'Print the receipt before taking payment.');
-      }
+    // A prompt pays a bill already saved unpaid; an unsaved cart cannot be charged.
+    if (!input.settlementSaleUuids?.length) throw new HttpsError('failed-precondition', SAVE_FIRST_MESSAGE);
     const reservation = await reserveAttempt(caller, input);
     return startReservedMpesa(reservation);
   },

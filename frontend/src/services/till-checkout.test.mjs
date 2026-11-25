@@ -5,6 +5,7 @@ import { billableCheckoutRounds } from './checkout-rounds.js';
 import { saleAsOrder } from './customer-orders.js';
 import { toMinor } from './tender.js';
 import { manualReceipt } from './manual-receipt.js';
+import { recoveryScope } from './stk-recovery.js';
 const source=(await readFile(new URL('../ui/till.js',import.meta.url),'utf8')).replace(/\r\n/g,'\n');
 
 test('Till checkout filters the same zero adjustment as Orders while preserving all KES2100 rounds', async()=>{
@@ -26,8 +27,8 @@ test('Till STK carries the reserved saved-bill UUIDs, original total and no new 
   const calls=[];
   const nodes=new Map(); const document={getElementById:id=>{if(!nodes.has(id))nodes.set(id,{value:'0712345678'});return nodes.get(id);}};
   const state={currentBranch:{id:'branch'},syncManager:{publishSale:async id=>({sale_uuid:'uuid-'+id,synced_at:'server'})}};
-  const run=new Function('state','firebaseConfigured','document','toMinor','claimSalePayment','DEVICE_ID','showNotification',`return ${body}`)
-    (state,true,document,toMinor,async payload=>calls.push({type:'claim',...payload}),'device',()=>{});
+  const run=new Function('state','firebaseConfigured','document','toMinor','claimSalePayment','DEVICE_ID','showNotification','recoveryScope',`return ${body}`)
+    (state,true,document,toMinor,async payload=>calls.push({type:'claim',...payload}),'device',()=>{},recoveryScope);
   const view={activeTabId:'tab',totals:{total:2100,vipSurcharge:225},selectedCustomer:{id:'guest'},mpesaCapability:{available:true},
     beginMpesaAttempt:()=>({idempotencyKey:'stable-stk-key',requestAmountMinor:210000,cashAmountMinor:0}),mpesaOffline:()=>false,
     roundsBeingSettled:async()=>['r0','r1','r2'],showMpesaStatus(){},applyMpesaCapabilityToUi(){},

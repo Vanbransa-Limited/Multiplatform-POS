@@ -22,10 +22,11 @@ import { enqueuePrintJob, isStationOnline } from '../services/print-queue';
 import { requirePrintedReceipt } from './checkout-print';
 import { escapeHtml, renderReceiptHtml } from '../services/print-receipt';
 import { etrFor, generateEtr } from '../services/etr';
-import { compareNames, pullCatalogue, pullSales } from '../services/catalogue';
+import { activeTenantId, compareNames, pullCatalogue, pullSales } from '../services/catalogue';
 import { pullCustomers, saveCustomer } from '../services/customers';
 import { saleAsOrder, voidSale, settleSale, claimSalePayment } from '../services/customer-orders';
 import { recordReceiptSettlement } from '../services/receipt-settlement';
+import { FIRST_CHECK_MS, acknowledgePrompt, recoverableResponse, recoveryScope, rememberPrompt, removeRecovery, stkSettlementRequestId, updateRecovery } from '../services/stk-recovery';
 import { manualReceipt } from '../services/manual-receipt';
 import { pullStock } from '../services/stock';
 import { closingUpdate, newTab, OPEN, openTabAt, roundTotals, tabKey } from '../services/tabs';
@@ -1839,7 +1840,7 @@ export class TillView {
     if (this.preparingPrintedCheckout) return;
     this.preparingPrintedCheckout = true;
     requirePrintedReceipt(async () => {
-      if (!firebaseConfigured) throw new Error('Reconnect to print the receipt before payment.');
+      if (!firebaseConfigured) throw new Error('Reconnect to save the bill before payment.');
       if (!this.activeTabId && !this.pendingSale) await this.registerPendingOrder();
       const ids = await this.roundsBeingSettled();
       if (!ids.length) throw new Error('Save the order before printing the receipt.');
@@ -2120,6 +2121,16 @@ export class TillView {
           stkKey: attempt.idempotencyKey, expectedMinor: mpesaMinor, deviceId: DEVICE_ID, method: 'stk',
         });
         settlementSaleUuids = rounds.map(round => round.sale_uuid);
+        // Remembered before the prompt is sent: Orders settles it if M-Pesa
+        // confirms after this screen stops waiting or the till restarts.
+        const scope = recoveryScope(state.currentUser);
+        if (scope && !attempt.recovery) {
+          const prompt = { saleUuids: settlementSaleUuids, checkoutId: this.settlementRequestId,
+            label: rounds.map(round => round.invoice_no).filter(Boolean).join(', ') || null, branchId: state.currentBranch?.id || null,
+            createdAt: Date.now(), nextCheckAt: Date.now() + FIRST_CHECK_MS, state: 'awaiting' };
+          attempt.recovery = { scope, prompt, attemptId: await rememberPrompt(scope, prompt,
+            { tenantId: await activeTenantId().catch(() => null), stkKey: attempt.idempotencyKey }) };
+        }
       }
       const res = await this.mpesa.initiateStkPush({
         phone,
@@ -2141,11 +2152,18 @@ export class TillView {
         this.mpesaCapability = res.capability;
         this.applyMpesaCapabilityToUi();
       }
+      // Any attempt the server returned that may still take money is kept,
+      // including an ambiguous one; it is listed for review, never settled.
+      if (attempt.recovery && recoverableResponse(res)) {
+        attempt.recovery.attemptId = acknowledgePrompt(attempt.recovery.scope, attempt.recovery.attemptId,
+          attempt.recovery.prompt, res.attemptId) || attempt.recovery.attemptId;
+      }
       if (!res.success) {
         const level = res.status === 'staged' || res.status === 'suspended' ? 'warning' : 'danger';
         this.showMpesaStatus(kind, res.message || 'M-Pesa did not accept the payment.', level);
         showNotification(res.message || 'M-Pesa request failed.', level === 'warning' ? 'warning' : 'error');
         if (['failed', 'cancelled', 'expired', 'invalid'].includes(res.status)) {
+          if (attempt.recovery) removeRecovery(attempt.recovery.scope, attempt.recovery.attemptId);
           this.invalidateMpesaAttempt();
           this.showMpesaStatus(kind, res.message || 'M-Pesa did not accept the payment.', level);
         }
@@ -2211,6 +2229,7 @@ export class TillView {
         try {
           const registered = await this.finalizeInvoice();
           if (!registered) throw new Error('The order is not registered yet.');
+          if (attempt.recovery) removeRecovery(attempt.recovery.scope, attempt.recovery.attemptId);
           showNotification(`M-Pesa paid and order registered. Ref: ${this.mpesaRef}`, 'success');
         } catch (error) {
           // M-Pesa remains confirmed. Keep a manual retry available, while the
@@ -2221,10 +2240,14 @@ export class TillView {
           showNotification(error.message || 'Payment was received, but the order could not be registered.', 'error');
         }
       } else if (result.status === 'pending') {
+        if (attempt.recovery) updateRecovery(attempt.recovery.scope, attempt.recovery.attemptId, { nextCheckAt: Date.now() + 60_000 });
         this.showMpesaStatus(kind, 'Unconfirmed - do not release goods', 'warning');
-        showNotification('M-Pesa has not confirmed this payment. Retry safely or use another tender.', 'warning');
+        showNotification(attempt.recovery
+          ? 'M-Pesa has not confirmed this payment. Orders will apply it automatically if it is confirmed. Do not release goods yet.'
+          : 'M-Pesa has not confirmed this payment. Retry safely or use another tender.', 'warning');
       } else {
         const failure = result.resultDesc || 'Payment failed, cancelled, or expired.';
+        if (attempt.recovery) removeRecovery(attempt.recovery.scope, attempt.recovery.attemptId);
         this.invalidateMpesaAttempt();
         this.showMpesaStatus(kind, failure, 'danger');
         showNotification('M-Pesa push rejected, cancelled, or expired.', 'error');
@@ -3295,7 +3318,9 @@ export class TillView {
         if (firebaseConfigured && round && !round.synced_at) round = await state.syncManager.publishSale(round.id);
         if (!round?.synced_at) continue;
         const result = await settleSale({
-          saleUuid: round.sale_uuid, requestId: `${this.settlementRequestId}-${index}`,
+          // An STK settlement shares its request id with Orders' recovery, so either one settling first is replayed, not repeated.
+          saleUuid: round.sale_uuid, requestId: this.selectedPaymentMethod === 'MPESA' && this.mpesaAttempt?.attemptId
+            ? stkSettlementRequestId(this.mpesaAttempt.attemptId, round.sale_uuid) : `${this.settlementRequestId}-${index}`,
           checkoutId: this.settlementRequestId,
           method: mapPaymentMethod(paymentRecord.method), reference: paymentRecord.reference || '',
           ...(this.selectedPaymentMethod === 'MPESA' ? { attemptId: this.mpesaAttempt.attemptId } : {}),

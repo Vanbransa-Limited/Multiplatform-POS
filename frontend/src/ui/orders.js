@@ -7,7 +7,7 @@ import {
   chargeCustomerOrder, checkCustomerOrderPayment, settleCustomerOrderByCode, settleCustomerOrderCard,
   settleCustomerOrderBank, settleCustomerOrderCash, settleSale, claimSalePayment,
 } from '../services/customer-orders';
-import { pullSales } from '../services/catalogue';
+import { activeTenantId, pullSales } from '../services/catalogue';
 import { pullOpenOrders } from '../services/open-orders';
 import { quickFinancialPeriod, tradingRange } from '../services/financial-period';
 import { pullTradingHours, cachedTradingHours } from '../services/trading-hours';
@@ -18,7 +18,11 @@ import { removeTabLine, freeSettledTab } from '../services/tab-edit';
 import { MpesaService } from '../services/mpesa';
 import { recordReceiptSettlement } from '../services/receipt-settlement';
 import { manualReceipt } from '../services/manual-receipt';
-import { DEVICE_ID } from '../services/firebase';
+import { DEVICE_ID, callFunction, getFirebase } from '../services/firebase';
+import {
+  FIRST_CHECK_MS, acknowledgePrompt, pendingRecoveries, recoverableResponse, recoverStkAttempts, recoveryScope,
+  rememberPrompt, removeRecovery, stkSettlementRequestId, updateRecovery,
+} from '../services/stk-recovery';
 import { enqueuePrintJob, isStationOnline } from '../services/print-queue';
 import { requirePrintedReceipt } from './checkout-print';
 import { escapeHtml, renderEtrBlock } from '../services/print-receipt';
@@ -64,6 +68,8 @@ export class OrdersView {
     await this.loadPosOrders({ refresh: false });
     if (this.disposed) return;
     this.bindEvents();
+    this.renderStkRecovery();
+    void this.runStkRecovery().catch(() => this.renderStkRecovery());
     this.refreshTimer = setInterval(() => { void this.refreshBoard(); }, 60_000);
     this.renderCustomerBoard();
     this.proformaRegister = new ProformaRegister(this.container.querySelector('#orders-proformas'), { selectedId: this.proformaId });
@@ -114,6 +120,8 @@ export class OrdersView {
     if (this.refreshing || this.disposed) return;
     this.refreshing = true;
     try {
+      // Before the pull, so a payment applied here is in the orders it reads.
+      await this.runStkRecovery().catch(() => this.renderStkRecovery());
       await this.loadPosOrders();
       if (this.disposed) return;
       this.renderCustomerBoard();
@@ -174,6 +182,7 @@ export class OrdersView {
           <div class="co-tabs" id="customer-orders-tabs" role="tablist" aria-label="Filter orders by status"></div>
           <p id="orders-running-note" class="co-meta" style="padding:0 16px 12px;margin:0">Running shows unpaid orders from all dates. Confirmed payments move to history.</p>
           <p id="customer-orders-status" role="status" style="padding:0 16px 12px;margin:0;font-size:12px;color:var(--text-secondary)">Connecting to live orders…</p>
+          <div id="stk-recovery" role="status" aria-live="polite" style="padding:0 16px 12px" hidden></div>
           <div id="customer-orders-list"></div>
           <div id="customer-orders-pager"></div>
         </section>
@@ -828,6 +837,21 @@ export class OrdersView {
   }
 
   bindEvents() {
+    this.container.querySelector('#stk-recovery')?.addEventListener('click', (event) => {
+      const check = event.target.closest('[data-stk-check]');
+      const dismiss = event.target.closest('[data-stk-dismiss]');
+      const scope = this.stkScope();
+      if (dismiss && scope && window.confirm('Dismiss this M-Pesa check? Only do this after the payment was reconciled or confirmed not taken.')) {
+        removeRecovery(scope, dismiss.dataset.stkDismiss);
+        this.renderStkRecovery();
+      }
+      if (!check || !scope) return;
+      check.disabled = true;
+      // Asks Safaricom about this one payment only.
+      void this.runStkRecovery({ force: true, only: check.dataset.stkCheck })
+        .catch(error => showNotification(error.message || 'M-Pesa could not be checked. Try again.', 'error'))
+        .finally(() => this.renderStkRecovery());
+    });
     this.filterSheet = createMobileFilters({
       container: this.container, toolbar: this.container.querySelector('.co-toolbar'),
       controls: ['#orders-scope-wrap', '#orders-date-bar', '#customer-orders-tabs', '#orders-sort-wrap', '#orders-export-btn'].map(selector => this.container.querySelector(selector)),
@@ -987,8 +1011,9 @@ export class OrdersView {
       const select = event.target.closest('[data-customer-order]');
       if (!select?.value) return;
       select.disabled = true;
+      // The card changes only when the server's update arrives on the live listener.
       try { await updateCustomerOrder(select.dataset.customerOrder, select.value); }
-      catch { this.container.querySelector('#customer-orders-status').textContent = 'Could not update the order. Please retry.'; select.disabled = false; select.value = ''; }
+      catch (error) { this.container.querySelector('#customer-orders-status').textContent = error?.message || 'Could not update the order. Please retry.'; select.disabled = false; select.value = ''; }
     });
     // Organization money roles can move between whole-business and local views.
     const scope = this.container.querySelector('#orders-all-branches');
@@ -1214,6 +1239,68 @@ export class OrdersView {
     note.textContent = copy[1];
   }
 
+  /** Recovery records belong to the signed-in business and cashier. */
+  stkScope() {
+    return recoveryScope(state.currentUser);
+  }
+
+  /** One server read of the attempt; Safaricom is asked only when staff press Check. */
+  async readStkAttempt(attemptId, { force } = {}) {
+    if (force) return callFunction('queryMpesaStatus', { attemptId });
+    const fb = await getFirebase();
+    if (!fb) throw new Error('This till is not connected to the business server.');
+    const snapshot = await fb.firestore.getDocFromServer(fb.firestore.doc(fb.dbInstance, 'mpesa_payments', attemptId));
+    return snapshot.exists() ? snapshot.data() : null;
+  }
+
+  /** Settles one bill against a confirmed attempt, then mirrors it on this till. */
+  async settleRecoveredRound(record, saleUuid) {
+    const round = await db.sales.where('sale_uuid').equals(saleUuid).first();
+    if (round && await this.roundOutstandingMinor(round) <= 0) return;
+    const result = await settleSale({ saleUuid, checkoutId: record.checkoutId, method: 'mpesa',
+      requestId: stkSettlementRequestId(record.attemptId, saleUuid), attemptId: record.attemptId });
+    if (round) {
+      await this.recordSettlementLocally(round, result);
+      await freeSettledTab(round.tab_id);
+    }
+  }
+
+  async runStkRecovery({ force = false, only } = {}) {
+    const scope = this.stkScope();
+    if (!scope || this.disposed) return;
+    const outcomes = await recoverStkAttempts(scope, {
+      readAttempt: (attemptId, options) => this.readStkAttempt(attemptId, options),
+      settle: (record, saleUuid) => this.settleRecoveredRound(record, saleUuid),
+      force, only,
+    });
+    const settled = outcomes.filter(entry => entry.outcome === 'settled');
+    if (settled.length) {
+      showNotification(`M-Pesa confirmed a late payment. ${settled.map(entry => entry.label).filter(Boolean).join(', ') || 'The bill'} is now paid.`, 'success');
+      await this.loadPosOrders({ refresh: false });
+      if (!this.disposed) this.renderCustomerBoard();
+    }
+    this.renderStkRecovery();
+  }
+
+  /** Every unresolved prompt stays on screen until it settles, fails or staff dismiss it. */
+  renderStkRecovery() {
+    const panel = this.container.querySelector('#stk-recovery');
+    const scope = this.stkScope();
+    if (!panel) return;
+    const records = scope ? pendingRecoveries(scope) : [];
+    panel.hidden = records.length === 0;
+    panel.innerHTML = records.map(record => {
+      const text = record.state === 'needs_review' ? `Needs review: ${record.lastError || 'check this payment.'}`
+        : record.state === 'failed' ? `Confirmed but not applied yet: ${record.lastError || 'retrying.'}`
+          : record.lastError ? `Waiting for M-Pesa confirmation (${record.lastError})` : 'Waiting for M-Pesa confirmation. Do not release goods yet.';
+      return `<div class="co-meta" style="margin:0 0 6px" data-stk-attempt="${escapeHtml(record.attemptId)}">
+        <b>M-Pesa · ${escapeHtml(record.label || 'bill')}</b> — ${escapeHtml(text)}
+        <button type="button" class="sec-btn" data-stk-check="${escapeHtml(record.attemptId)}">Check with M-Pesa</button>
+        ${record.state === 'needs_review' ? `<button type="button" class="sec-btn" data-stk-dismiss="${escapeHtml(record.attemptId)}">Dismiss</button>` : ''}
+      </div>`;
+    }).join('');
+  }
+
   /**
    * Takes the money now, from the board.
    *
@@ -1259,6 +1346,15 @@ export class OrdersView {
     say('Checking activation and sending the prompt…', 'warning');
     message.textContent = '';
 
+    // Remembered before the prompt is sent, so a payment confirmed after this
+    // dialog stops waiting - or after the till restarts - still settles.
+    const scope = savedBill ? this.stkScope() : null;
+    const prompt = scope && { saleUuids: rounds.map(round => round.sale_uuid), checkoutId: this.settleRequestId, label: order.ref,
+      branchId: order.branchId || state.currentBranch?.id || null, createdAt: Date.now(), nextCheckAt: Date.now() + FIRST_CHECK_MS, state: 'awaiting' };
+    let recoveryId = scope
+      ? await rememberPrompt(scope, prompt, { tenantId: await activeTenantId().catch(() => null), stkKey: this.settleStkKey })
+      : null;
+
     try {
       const push = await this.mpesa.initiateStkPush({
         phone,
@@ -1272,9 +1368,15 @@ export class OrdersView {
         ...(savedBill ? { settlementSaleUuids: rounds.map(round => round.sale_uuid), checkoutId: this.settleRequestId } : {})
       });
 
+      // Any attempt the server returned that may still take money is kept,
+      // including an ambiguous one; it is listed for review, never settled.
+      if (scope && recoverableResponse(push)) recoveryId = acknowledgePrompt(scope, recoveryId, prompt, push.attemptId) || recoveryId;
       if (!push.success) {
         say(push.message || 'M-Pesa did not accept this payment.', 'danger');
-        if (['failed', 'cancelled', 'expired'].includes(push.status)) this.settleStkKey = `mpesa_${crypto.randomUUID()}`;
+        if (['failed', 'cancelled', 'expired'].includes(push.status)) {
+          if (recoveryId) removeRecovery(scope, recoveryId);
+          this.settleStkKey = `mpesa_${crypto.randomUUID()}`;
+        } else if (recoveryId) this.renderStkRecovery();
         return;
       }
 
@@ -1282,8 +1384,16 @@ export class OrdersView {
       const result = await this.mpesa.awaitResult(push.attemptId, (text) => say(text, 'warning'));
 
       if (result.status !== 'paid') {
-        if (['failed', 'cancelled', 'expired'].includes(result.status)) this.settleStkKey = `mpesa_${crypto.randomUUID()}`;
-        say(result.resultDesc || 'M-Pesa did not confirm this payment. Do not release goods.', 'danger');
+        if (['failed', 'cancelled', 'expired'].includes(result.status)) {
+          if (recoveryId) removeRecovery(scope, recoveryId);
+          this.settleStkKey = `mpesa_${crypto.randomUUID()}`;
+          say(result.resultDesc || 'M-Pesa did not confirm this payment. Do not release goods.', 'danger');
+        } else {
+          // Still open: the board keeps checking and settles it if M-Pesa confirms.
+          if (recoveryId) updateRecovery(scope, recoveryId, { nextCheckAt: Date.now() + 60_000 });
+          say('M-Pesa has not confirmed this payment yet. Do not release goods. Orders will apply it automatically if it is confirmed.', 'danger');
+          this.renderStkRecovery();
+        }
         return;
       }
 
@@ -1295,7 +1405,8 @@ export class OrdersView {
           ? await settleSale({
             saleUuid: round.sale_uuid,
             checkoutId: this.settleRequestId,
-            requestId: `${this.settleRequestId}-stk-${index}`,
+            // Shared with recovery on any device, so a retry finds the same payment record.
+            requestId: stkSettlementRequestId(push.attemptId, round.sale_uuid),
             method: 'mpesa',
             // The attempt is the proof; the server reads the receipt off it.
             attemptId: push.attemptId,
@@ -1308,6 +1419,7 @@ export class OrdersView {
           });
         await this.recordSettlementLocally(round, settled, index);
       }
+      if (recoveryId) removeRecovery(scope, recoveryId);
       // Confirmed money, so it goes up now, and the table it was holding is
       // released - by whichever means the table paid, the outcome is the same.
       const reached = await this.pushSettledRounds(rounds);

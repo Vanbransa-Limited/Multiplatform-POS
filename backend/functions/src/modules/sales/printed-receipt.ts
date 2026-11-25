@@ -4,6 +4,8 @@ import { HttpsError } from 'firebase-functions/v2/https';
 import { db } from '../../lib/firebase';
 
 export const PRINT_FIRST_MESSAGE = 'Print the receipt before taking payment.';
+/** Always enforced, independent of PRINT_BEFORE_PAYMENT: payment settles a bill already saved unpaid. */
+export const SAVE_FIRST_MESSAGE = 'Save the bill unpaid before taking payment.';
 
 /**
  * Off by the owner's request (2026-11-22): payment no longer waits for a

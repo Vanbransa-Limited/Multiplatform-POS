@@ -206,17 +206,17 @@ const run = async () => {
   if (!refused) problems.push('a sale that was already settled accepted a second settlement');
   else log('   OK   double settlement refused');
 
-  log('\n== 9b. A direct paid checkout cannot bypass printing ==');
+  log('\n== 9b. A direct paid checkout cannot bypass saving the bill unpaid ==');
   await db.doc(`tenant_settings/${TENANT}`).update({ acceptedPaymentMethods: ['cash', 'mpesa'] });
   let named = false;
   try {
     await call('createSale', sale(A, 'uuid-nobank', [{ method: 'bank_transfer', amountMinor: 40000 }], [beer(1)]), akashi);
   } catch (error) {
-    named = /Print the receipt/.test(error.message);
+    named = /Save the bill unpaid/.test(error.message);
     log(`   refused: ${error.message}`);
   }
-  if (!named) problems.push('a direct paid checkout bypassed the print requirement');
-  else log('   OK   refused, and the cashier is told to print first');
+  if (!named) problems.push('a direct paid checkout bypassed saving the bill unpaid first');
+  else log('   OK   refused, and the cashier is told to save the bill unpaid first');
   await db.doc(`tenant_settings/${TENANT}`).update({ acceptedPaymentMethods: ['cash', 'mpesa', 'card', 'bank_transfer'] });
 
   // ---- The owner reads it all back, exactly as Financials does ----

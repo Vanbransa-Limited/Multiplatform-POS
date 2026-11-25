@@ -1,17 +1,54 @@
-# Print before checkout
+# Saving and printing before checkout
 
-Every business uses the same required print step. No tenant setting or data rollout is needed.
+Checkout has two separate rules. Only the first is enforced today.
 
-On Till, use **Print Receipt & Pay**. Saved orders, table tabs and menu orders use the same gate when payment is opened. The bill is saved unpaid before the cashier can send it to the counter. **Pay Now** stays disabled until the Print Station confirms that receipt.
+## 1. Save the bill unpaid first (always enforced)
 
-At the Print Station, print the queued receipt and check the paper before accepting **Did the receipt print successfully?** Cancelling that confirmation leaves payment locked and the job available for **Print now**. Browser print dialogs cannot report whether physical paper emerged, so this is an explicit staff confirmation, recorded with staff, device, time and print job. A kitchen ticket or an ordinary receipt reprint does not authorize checkout.
+Payment always settles a bill that is already saved on the server as unpaid.
+New direct paid-sale creation (`createSale` with any tender other than credit)
+and STK prompts for an unsaved cart (`initiateMpesaStk` without
+`settlementSaleUuids`) are refused with **"Save the bill unpaid before taking
+payment."** Exact replays of existing sales and payments remain idempotent. Old
+client versions that attempt new direct paid sales need to reload; previously
+unsynced paid records require reconciliation rather than re-entry as new
+payments.
 
-The server constructs the unpaid receipt from tenant-scoped saved bills and lines. Clients cannot create authorization-bearing print jobs or write print proof through Firestore rules. Payment claims, saved-bill STK prompts, settlements and menu-order tenders check the recorded print proof. New direct paid-sale creation and unsaved-cart STK prompts are refused; clients must save an unpaid bill first. Existing exact paid-sale and payment replays remain idempotent.
+## 2. Print the unpaid receipt first (currently disabled)
 
-Changing items, quantities, prices, totals, tax codes, customer, invoice or table invalidates that bill's print proof. New rounds must also be printed. Partial M-Pesa payments can use the same unchanged printed bill; receipt balances and provider verification remain separate from printing.
+`PRINT_BEFORE_PAYMENT` is `false` in both
+`backend/functions/src/modules/sales/printed-receipt.ts` and
+`frontend/src/ui/checkout-print.js`, by the owner's request (2026-11-22).
+Printing is **not** required before payment: the checkout gate saves the bill
+and continues straight to payment, and no payment route checks print proof.
+Keep the two flags in step; deploy functions before hosting when switching it
+back on, because the frontend flag alone enforces nothing.
 
-If the printer or connection is unavailable, leave the order in Pending and retry after reconnecting. Closing Till's print step leaves the saved bill in Orders, without taking payment. Old client versions that attempt new direct paid sales need to reload before checkout; previously unsynced paid records require reconciliation rather than being re-entered as new payments.
+When the flag is on:
 
-Release the frontend, Firestore rules and the affected callable functions together: `createSale`, `claimSalePayment`, `settleSale`, `initiateMpesaStk`, `prepareCheckoutReceipt`, `confirmCheckoutReceiptPrinted`, `chargeCustomerOrder`, `settleCustomerOrderByCode`, `settleCustomerOrderBank`, `settleCustomerOrderCard`, and `settleCustomerOrderCash`. No production data or provider payment is needed for release verification.
+- On Till, **Print Receipt & Pay**, and saved orders, table tabs and menu orders
+  when payment is opened, queue a server-built unpaid receipt. **Pay Now** stays
+  disabled until the Print Station confirms it.
+- At the Print Station, staff confirm **Did the receipt print successfully?**
+  Browser print dialogs cannot report whether paper emerged, so this is a staff
+  confirmation recorded with staff, device, time and print job — not proof of
+  paper. Cancelling it leaves payment locked and the job reprintable. A kitchen
+  ticket or an ordinary reprint does not authorize checkout.
+- Clients cannot create authorization-bearing print jobs or write print proof
+  through Firestore rules. Payment claims, saved-bill STK prompts, settlements
+  and menu-order tenders check the recorded proof, which is invalidated by any
+  change to items, quantities, prices, totals, tax codes, customer, invoice or
+  table. New rounds must also be printed. Receipt balances and provider
+  verification remain separate from printing.
+- If the printer or connection is unavailable, the order stays in Pending.
 
-Validation uses Node 22. `npm test` covers tooling and unit regressions. `npm run test:receipts` runs print gating, rule enforcement and receipt-balance concurrency against the guarded demo Firestore emulator. The Playwright `checkout-print`, `payment-commit` and `checkout-recovery` specs cover desktop/mobile gating, cancelled print confirmation, retries and partial payments. A physical printer was not exercised by automated tests.
+Printing never settles money, and a printed or completed order is not a paid
+one.
+
+## Verification
+
+Node 22. `npm test` covers tooling and unit regressions, including the
+save-first refusals. `npm run test:receipts` runs print-job queuing and
+confirmation, Firestore rule enforcement and receipt-balance concurrency against
+the guarded demo emulator; its payment refusals are asserted only while
+`PRINT_BEFORE_PAYMENT` is on. There are no browser tests for the print gate, and
+a physical printer is not exercised by automated tests.

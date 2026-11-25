@@ -3,6 +3,19 @@ import { db } from '../db/schema';
 import { state, showNotification } from '../context';
 import { logAuditEvent } from '../db/index';
 import { deleteCustomer, pullCustomers, saveCustomer } from '../services/customers';
+import { escapeHtml } from '../services/print-receipt';
+
+/**
+ * Where a customer's debt is paid: their unpaid bills in Orders, each settled
+ * on the server. This screen used to "repay" a tab by lowering a balance kept
+ * on one tablet, which recorded no money and left every bill unpaid. No amount
+ * is shown here because the only per-customer balance is that device-local one.
+ */
+export function unpaidBillsLink(customer) {
+  return `<a class="sec-btn" href="/orders?order=${encodeURIComponent(customer.name || '')}"
+    aria-label="View unpaid bills for ${escapeHtml(customer.name || 'this customer')}"
+    style="padding:5px 10px;font-size:11px;text-decoration:none;">View unpaid bills</a>`;
+}
 
 export class CustomersView {
   constructor(container) {
@@ -55,7 +68,7 @@ export class CustomersView {
                     <th style="padding: 10px 8px;">Customer Name</th>
                     <th style="padding: 10px 8px;">Phone</th>
                     <th style="padding: 10px 8px;">Loyalty Points</th>
-                    <th style="padding: 10px 8px;">Outstanding Tab</th>
+                    <th style="padding: 10px 8px;">Unpaid bills</th>
                     <th style="padding: 10px 8px;">Credit Limit</th>
                     <th style="padding: 10px 8px; text-align: right;">Action</th>
                   </tr>
@@ -100,20 +113,6 @@ export class CustomersView {
 
       </div>
 
-      <!-- Simulated Repay Modal Loader -->
-      <div id="repay-modal" class="modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); z-index: 99999; justify-content: center; align-items: center; padding: 20px;">
-        <div style="background: #18181b; border: 1px solid var(--border-color); border-radius: 16px; width: 100%; max-width: 380px; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.8); text-align: center; padding: 32px 24px;">
-          <div id="repay-loader-spinner" style="width: 50px; height: 50px; border: 4px solid rgba(16, 185, 129, 0.1); border-top-color: var(--accent-green); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px;"></div>
-          <h4 id="repay-loader-title" style="color: #fff; font-size: 16px; margin: 0 0 10px 0;">Processing Credit Repayment...</h4>
-          <p id="repay-loader-desc" style="color: var(--text-secondary); font-size: 12px; margin: 0 0 20px 0;">Reconciling customer ledger statement...</p>
-        </div>
-      </div>
-
-      <style>
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-      </style>
     `;
   }
 
@@ -136,7 +135,6 @@ export class CustomersView {
 
       const fragment = document.createDocumentFragment();
       customers.forEach(cust => {
-        const balance = cust.credit_balance || 0;
         const limit = cust.credit_limit || 0;
         const points = cust.loyalty_points || 0;
 
@@ -146,18 +144,11 @@ export class CustomersView {
           <td style="padding:10px 8px;font-weight:600;color:#fff;">${cust.name}</td>
           <td style="padding:10px 8px;font-family:monospace;">${cust.phone}</td>
           <td style="padding:10px 8px;color:var(--accent-amber);font-weight:700;">★ ${points} pts</td>
-          <td style="padding:10px 8px;color:${balance > 0 ? 'var(--accent-rose)' : 'var(--text-secondary)'};font-weight:600;">
-            KES ${balance.toLocaleString(undefined, {minimumFractionDigits: 2})}
-          </td>
+          <td style="padding:10px 8px;">${unpaidBillsLink(cust)}</td>
           <td style="padding:10px 8px;color:var(--text-secondary);">
             KES ${limit.toLocaleString(undefined, {minimumFractionDigits: 2})}
           </td>
           <td style="padding:10px 8px;text-align:right;white-space:nowrap;">
-            ${balance > 0 ? `
-              <button class="btn-repay-tab" data-cust-id="${cust.id}" data-balance="${balance}" style="background:var(--accent-cyan);color:#000;border:none;padding:5px 10px;border-radius:4px;font-size:11px;font-weight:800;cursor:pointer;">
-                💵 Repay Tab
-              </button>
-            ` : '<span style="font-size:11px;color:var(--accent-green);font-weight:700;">Clear Tab</span>'}
             ${this.canDelete && cust.id !== WALK_IN_CUSTOMER_ID ? `
               <button class="btn-remove-customer" data-cust-id="${cust.id}" data-cust-name="${cust.name}" title="Remove from the directory" style="background:transparent;color:var(--accent-rose);border:1px solid var(--accent-rose);padding:5px 10px;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;margin-left:6px;">
                 Remove
@@ -168,15 +159,6 @@ export class CustomersView {
         fragment.appendChild(tr);
       });
       tbody.replaceChildren(fragment);
-
-      // Bind actions
-      tbody.querySelectorAll('.btn-repay-tab').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          const custId = btn.getAttribute('data-cust-id');
-          const maxBalance = parseFloat(btn.getAttribute('data-balance'));
-          await this.repayCustomerTab(custId, maxBalance);
-        });
-      });
 
       tbody.querySelectorAll('.btn-remove-customer').forEach(btn => {
         btn.addEventListener('click', async () => {
@@ -234,91 +216,6 @@ export class CustomersView {
           button.disabled = false;
         }
       });
-    }
-  }
-
-  async repayCustomerTab(custId, maxBalance) {
-    const amountStr = prompt(`Enter repayment amount (Max: KES ${maxBalance.toLocaleString()}):`, maxBalance);
-    if (amountStr === null) return;
-
-    const amt = parseFloat(amountStr);
-    if (isNaN(amt) || amt <= 0 || amt > maxBalance) {
-      showNotification('Please enter a valid repayment amount.', 'warning');
-      return;
-    }
-
-    // Show simulated repayment loader overlay
-    const modal = document.getElementById('repay-modal');
-    const title = document.getElementById('repay-loader-title');
-    const desc = document.getElementById('repay-loader-desc');
-    const spinner = document.getElementById('repay-loader-spinner');
-
-    title.textContent = 'Processing Credit Repayment...';
-    desc.textContent = 'Allocating electronic payment funds to customer credit statement...';
-    spinner.style.animation = 'spin 1s linear infinite';
-
-    modal.style.display = 'flex';
-    modal.classList.add('active');
-
-    await new Promise(r => setTimeout(r, 2000));
-    title.textContent = 'Updating Customer Ledger...';
-    desc.textContent = 'Reducing outstanding tab and recording transaction event...';
-
-    await new Promise(r => setTimeout(r, 1500));
-
-    try {
-      const cust = await db.customers.get(custId);
-      if (!cust) throw new Error('Customer not found');
-
-      const nextBalance = Math.max(0, (cust.credit_balance || 0) - amt);
-
-      // Perform DB updates in transaction
-      await db.transaction('rw', [db.customers, db.payments], async () => {
-        await db.customers.update(custId, {
-          credit_balance: nextBalance
-        });
-
-        // Add a mock payout/payment line record
-        await db.payments.add({
-          id: `pay-repay-${crypto.randomUUID().slice(0, 8)}`,
-          sale_id: `repay-${custId}`,
-          method: 'CASH',
-          amount: amt,
-          reference: 'CREDIT_REPAY',
-          provider_txn_id: 'CREDIT_REPAY',
-          verified: 1,
-          received_at: new Date().toISOString()
-        });
-      });
-
-      await logAuditEvent(
-        state.currentTenant.id,
-        state.currentUser?.id || 'cashier',
-        'REPAY_CUSTOMER_TAB',
-        'CUSTOMER',
-        custId,
-        null,
-        JSON.stringify({ amt, nextBalance })
-      );
-
-      spinner.style.animation = 'none';
-      title.innerHTML = '<span style="color:var(--accent-green)">✔ Tab Reconciled</span>';
-      desc.textContent = `Successfully credited KES ${amt.toLocaleString()} to ${cust.name}'s account.`;
-      
-      showNotification('Tab repayment updated successfully.', 'success');
-
-      await new Promise(r => setTimeout(r, 2000));
-      modal.style.display = 'none';
-      modal.classList.remove('active');
-      await this.loadCustomers();
-    } catch (err) {
-      console.error(err);
-      spinner.style.animation = 'none';
-      title.textContent = 'Repayment Failed';
-      desc.textContent = err.message;
-      await new Promise(r => setTimeout(r, 2000));
-      modal.style.display = 'none';
-      modal.classList.remove('active');
     }
   }
 }

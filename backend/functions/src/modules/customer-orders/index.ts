@@ -100,6 +100,10 @@ export const updateCustomerOrder = onCall({ region: FUNCTION_REGION }, async (re
     const order = await transaction.get(ref);
     if (order.data()?.tenantId !== actor.tenantId) throw new HttpsError('not-found', 'Order not found.');
     if (['completed', 'cancelled'].includes(order.data()?.status)) throw new HttpsError('failed-precondition', 'Order already closed.');
+    // Completing is not payment. An unpaid order is paid first, or cancelled.
+    if (input.status === 'completed' && order.data()?.paymentStatus !== 'paid') {
+      throw new HttpsError('failed-precondition', 'Take payment before completing this order, or cancel it if it will not be paid.');
+    }
     transaction.update(ref, { status: input.status, updatedAt: Timestamp.now(), updatedByStaffId: actor.staffId });
   });
   return { orderId: id, status: input.status };

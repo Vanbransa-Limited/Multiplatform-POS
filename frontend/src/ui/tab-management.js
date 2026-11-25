@@ -1,11 +1,11 @@
 import { db } from '../db/schema';
 import { state } from '../context';
 import { escapeHtml } from '../services/print-receipt';
-import { mergeTabLines, tabCustomerId } from '../services/tabs';
+import { mergeTabLines } from '../services/tabs';
 import { readOpenTabs } from '../services/tab-edit';
 import { pullOpenOrders } from '../services/open-orders';
 import { pullSales } from '../services/catalogue';
-import { DEVICE_ID, WALK_IN_CUSTOMER_ID } from '../services/firebase';
+import { DEVICE_ID } from '../services/firebase';
 
 /**
  * Tab Management: every open table on one screen.
@@ -22,7 +22,6 @@ export class TabManagementView {
     this.container = container;
     this.tabs = [];
     this.names = new Map();
-    this.customers = new Map();
     this.search = '';
   }
 
@@ -35,7 +34,7 @@ export class TabManagementView {
             <p id="tabs-summary" style="margin:4px 0 0;font-size:12px;color:var(--text-secondary)">Reading open tabs…</p>
           </div>
           <div class="co-toolbar phone-sticky-toolbar" id="tabs-search-toolbar">
-            <input id="tabs-search" class="co-search" type="search" placeholder="Search table, customer, order number or who opened it…" aria-label="Search open tabs">
+            <input id="tabs-search" class="co-search" type="search" placeholder="Search table, order number or who opened it…" aria-label="Search open tabs">
             <button type="button" class="co-print" id="tabs-check-saved" title="Check saved orders on this till">Saved orders</button>
           </div>
           <div id="tabs-saved-results" role="status" style="padding:0 16px 12px"></div>
@@ -49,15 +48,13 @@ export class TabManagementView {
     });
     this.container.querySelector('#tabs-check-saved').addEventListener('click', () => void this.checkSavedOrders());
 
-    let [tabs, users, customers] = await Promise.all([
+    let [tabs, users] = await Promise.all([
       readOpenTabs(state.currentBranch?.id),
       db.users.toArray(),
-      db.customers.toArray(),
     ]);
     if (this.disposed) return;
     this.tabs = tabs;
     this.names = new Map(users.map((user) => [user.id, user.name]));
-    this.customers = new Map(customers.map((customer) => [customer.id, customer.name]));
     this.renderList();
     // Uploaded rounds leave the shared snapshot; the server copy is what keeps
     // another till's unpaid table on this screen.
@@ -81,7 +78,6 @@ export class TabManagementView {
         dueMinor: order.dueMinor,
         items: (order.lines || []).reduce((total, line) => total + (Number(line.qty) || 0), 0),
         rounds: [{ ...order }],
-        customerName: order.customerName && order.customerName !== 'Guest' ? order.customerName : '',
         readOnly: true,
       }));
     const localRefs = new Set(tabs.map((tab) => tab.order_no).filter(Boolean));
@@ -122,13 +118,6 @@ export class TabManagementView {
     }
   }
 
-  /** Whose tab it is, so a returning customer's tab can be found by their name. */
-  customerFor(tab) {
-    if (tab.customerName) return tab.customerName;
-    const id = tabCustomerId(tab, WALK_IN_CUSTOMER_ID);
-    return id ? this.customers.get(id) || '' : '';
-  }
-
   /** The Orders Viewer knows a tab card by this, and opens its settle dialog on it. */
   refFor(tab) {
     return tab.order_no || tab.rounds[0]?.ref || '';
@@ -146,7 +135,7 @@ export class TabManagementView {
 
     const needle = this.search.trim().toLowerCase();
     const shown = needle
-      ? this.tabs.filter((tab) => [tab.table, this.customerFor(tab), this.refFor(tab), this.names.get(tab.opened_by)]
+      ? this.tabs.filter((tab) => [tab.table, this.refFor(tab), this.names.get(tab.opened_by)]
         .filter(Boolean).join(' ').toLowerCase().includes(needle))
       : this.tabs;
 
@@ -160,7 +149,6 @@ export class TabManagementView {
     const { lines } = mergeTabLines(tab.unpaidRounds || tab.rounds);
     const opened = tab.opened_at ? new Date(tab.opened_at) : null;
     const by = tab.opened_by ? this.names.get(tab.opened_by) || tab.opened_by : '';
-    const customer = this.customerFor(tab);
     const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
     return `<article class="co-card tab-card">
       <div class="co-body" style="padding-left:14px">
@@ -168,7 +156,6 @@ export class TabManagementView {
           <span class="co-ref">Table ${escapeHtml(tab.table)}</span>
           <span class="co-unpaid">KES ${(tab.dueMinor / 100).toFixed(2)} due</span>
         </div>
-        ${customer ? `<div class="co-meta">Customer: <b>${escapeHtml(customer)}</b></div>` : ''}
         <div class="co-meta">${escapeHtml(ref)} · ${plural(tab.items, 'item')} · ${plural(tab.rounds.length, 'round')}<br>
           Opened ${escapeHtml(opened ? opened.toLocaleTimeString() : '—')}${by ? ` by <b>${escapeHtml(by)}</b>` : ''}</div>
         <div class="co-meta">${lines.slice(0, 8).map(line => `<div>${escapeHtml(line.name)} &times; ${escapeHtml(line.qty)}</div>`).join('')}${lines.length > 8 ? `<div>+${escapeHtml(lines.length - 8)} more</div>` : ''}</div>

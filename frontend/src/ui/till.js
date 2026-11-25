@@ -2494,6 +2494,18 @@ export class TillView {
       return;
     }
     if (this.finalizingInvoice) return;
+    // A customer's tab is billed to that customer. Whoever else the cart holds
+    // - a cashier's later pick, or nobody because the owner is not on this
+    // device yet - is refused rather than quietly put on their bill.
+    const tab = (this.openTabs || []).find((entry) => tabKey(entry.table) === tabKey(this.activeTable));
+    const owner = tab ? tabCustomerId(tab, WALK_IN_CUSTOMER_ID) : null;
+    if (owner && this.selectedCustomer?.id !== owner) {
+      const name = (await db.customers.get(owner))?.name;
+      showNotification(name
+        ? `Table ${this.activeTable} is ${name}'s tab. Select ${name} as the customer to add this round, or use a different table.`
+        : `Table ${this.activeTable} belongs to a customer this till has not loaded. Refresh customers, then add the round.`, 'error');
+      return;
+    }
     this.finalizingInvoice = true;
 
     try {
@@ -2687,9 +2699,9 @@ export class TillView {
   /**
    * A round added to a customer's tab is billed to that customer. It used to
    * go to whoever the cart had, usually the walk-in, so the items reached the
-   * table's bill but not the customer's balance. The cashier can still change
-   * it before adding the round; nothing is guessed when the tab has no single
-   * customer or the customer is not on this device.
+   * table's bill but not the customer's balance. addRoundToTab refuses any
+   * other customer; nothing is selected when the tab has no single customer or
+   * the customer is not on this device.
    */
   async selectTabCustomer(tab, table) {
     const id = tabCustomerId(tab, WALK_IN_CUSTOMER_ID);

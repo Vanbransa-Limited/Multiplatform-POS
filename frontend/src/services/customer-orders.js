@@ -458,7 +458,8 @@ export function renderOrderCard(order, images) {
     ? `<button type="button" class="co-print" data-invoice-sale="${escapeHtml(order.id)}">${isConsolidatedTable ? 'Consolidated invoice' : 'View invoice'}</button>
        ${paid || voided ? '' : `<button type="button" class="co-pay" data-settle-sale="${escapeHtml(order.id)}">${isConsolidatedTable ? `Pay consolidated bill (${order.roundIds.length})` : 'Pay now'}</button>`}
        ${!paid && !voided && order.tabId !== undefined && order.roundIds
-         ? `<button type="button" class="sec-btn" data-edit-tab="${escapeHtml(order.id)}" style="padding:6px 12px;font-size:12px;">Edit items</button>
+         ? `${order.tableNumber ? `<a class="sec-btn" href="/till?table=${escapeHtml(encodeURIComponent(order.tableNumber))}" style="padding:6px 12px;font-size:12px;text-decoration:none;">Add items</a>` : ''}
+            <button type="button" class="sec-btn" data-edit-tab="${escapeHtml(order.id)}" style="padding:6px 12px;font-size:12px;">Edit items</button>
             <a class="sec-btn" href="/tabs" style="padding:6px 12px;font-size:12px;text-decoration:none;">Tab management</a>`
          : ''}
        <span class="co-meta" style="margin:0">${voided

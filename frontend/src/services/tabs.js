@@ -80,6 +80,19 @@ export function openTabAt(tabs, branchId, tableNo) {
 }
 
 /**
+ * Whose tab this is: the customer it was opened for, or else the one customer
+ * every round on it was billed to. A round added later belongs to the same
+ * debtor, or it would land on the walk-in and leave their balance short. A tab
+ * whose rounds name different customers is never guessed.
+ */
+export function tabCustomerId(tab, walkInId) {
+  const own = (id) => (id && id !== walkInId ? String(id) : null);
+  if (own(tab?.customer_id)) return own(tab.customer_id);
+  const ids = new Set((tab?.rounds || []).map((round) => own(round.customerId)).filter(Boolean));
+  return ids.size === 1 ? [...ids][0] : null;
+}
+
+/**
  * What each open tab is worth, newest rounds included.
  *
  * `rounds` are the orders already mapped through `saleAsOrder`, so a round that

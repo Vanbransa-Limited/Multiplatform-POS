@@ -13,6 +13,20 @@ export function receiptCode(value: unknown): string {
   return code;
 }
 
+const LOOK_ALIKE = [['O', '0'], ['I', '1', 'L'], ['S', '5'], ['B', '8'], ['Z', '2']];
+
+/**
+ * Codes one misread character away from this one (O/0, I/1/L, S/5, B/8, Z/2).
+ * UKPH53LY0K was typed for UKPH53LYOK on 25 Nov 2026 and one KES 260 payment
+ * cleared two bills. ponytail: single swaps only; two misreads in one code pass.
+ */
+export function lookAlikeCodes(code: string): string[] {
+  const out = new Set<string>();
+  [...code].forEach((char, i) => LOOK_ALIKE.find(group => group.includes(char))
+    ?.filter(other => other !== char).forEach(other => out.add(code.slice(0, i) + other + code.slice(i + 1))));
+  return [...out];
+}
+
 /** Ongoing entry is an explicit, audited opt-in; a missing expiry never enables it. */
 export function internalReceiptEntryEnabled(control: DocumentData | undefined, tenantId: string, branchId: string, nowMs = Date.now(), branch?: DocumentData): boolean {
   if (control?.tenantId !== tenantId || control.mode !== 'internal') return false;
@@ -119,6 +133,15 @@ export async function readReceiptBalance(tx: Transaction, tenantId: string, code
         throw new HttpsError('not-found', 'No saved M-Pesa payment matches this code. Check the code or have the received payment reconciled into the register. No payment was applied.');
       }
       if (manualAmountMinor === undefined) throw new HttpsError('failed-precondition', 'Enter the amount on the M-Pesa receipt.');
+      // A brand-new typed code that is one misread away from a recorded one is that receipt again.
+      const twins = lookAlikeCodes(code);
+      const twinDocs = await tx.getAll(...twins.map(twin => db.collection('payment_receipt_claims')
+        .doc(deterministicId('mpesa-receipt', `${tenantId}:${twin}`))));
+      const twin = twinDocs.findIndex(doc => doc.data()?.tenantId === tenantId);
+      if (twin >= 0) {
+        throw new HttpsError('failed-precondition', `${code} looks like ${twins[twin]}, which is already recorded. `
+          + 'Check each letter O / zero and I / one on the customer\'s message. If it really is a different payment, ask a manager to reconcile it.');
+      }
       amountMinor = minorUnits(manualAmountMinor, 'Receipt amount', false);
       manualEntry = true;
       entryUntil = control?.until || null;

@@ -31,6 +31,7 @@ import { recordReceiptSettlement } from '../services/receipt-settlement';
 import { FIRST_CHECK_MS, acknowledgePrompt, recoverableResponse, recoveryScope, rememberPrompt, removeRecovery, stkSettlementRequestId, updateRecovery } from '../services/stk-recovery';
 import { manualReceipt } from '../services/manual-receipt';
 import { pullStock } from '../services/stock';
+import { unpaidTwin } from '../services/rering-guard';
 import { closingUpdate, newTab, OPEN, openTabAt, roundTotals, tabCustomerId, tabKey, tableChoices } from '../services/tabs';
 import { pullOpenOrders } from '../services/open-orders';
 import { removeTabLine, freeSettledTab, readOpenTabs } from '../services/tab-edit';
@@ -1866,6 +1867,7 @@ export class TillView {
 
   async startPrintedCheckout() {
     if (this.preparingPrintedCheckout) return;
+    if (!this.activeTabId && !this.pendingSale && !this.activeTable && await this.sendToUnpaidTwin()) return;
     this.preparingPrintedCheckout = true;
     requirePrintedReceipt(async () => {
       if (!firebaseConfigured) throw new Error('Reconnect to save the bill before payment.');
@@ -1891,6 +1893,29 @@ export class TillView {
           showNotification('Order saved in Pending. Open it in Orders to continue.', 'info');
         },
     });
+  }
+
+  /**
+   * The same items, rung by this waiter, already waiting unpaid in Orders:
+   * offer that bill rather than a second copy. True when the cashier went to it.
+   */
+  async sendToUnpaidTwin() {
+    try {
+      const since = new Date(Date.now() - 12 * 3600_000).toISOString();
+      const sales = await db.sales.where('sold_at').above(since).toArray();
+      const candidates = await Promise.all(sales.filter((sale) => !sale.table_no).map(async (sale) => ({
+        sale,
+        lines: await db.sale_lines.where('sale_id').equals(sale.id).toArray(),
+        payments: await db.payments.where('sale_id').equals(sale.id).toArray(),
+      })));
+      const twin = unpaidTwin(this.cart, candidates, state.currentUser?.id);
+      if (!twin || !window.confirm(`${twin.invoice_no} has these same items and is still unpaid in Orders (KES ${Number(twin.grand_total).toFixed(2)}).\n\nOK: open it and take the payment there.\nCancel: ring a new, separate bill.`)) return false;
+      this.clearCart();
+      window.location.href = `/orders?order=${encodeURIComponent(twin.invoice_no)}`;
+      return true;
+    } catch {
+      return false; // A failed lookup never blocks a sale.
+    }
   }
 
   openCheckoutModal() {

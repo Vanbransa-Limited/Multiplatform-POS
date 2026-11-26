@@ -489,6 +489,7 @@ export function renderOrderCard(order, images) {
   const isConsolidatedTable = Array.isArray(order.roundIds) && order.roundIds.length > 1;
   const actions = fromTill
     ? `<button type="button" class="co-print" data-invoice-sale="${escapeHtml(order.id)}">${isConsolidatedTable ? 'Consolidated invoice' : 'View invoice'}</button>
+       ${paid || voided ? '' : `<button type="button" class="sec-btn" data-staff-discount="${escapeHtml(order.id)}" title="Add the Staff 20% to a round that went out without it" style="padding:6px 12px;font-size:12px;">Staff 20%</button>`}
        ${paid || voided ? '' : `<button type="button" class="co-pay" data-settle-sale="${escapeHtml(order.id)}">${isConsolidatedTable ? `Pay consolidated bill (${order.roundIds.length})` : 'Pay now'}</button>`}
        ${!paid && !voided && order.tabId !== undefined && order.roundIds
          ? `${order.tableNumber ? `<a class="sec-btn" href="/till?table=${escapeHtml(encodeURIComponent(order.tableNumber))}" style="padding:6px 12px;font-size:12px;text-decoration:none;">Add items</a>` : ''}

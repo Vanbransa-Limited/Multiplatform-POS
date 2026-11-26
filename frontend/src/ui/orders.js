@@ -886,6 +886,8 @@ export class OrdersView {
       const settle = event.target.closest('[data-settle-sale]');
       if (settle) return void this.startPrintedSettlement(settle.dataset.settleSale);
 
+      const staff20 = event.target.closest('[data-staff-discount]');
+      if (staff20) return void this.addStaffDiscountToRound(staff20.dataset.staffDiscount);
       const edit = event.target.closest('[data-edit-tab]');
       if (edit) return void this.openTabEditor(edit.dataset.editTab);
       const invoice = event.target.closest('[data-invoice-sale]');

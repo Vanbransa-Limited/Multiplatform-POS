@@ -1,6 +1,6 @@
 # Stock flow and staff access
 
-Updated 8 September 2026.
+Updated 26 November 2026.
 
 ## Stock imports and Menu Admin
 
@@ -8,13 +8,18 @@ Stock import records a delivery or an owner's stock count. Menu Admin import man
 
 With Store enabled:
 
-1. Owner, Store Manager or Store Keeper imports a CSV/Excel delivery into **Store Stock**.
-2. Stock is transferred from Store to House using **Request from the Store**. The transfer subtracts from Store and adds the same quantity to House.
+1. **Into the Store.** Owner, Manager, Store Manager or Store Keeper books a delivery into **Store Stock**: one item with **Receive**, or a whole CSV/Excel delivery note with the import. A delivery can only land in the Store while the Store is on; it is the one door, so every unit that arrived is in the trail.
+2. **Store to House.** Someone uses **Request from the Store** in House Stock, naming the item and quantity.
+   - Owner, Manager or Store Manager: the move happens at once. Store goes down, House goes up, and both sides are recorded as a `request` movement.
+   - Supervisor, Bar Staff or Store Keeper: it becomes a *pending request*. Nothing moves until an Owner, Manager or Store Manager approves it in the requests list (or rejects it). Approval moves the stock exactly as above.
+   - A request larger than the Store holds is refused ("The Store holds only N").
 3. POS sales of physical items deduct from House. Menu Admin displays available House stock, excluding quantities reserved for orders. Public-menu availability uses House stock for items marked **Counted**.
 
 Example: import 100 bottles into Store; move 20 to House; sell 3. Store holds 80 and House holds 17, assuming no reservations or other movements.
 
 With House only, delivery imports go directly into **House Stock**. There is no Store transfer. Importing 100 and selling 3 leaves 97 in House.
+
+Book stock on the item the till sells. A new item whose brand, size and container match an existing one is refused as a duplicate, and deliveries or corrections on an item removed from the catalogue are refused: a second copy splits the stock, so deliveries land on one copy while the till sells the other and drives it negative. Ask the Owner to restore a removed item in Menu Admin instead.
 
 Use columns such as `SKU`, `Item Name`, and `Quantity`. Existing items match by SKU or name; ambiguous names require a unique SKU. A delivery adds quantities. An owner's count replaces the quantity in the selected room and requires a reason.
 
@@ -36,7 +41,8 @@ All six roles can use POS checkout, orders, shifts, M-Pesa payment flows and rec
 | View Store Stock, when enabled | Yes | Yes | Yes | Yes | No | No |
 | View House Stock | Yes | Yes | Yes | Yes | Yes | No |
 | Receive/import deliveries and create stock-only items | Yes | Yes | No | Yes | No | No |
-| Transfer Store stock to House | Yes | Yes | No | Yes | Yes | No |
+| Move Store stock to House at once, and approve requests (Manager too) | Yes | Yes | No | No | No | No |
+| Request Store stock for the House (waits for approval) | - | - | Yes | Yes | Yes | No (no Stock screen) |
 | Correct central stock quantities/import counts | Yes | Yes | No | No | No | No |
 | Switch between Store + House and House only | Yes | No | No | No | No | No |
 | Finance and audit screens | Yes | Yes | No | No | No | No |

@@ -2912,7 +2912,10 @@ export class TillView {
     const table = String(tableNo || '').trim();
     if (!table) return null;
 
-    const headers = await db.tabs.where('status').equals(OPEN).toArray();
+    // Only a header that still owes (or has no rounds yet): a paid table's old
+    // header is never reused, so the next customer gets a fresh tab.
+    const live = new Set((await readOpenTabs(state.currentBranch?.id)).map(tab => tab.id));
+    const headers = (await db.tabs.where('status').equals(OPEN).toArray()).filter(tab => live.has(tab.id));
     const selected = headers.find(tab => tab.id === this.activeTabId);
     const existing = openTabAt(selected ? [selected] : [], state.currentBranch?.id, table)
       || openTabAt(headers, state.currentBranch?.id, table);

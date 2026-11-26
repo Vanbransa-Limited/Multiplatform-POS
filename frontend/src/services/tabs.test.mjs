@@ -214,3 +214,13 @@ test('the table dropdown lists open tabs first, then free tables, and keeps a ty
   assert.equal(tableChoices([], ['1'], null).selected, '');
   assert.equal(tableChoices(tabs, ['1'], 'table 7').selected, '7');
 });
+
+test('a paid table frees up: a tab with every round paid or voided is no longer open', () => {
+  const tab = (id, table) => ({ id, status: 'OPEN', table_no: table, branch_id: 'b', opened_at: '2026-11-26T10:00:00Z' });
+  const round = (tabId, paymentStatus, dueMinor = 0) => ({ id: `${tabId}-${paymentStatus}`, tabId, tableNumber: tabId, branchId: 'b', paymentStatus, dueMinor });
+  const open = tabsWithTotals(
+    [tab('paid', 'paid'), tab('voided', 'voided'), tab('owing', 'owing'), tab('new', 'new')],
+    [round('paid', 'paid'), round('voided', 'void'), round('owing', 'paid'), round('owing', 'unpaid', 35000)],
+  );
+  assert.deepEqual(open.map(t => [t.id, t.dueMinor]), [['owing', 35000], ['new', 0]]);
+});

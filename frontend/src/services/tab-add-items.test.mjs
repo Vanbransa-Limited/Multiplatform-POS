@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { mergeTabLines, tabCustomerId, tabKey } from './tabs.js';
+import { canAddToTab, mergeTabLines, tabCustomerId, tabKey } from './tabs.js';
 import { renderOrderCard } from './customer-orders.js';
 import { escapeHtml } from './print-receipt.js';
 
@@ -153,7 +153,7 @@ test('Orders offers Add items on an unpaid tab, and only there', () => {
 test('Tab Management keeps its table-first cards and its table, order number and opener search', () => {
   const pick = (start, end) => tabs.slice(tabs.indexOf(start), tabs.indexOf(end, tabs.indexOf(start)));
   const body = [pick('  refFor(tab) {', '\n  renderList()'), pick('  renderList() {', '\n  card(tab) {'), pick('  card(tab) {', '\n}\n')].join('\n');
-  const View = new Function('escapeHtml', 'mergeTabLines', `return class { ${body} };`)(escapeHtml, mergeTabLines);
+  const View = new Function('escapeHtml', 'mergeTabLines', 'canAddToTab', `return class { ${body} };`)(escapeHtml, mergeTabLines, canAddToTab);
   const list = {}, summary = {};
   const view = Object.assign(new View(), {
     container: { querySelector: selector => (selector === '#tabs-list' ? list : summary) },
@@ -177,4 +177,14 @@ test('Tab Management keeps its table-first cards and its table, order number and
   assert.match(list.innerHTML, /href="\/till\?table=4">Add items<\/a>/);
   assert.doesNotMatch(list.innerHTML, /Customer|Nicole/);
   assert.match(tabs, /placeholder="Search table, order number or who opened it…"/);
+});
+
+test('a tablet can add to a tab another till opened, but not to one still uploading', () => {
+  assert.equal(canAddToTab({ id: 'tab-1', status: 'OPEN' }), true);
+  // Server copy of another till's tab: the till re-creates its header on Add round.
+  assert.equal(canAddToTab({ id: 'tab-2', readOnly: true, recoveryRequired: true }), true);
+  // Still uploading from another till, or no tab identity: the till would refuse.
+  assert.equal(canAddToTab({ id: 'open-order-x', readOnly: true }), false);
+  assert.equal(canAddToTab({ id: 'recovered-sale-1', readOnly: true, recoveryRequired: true }), false);
+  assert.equal(canAddToTab(null), false);
 });

@@ -1,7 +1,7 @@
 import { db } from '../db/schema';
 import { state } from '../context';
 import { escapeHtml } from '../services/print-receipt';
-import { mergeTabLines } from '../services/tabs';
+import { canAddToTab, mergeTabLines } from '../services/tabs';
 import { readOpenTabs } from '../services/tab-edit';
 import { pullOpenOrders, collapseOpenOrders } from '../services/open-orders';
 import { pullSales } from '../services/catalogue';
@@ -161,11 +161,11 @@ export class TabManagementView {
         <div class="co-meta">${lines.slice(0, 8).map(line => `<div>${escapeHtml(line.name)} &times; ${escapeHtml(line.qty)}</div>`).join('')}${lines.length > 8 ? `<div>+${escapeHtml(lines.length - 8)} more</div>` : ''}</div>
         <div class="co-actions">
           ${ref ? `<a class="co-print" style="text-decoration:none" href="/orders?order=${escapeHtml(encodeURIComponent(ref))}&invoice=1">Invoice</a>` : ''}
-          ${tab.readOnly ? '' : `<a class="co-print" style="text-decoration:none" href="/till?table=${encodeURIComponent(tab.table)}">Add items</a>`}
-          ${ref && !tab.readOnly ? `<a class="co-print" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}&edit=1">Edit tab</a>` : ''}
+          ${canAddToTab(tab) ? `<a class="co-print" style="text-decoration:none" href="/till?table=${encodeURIComponent(tab.table)}">Add items</a>` : ''}
+          ${ref && canAddToTab(tab) ? `<a class="co-print" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}&edit=1">Edit tab</a>` : ''}
           ${ref ? `<a class="co-print" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}&discount=1" title="Add the Staff 20% to a round that went out without it">Staff 20%</a>` : ''}
           ${ref ? `<a class="co-pay" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}">Pay now</a>` : ''}
-          ${tab.readOnly ? '<span class="co-meta" style="margin:0">Running on another till · Pay now settles it from here</span>' : ''}
+          ${canAddToTab(tab) ? '' : '<span class="co-meta" style="margin:0">Running on another till · Pay now settles it from here</span>'}
         </div>
       </div>
     </article>`;

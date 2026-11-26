@@ -67,6 +67,18 @@ export function tabKey(name) {
 }
 
 /**
+ * Whether this device can add a round to the tab. A tab another till opened
+ * reaches a tablet as a server copy with no local header (recoveryRequired);
+ * the till re-creates the header on Add round, so it is addable. Hiding it
+ * left tablets unable to add to any tab they did not open (26 Nov 2026).
+ * A round still uploading from another till, or one with no tab id, is not.
+ */
+export function canAddToTab(tab) {
+  if (!tab?.readOnly) return Boolean(tab);
+  return Boolean(tab.recoveryRequired && tab.id && !String(tab.id).startsWith('recovered-'));
+}
+
+/**
  * The open tab at a table, if there is one.
  *
  * Deliberately by table and not by customer: the floor identifies a tab by
@@ -146,6 +158,11 @@ export function tabsWithTotals(tabs, rounds) {
       const owned = uniqueRounds.filter((round) => round.paymentStatus !== 'void');
       const unpaid = owned.filter((round) => round.paymentStatus === 'unpaid');
       const { _mergedTabIds, ...cleanTab } = tab;
+      // Paying a bill never closed its header, so a paid table stayed "open" at
+      // KES 0 and never freed up for the next customer (26 Nov 2026). Once every
+      // round ever rung on it is paid or voided, it is gone. A tab with no rounds
+      // at all is one being opened right now, so it stays.
+      if (uniqueRounds.length > 0 && unpaid.length === 0) return null;
       return {
         ...cleanTab,
         table: tab.table_no,
@@ -158,6 +175,7 @@ export function tabsWithTotals(tabs, rounds) {
         ),
       };
     })
+    .filter(Boolean)
     // Oldest first: the table that has been open longest needs dealing with.
     .sort((a, b) => new Date(a.opened_at).getTime() - new Date(b.opened_at).getTime());
 }

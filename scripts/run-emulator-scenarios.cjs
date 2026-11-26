@@ -18,6 +18,7 @@ function main() {
     ['backend/functions/e2e/seed-settings.mjs', tokens],
     ['frontend/e2e/settings-rules-check.mjs', tokens],
     ['backend/functions/e2e/checkout-print.cjs'],
+    ['backend/functions/e2e/tab-lifecycle.cjs'],
   ];
   try {
     for (const args of scenarios) {

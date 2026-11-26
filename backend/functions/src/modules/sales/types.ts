@@ -28,6 +28,8 @@ export type ParsedSaleInput = {
   tableNumber: string | null;
   tabId?: string;
   orderReference?: string;
+  /** An unpaid bill this round is added to: it takes that bill's tab (26 Nov 2026). */
+  joinSaleUuid?: string;
   buyerKraPin: string | null;
   /** A manager's single-use approval for the fixed staff discount. */
   discountApprovalId?: string;

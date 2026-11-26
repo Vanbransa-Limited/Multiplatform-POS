@@ -5,10 +5,11 @@ import { FUNCTION_REGION } from "../../config/runtime";
 import { SELLING_ROLES } from "./constants";
 import { parseSaleInput } from "./input";
 import { executeCreateSale } from "./transaction";
+import { withTableRefresh } from "./tab-identity";
 
 export const createSale = onCall(
   { region: FUNCTION_REGION },
-  async (request) => {
+  withTableRefresh(async (request) => {
     if (!request.auth) {
       throw new HttpsError("unauthenticated", "Sign in before creating a sale.");
     }
@@ -74,5 +75,5 @@ export const createSale = onCall(
       });
       throw new HttpsError("internal", "The sale could not be created.");
     }
-  },
+  }),
 );

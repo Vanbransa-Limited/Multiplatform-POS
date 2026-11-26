@@ -99,8 +99,11 @@ export async function executeCreateSale(
       timestamp,
     });
     if (sharedTab) {
-      Object.assign(records.sale, { tabId: sharedTab.data.tabId, orderReference: sharedTab.data.orderReference });
-      transaction.set(sharedTab.ref, { ...sharedTab.data, updatedAt: timestamp });
+      Object.assign(records.sale, { tabId: sharedTab.data.tabId, orderReference: sharedTab.data.orderReference,
+        ...(sharedTab.data.tableNumber ? { tableNumber: sharedTab.data.tableNumber } : {}) });
+      if (sharedTab.ref) transaction.set(sharedTab.ref, { ...sharedTab.data, updatedAt: timestamp }, { merge: true });
+      // A bill without a table becomes a tab the moment items are added to it.
+      if (sharedTab.join) transaction.update(sharedTab.join.ref, sharedTab.join.update);
     }
     if (approvalRef && managerApproved && discounted) {
       // Consumed with the sale, in the same transaction: one approval, one sale.

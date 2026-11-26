@@ -65,3 +65,12 @@ test('settled sales and takeaway orders never acquire an open-table lock', async
   assert.equal(await resolveSharedTab({}, { ...input, payments: [{ method: 'cash', amountMinor: 10000 }] }), null);
   assert.equal(await resolveSharedTab({}, { ...input, tableNumber: null }), null);
 });
+
+test('a paid tab proposed again by a stale device gives the next customer a new tab', async () => {
+  const h = harness([sale('paid', 'new-tab')], [{ ...credit('paid'), settledAt: 'paid' }]);
+  try {
+    const result = await resolveSharedTab(h.tx, { ...input, idempotencyKey: 'round-after-payment' });
+    assert.notEqual(result.data.tabId, 'new-tab');
+    assert.equal(result.data.orderReference, null, 'the old bill number is not reused');
+  } finally { h.restore(); }
+});

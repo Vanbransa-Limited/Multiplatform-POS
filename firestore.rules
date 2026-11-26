@@ -187,6 +187,12 @@ service cloud.firestore {
     // is running. Readable by everyone who works here - an owner needs the whole
     // floor, and a cashier taking over a table needs to see it. Server-written
     // only: this is a mirror of what a till holds, never a source of money.
+    // The server's record of each table's tab; written only by the sale callables.
+    match /table_sessions/{documentId} {
+      allow read: if canReadTenantDocument();
+      allow write: if false;
+    }
+
     match /open_orders/{documentId} {
       allow read: if canReadTenantDocument();
       allow write: if false;

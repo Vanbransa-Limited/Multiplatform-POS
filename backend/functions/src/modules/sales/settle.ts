@@ -3,6 +3,7 @@ import { HttpsError, onCall } from 'firebase-functions/v2/https';
 
 import { FUNCTION_REGION } from '../../config/runtime';
 import { db } from '../../lib/firebase';
+import { withTableRefresh } from './tab-identity';
 import { deterministicId } from '../../shared/identifiers';
 import { asRecord, documentId, optionalText } from '../../shared/validation';
 import { SELLING_ROLES } from './constants';
@@ -171,7 +172,7 @@ export function isVoidable(payments: { method?: unknown; settledAt?: unknown }[]
  * The sale is kept and stamped VOIDED rather than deleted: it really did move
  * stock, and that is a fact somebody will want to find later.
  */
-export const voidSale = onCall({ region: FUNCTION_REGION }, async (request) => {
+export const voidSale = onCall({ region: FUNCTION_REGION }, withTableRefresh(async (request) => {
   const actor = settlingStaff(request.auth?.token);
   const input = asRecord(request.data);
   const saleUuid = documentId(input.saleUuid, 'saleUuid');
@@ -276,9 +277,9 @@ export const voidSale = onCall({ region: FUNCTION_REGION }, async (request) => {
 
     return { saleId, saleUuid, voided: true, restoredLines: restorations.length };
   });
-});
+}));
 
-export const settleSale = onCall({ region: FUNCTION_REGION }, async (request) => {
+export const settleSale = onCall({ region: FUNCTION_REGION }, withTableRefresh(async (request) => {
   const actor = settlingStaff(request.auth?.token);
   const input = asRecord(request.data);
   // The till knows a sale by the key it submitted it under; the document id is
@@ -528,4 +529,4 @@ export const settleSale = onCall({ region: FUNCTION_REGION }, async (request) =>
 
     return result;
   });
-});
+}));

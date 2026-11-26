@@ -8,6 +8,7 @@ import { asRecord, documentId } from "../../shared/validation";
 import { approvalUsable } from "../approval-codes/domain";
 import { SELLING_ROLES, STAFF_PRESET_ROLES } from "./constants";
 import { roundDiscountRefusal, roundStaffDiscount } from "./round-discount";
+import { withTableRefresh } from "./tab-identity";
 
 /**
  * Adds the Staff 20% to one round already on a tab, before it is paid.
@@ -16,7 +17,7 @@ import { roundDiscountRefusal, roundStaffDiscount } from "./round-discount";
  * approval from approveStaffDiscount, used up by this round - the same rule
  * createSale applies when the 20% is rung with the round.
  */
-export const addRoundStaffDiscount = onCall({ region: FUNCTION_REGION }, async (request) => {
+export const addRoundStaffDiscount = onCall({ region: FUNCTION_REGION }, withTableRefresh(async (request) => {
   const token = request.auth?.token;
   const role = String(token?.staff_role || "");
   if (!token?.tenant_id || !token.staff_id || !SELLING_ROLES.has(role)) {
@@ -85,4 +86,4 @@ export const addRoundStaffDiscount = onCall({ region: FUNCTION_REGION }, async (
       taxMinor: next.taxMinor, totalMinor: next.totalMinor,
       lines: next.lines.map((line) => ({ productId: line.productId, discountMinor: line.discountMinor, taxMinor: line.taxMinor, lineTotalMinor: line.lineTotalMinor })) };
   });
-});
+}));

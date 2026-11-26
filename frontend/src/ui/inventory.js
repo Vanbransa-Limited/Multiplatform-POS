@@ -90,6 +90,15 @@ export class InventoryView {
     return ['Owner', 'Manager'].includes(state.currentUser?.role);
   }
 
+  /**
+   * Approving a count posts it through importStock, which the server allows for
+   * STOCK_ROLES.adjust. In a House-only business the House is the store room, so
+   * the Store Manager approves its counts exactly as they would the Store's.
+   */
+  get canApproveCounts() {
+    return ['Owner', 'Manager', 'Store Manager'].includes(state.currentUser?.role);
+  }
+
   /** Counted and on-menu are stock decisions, so a keeper may flip them. */
   get canFlagProducts() {
     return ['Owner', 'Manager', 'Store Manager', 'Store Keeper'].includes(state.currentUser?.role);
@@ -904,8 +913,8 @@ Past sales keep it. You can add it again later.`)) return;
       btn.addEventListener('click', async (e) => {
         const takeId = e.target.getAttribute('data-id');
         
-        if (!this.canEditCatalogue) {
-          showNotification('Only an Owner or Store Manager can approve stock counts.', 'error');
+        if (!this.canApproveCounts) {
+          showNotification('Only the owner, a manager or a store manager can approve stock counts.', 'error');
           return;
         }
 

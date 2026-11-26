@@ -361,7 +361,7 @@ export class StockView {
             <div class="stk-field grow"><label for="stk-new-name">Name</label><input id="stk-new-name" name="name" type="text" maxlength="300" required></div>
             <div class="stk-field"><label for="stk-new-sku">SKU (optional)</label><input id="stk-new-sku" name="sku" type="text" maxlength="200"></div>
             <div class="stk-field"><label for="stk-new-category">Type</label><select id="stk-new-category" name="categoryId"><option value="">—</option>${(this.categories || []).map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></div>
-            ${this.canPriceItem ? '<div class="stk-field"><label for="stk-new-price">Sell price (KES)</label><input id="stk-new-price" name="price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0 = not for sale yet"></div>' : ''}
+            ${this.canPriceItem ? '<div class="stk-field"><label for="stk-new-price">Sell price (KES)</label><input id="stk-new-price" name="price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0 = not for sale yet"></div>' : '<p class="stk-hint">Sell price: the owner or a manager sets it in Menu Admin after you add the item. It is not for sale until then.</p>'}
             <div class="stk-field"><label for="stk-new-qty">Opening quantity</label><input id="stk-new-qty" name="qty" type="number" min="0" step="1" inputmode="numeric" value="0"></div>
             <div class="stk-field grow"><label for="stk-new-ref">Delivery reference</label><input id="stk-new-ref" name="reason" type="text" maxlength="300"></div>
             <div class="stk-field"><button class="primary-btn" type="submit">Add item</button></div>

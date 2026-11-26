@@ -100,6 +100,15 @@ async function main() {
   await settle('life-till-c', beef); await settle('life-till-c', punch);
   await assert.rejects(ring('life-tablet-a', { join: beef.uuid }), /already paid/);
 
-  console.log(JSON.stringify({ tabLifecycle: 'passed', addItemsToBill: true, sharedAcrossDevices: true, freedAfterPayment: true, freshTabAfterPayment: true, voidedOnlyTabFree: true }));
+  // A typed M-Pesa code with no misreadable character (no O/0, I/1/L, S/5, B/8, Z/2) settles.
+  // Every such payment failed with 'internal' on 26 Nov 2026 (look-alike check read nothing).
+  await db.doc(`mpesa_receipt_controls/${T}`).set({ tenantId: T, mode: 'internal', policyVersion: 3, entryMode: 'staff_entry',
+    branchScope: 'tenant', duration: 'ongoing', until: null, authorizationId: 'life-test' });
+  const typed = await ring('life-tablet-a', { table: '9' });
+  const paid = await settleSale.run({ auth: auth('life-till-c'), data: { saleUuid: typed.uuid, requestId: 'pay-typed',
+    method: 'mpesa', reference: 'UKACDEFGHJ', receiptAmountMinor: 50000 } });
+  assert.equal(paid.outstandingMinor, 0);
+
+  console.log(JSON.stringify({ tabLifecycle: 'passed', addItemsToBill: true, typedCodeWithoutLookAlikes: true, sharedAcrossDevices: true, freedAfterPayment: true, freshTabAfterPayment: true, voidedOnlyTabFree: true }));
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

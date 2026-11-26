@@ -135,8 +135,10 @@ export async function readReceiptBalance(tx: Transaction, tenantId: string, code
       if (manualAmountMinor === undefined) throw new HttpsError('failed-precondition', 'Enter the amount on the M-Pesa receipt.');
       // A brand-new typed code that is one misread away from a recorded one is that receipt again.
       const twins = lookAlikeCodes(code);
-      const twinDocs = await tx.getAll(...twins.map(twin => db.collection('payment_receipt_claims')
-        .doc(deterministicId('mpesa-receipt', `${tenantId}:${twin}`))));
+      // getAll() with no references throws; a code with no misreadable
+      // character has no twins (every such payment failed with "internal", 26 Nov 2026).
+      const twinDocs = twins.length ? await tx.getAll(...twins.map(twin => db.collection('payment_receipt_claims')
+        .doc(deterministicId('mpesa-receipt', `${tenantId}:${twin}`)))) : [];
       const twin = twinDocs.findIndex(doc => doc.data()?.tenantId === tenantId);
       if (twin >= 0) {
         throw new HttpsError('failed-precondition', `${code} looks like ${twins[twin]}, which is already recorded. `

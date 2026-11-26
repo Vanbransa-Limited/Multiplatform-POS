@@ -208,3 +208,10 @@ test('Void bill is offered on one unpaid bill, never on paid, voided or a whole 
     assert.doesNotMatch(renderOrderCard(order, new Map()), /data-void-sale/, JSON.stringify(order));
   }
 });
+
+test('choosing a round\'s tab reads nothing outside the sale transaction (26 Nov 2026: no table sale could save)', () => {
+  const body = till.slice(till.indexOf('  async resolveTabForRound('), till.indexOf('\n  }\n', till.indexOf('  async resolveTabForRound(')));
+  assert.doesNotMatch(body, /readOpenTabs|pullSales|pullOpenOrders|callFunction|db\.products/);
+  // The transaction it runs in, for reference: these are the only tables it may touch.
+  assert.match(till, /db\.transaction\('rw', \[db\.tabs, db\.sales, db\.sale_lines, db\.payments, db\.stock_movements, db\.audit_log, db\.customers\]/);
+});

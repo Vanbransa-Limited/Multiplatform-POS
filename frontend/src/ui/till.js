@@ -2943,7 +2943,11 @@ export class TillView {
 
     // Only a header that still owes (or has no rounds yet): a paid table's old
     // header is never reused, so the next customer gets a fresh tab.
-    const live = new Set((await readOpenTabs(state.currentBranch?.id)).map(tab => tab.id));
+    // From the list already loaded: this runs inside registerOrder's Dexie
+    // transaction, and reading other tables (or the network) here broke every
+    // table sale with "Table products not included in parent transaction".
+    // The server also refuses to reuse a paid tab, so this is only a hint.
+    const live = new Set((this.openTabs || []).map(tab => tab.id));
     const headers = (await db.tabs.where('status').equals(OPEN).toArray()).filter(tab => live.has(tab.id));
     const selected = headers.find(tab => tab.id === this.activeTabId);
     const existing = openTabAt(selected ? [selected] : [], state.currentBranch?.id, table)

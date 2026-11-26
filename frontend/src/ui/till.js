@@ -77,9 +77,17 @@ export class TillView {
     // A refreshed menu reaches the product grid; the cart keeps what was rung.
     this.onCatalogueUpdated = () => { if (!this.disposed && this.container.isConnected) void this.loadProducts().catch(() => {}); };
     window.addEventListener('pos:catalogue-updated', this.onCatalogueUpdated);
-    // Another till paid or added to a table: the server's tabs changed.
-    this.onTablesUpdated = () => { if (!this.disposed && this.container.isConnected) void this.loadOpenTabs(); };
-    window.addEventListener('pos:tables-updated', this.onTablesUpdated);
+    // Another till paid or added to a table (server tabs, pos:tables-updated), or
+    // the background sync closed a tab paid on another device (pos:tabs-updated):
+    // read the open tabs again. A payment in progress on this till reloads the
+    // list itself when it finishes, so it is left alone.
+    this.onTabsUpdated = () => {
+      if (this.disposed || !this.container.isConnected || this.finalizingInvoice || this.preparingPrintedCheckout
+        || document.getElementById('payment-modal')?.classList.contains('active')) return;
+      void this.loadOpenTabs().catch(() => {});
+    };
+    window.addEventListener('pos:tabs-updated', this.onTabsUpdated);
+    window.addEventListener('pos:tables-updated', this.onTabsUpdated);
     this.productPage = 1;
     this.catalogueProducts = [];
     this.filteredProducts = [];
@@ -136,7 +144,8 @@ export class TillView {
 
   dispose() {
     window.removeEventListener('pos:catalogue-updated', this.onCatalogueUpdated);
-    window.removeEventListener('pos:tables-updated', this.onTablesUpdated);
+    window.removeEventListener('pos:tables-updated', this.onTabsUpdated);
+    window.removeEventListener('pos:tabs-updated', this.onTabsUpdated);
     clearTimeout(this.searchTimer);
     this.filterSheet?.dispose();
     this.persistDraft();
@@ -799,7 +808,9 @@ export class TillView {
         this.clearCart();
         showNotification('Order left unpaid in Pending. Use Pay now in Orders to clear it.', 'info');
       }
-
+      // A tab another device settled while this window was open was not
+      // redrawn then; the takeaway path is the one close that does not reload.
+      void this.loadOpenTabs().catch(() => {});
     });
 
     document.getElementById('pay-confirm-btn').addEventListener('click', () => {

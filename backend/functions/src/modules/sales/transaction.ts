@@ -1,6 +1,6 @@
 import { Timestamp } from "firebase-admin/firestore";
 import { HttpsError } from 'firebase-functions/v2/https';
-import { PRINT_FIRST_MESSAGE } from './printed-receipt';
+import { SAVE_FIRST_MESSAGE } from './printed-receipt';
 
 import { db } from "../../lib/firebase";
 import { deterministicId } from "../../shared/identifiers";
@@ -46,7 +46,7 @@ export async function executeCreateSale(
     // Replays above preserve historical paid sales. New sales first save the
     // unpaid bill, print it, then settle through the guarded payment routes.
     if (input.payments.some(payment => payment.method !== 'credit')) {
-      throw new HttpsError('failed-precondition', PRINT_FIRST_MESSAGE);
+      throw new HttpsError('failed-precondition', SAVE_FIRST_MESSAGE);
     }
     const context = await loadBaseSaleContext(transaction, input);
     const preparedLines = prepareSaleLines(

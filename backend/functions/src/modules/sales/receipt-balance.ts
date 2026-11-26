@@ -3,7 +3,7 @@ import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { FUNCTION_REGION } from '../../config/runtime';
 import { db } from '../../lib/firebase';
 import { deterministicId } from '../../shared/identifiers';
-import { readReceiptUsage } from '../../shared/mpesa-receipt';
+import { readReceiptUsage, receiptTarget } from '../../shared/mpesa-receipt';
 import { asRecord, documentId, minorUnits } from '../../shared/validation';
 import { SELLING_ROLES } from './constants';
 
@@ -136,6 +136,40 @@ export async function readReceiptBalance(tx: Transaction, tenantId: string, code
     || allocatedMinor > amountMinor) throw new HttpsError('failed-precondition', 'That receipt has inconsistent allocations and needs reconciliation.');
   return { usage, event, eventRef, intent, intentRef, attempt, attemptRef, amountMinor, allocatedMinor,
     availableMinor: amountMinor - allocatedMinor, verified, paidAt, manualEntry, internalOnly, entryUntil, entryAuthorizationId };
+}
+
+const kes = (minor: number) => `KES ${(minor / 100).toFixed(2)}`;
+const TARGET_COLLECTIONS: Record<string, string> = { sale: 'sales', proforma: 'proformas', customer_order: 'customer_orders' };
+
+/**
+ * Why a receipt cannot pay this bill, in figures staff can check. Reads only
+ * on the refusal path, before any write, and names an earlier bill only when
+ * it belongs to this business; anything else is "another bill". Provider-backed
+ * totals are "received"; staff-entered or inferred totals are "recorded".
+ */
+export async function describeReceiptUse(tx: Transaction, tenantId: string,
+  balance: Pick<Awaited<ReturnType<typeof readReceiptBalance>>, 'usage' | 'amountMinor' | 'allocatedMinor' | 'verified'>, currentTarget?: string) {
+  const targets: string[] = [...new Set<string>(Array.isArray(balance.usage.claim?.targets) && balance.usage.claim.targets.length
+    ? balance.usage.claim.targets : balance.usage.payments.map(receiptTarget).filter(Boolean))];
+  const shown = targets.slice(0, 3);
+  const refs = shown.map(target => {
+    const split = target.indexOf(':'), collection = TARGET_COLLECTIONS[target.slice(0, split)];
+    return target !== currentTarget && collection && split > 0 ? db.collection(collection).doc(target.slice(split + 1)) : null;
+  });
+  const wanted = refs.filter((ref): ref is FirebaseFirestore.DocumentReference => ref !== null);
+  const docs = wanted.length ? await tx.getAll(...wanted) : [];
+  let read = 0;
+  const names = shown.map((target, index) => {
+    if (target === currentTarget) return 'this bill';
+    if (!refs[index]) return 'another bill';
+    const data = docs[read++]?.data();
+    const name = data?.tenantId === tenantId ? data.invoiceNumber || data.invoice?.number || data.ref : null;
+    return typeof name === 'string' && name ? name : 'another bill';
+  });
+  const others = targets.length - shown.length;
+  const where = names.length ? ` on ${[...new Set(names)].join(', ')}${others > 0 ? ` and ${others} other bill${others === 1 ? '' : 's'}` : ''}` : '';
+  return `That M-Pesa receipt has no unallocated money left: ${balance.verified ? 'received' : 'recorded'} ${kes(balance.amountMinor)}, `
+    + `already used ${kes(balance.allocatedMinor)}${where}, remaining ${kes(Math.max(0, balance.amountMinor - balance.allocatedMinor))}.`;
 }
 
 /** All callers read first; this writes one shared, capped allocation and its provenance. */

@@ -56,7 +56,7 @@ test('an unprinted offline paid sale is refused without moving stock or recordin
   try {
     docs.set('payments/original', { tenantId: 'tenant', saleId: 'original-sale', method: 'mpesa', reference: 'REUSEDCODE', amountMinor: 136000, status: 'completed' });
     const data = { ...input, payments: [{ method: 'mpesa', reference: 'REUSEDCODE', amountMinor: 136000, unverified: true }] };
-    await assert.rejects(createSale.run({ auth, data }), /Print the receipt/);
+    await assert.rejects(createSale.run({ auth, data }), /Save the bill unpaid/);
     assert.equal(docs.get('stock_balances/branch_meal_HOUSE').qty, 5);
     assert.equal([...docs.keys()].filter(key => key.startsWith('payment_receipt_claims/')).length, 0);
   } finally { restore(); }
@@ -148,7 +148,7 @@ test('provider payment proof does not bypass the requirement to save and print t
     });
     await assert.rejects(createSale.run({ auth, data: { ...input,
       payments: [{ method: 'mpesa', amountMinor: 136000, reference: 'STAFFPAIDRECEIPT' }],
-    } }), /Print the receipt/);
+    } }), /Save the bill unpaid/);
     assert.equal(docs.get(`payment_intents/${deterministicId('intent', 'tenant:STAFFPAIDRECEIPT')}`).consumedSaleId, undefined);
   } finally { restore(); }
 });

@@ -16,7 +16,7 @@ test('saved invoice STK sends the original balance and binding; only a definitiv
     const nodes = new Map();
     const querySelector = selector => { if (!nodes.has(selector)) nodes.set(selector, { value: '0712345678', classList: { remove() {} } }); return nodes.get(selector); };
     let sent;
-    const view = { container: { querySelector }, settleStkKey: 'original-key', settleRequestId: 'reservation',
+    const view = { container: { querySelector }, settleStkKey: 'original-key', settleRequestId: 'reservation', stkScope: () => null,
       mpesa: { initiateStkPush: async payload => { sent = payload; if (status === 'network-error') throw new Error('Response lost'); return { success: false, status }; } } };
     const button = {};
     await settle.call(view, button, { dueMinor: 105000, customerId: null, branchId: 'branch' },
@@ -69,6 +69,8 @@ test('cached Orders render and the live subscription starts without waiting for 
     bindEvents: () => calls.push('events'),
     renderCustomerBoard: () => calls.push('board'),
     openLinkedReconciliation: () => {},
+    renderStkRecovery: () => {},
+    runStkRecovery: async () => {},
   };
   t.after(() => clearInterval(view.refreshTimer));
   await makeLoad(async () => { calls.push('subscribe'); return () => {}; }).call(view);
@@ -88,6 +90,7 @@ test('an Orders refresh finishing after navigation does not redraw the old scree
     container: { querySelector: () => ({}) }, render() {}, loadProductImages: async () => {},
     loadPosOrders: options => options?.refresh === false ? Promise.resolve() : server,
     bindEvents() {}, renderCustomerBoard() { draws++; }, openLinkedReconciliation() {},
+    renderStkRecovery() {}, runStkRecovery: async () => {},
   };
   t.after(() => clearInterval(view.refreshTimer));
   await makeLoad(async () => () => {}).call(view);

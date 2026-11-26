@@ -7,7 +7,7 @@ import { deterministicId } from '../../shared/identifiers';
 import { asRecord, documentId, optionalText } from '../../shared/validation';
 import { SELLING_ROLES } from './constants';
 import { readReceiptUsage, receiptAllocation } from '../../shared/mpesa-receipt';
-import { allocateReceiptBalance, readReceiptBalance, receiptCode } from './receipt-balance';
+import { allocateReceiptBalance, describeReceiptUse, readReceiptBalance, receiptCode } from './receipt-balance';
 import { assertSaleReceiptPrinted } from './printed-receipt';
 
 /**
@@ -447,7 +447,9 @@ export const settleSale = onCall({ region: FUNCTION_REGION }, async (request) =>
       });
     } else if (method === 'mpesa') {
       const balance = await readReceiptBalance(tx, actor.tenantId, reference, String(sale.branchId), saleId, input.receiptAmountMinor);
-      if (balance.availableMinor <= 0) throw new HttpsError('failed-precondition', 'That M-Pesa receipt has no unallocated money left.');
+      if (balance.availableMinor <= 0) {
+        throw new HttpsError('failed-precondition', await describeReceiptUse(tx, actor.tenantId, balance, `sale:${saleId}`));
+      }
       settledMinor = Math.min(dueMinor, balance.availableMinor);
       if (input.amountMinor !== undefined) {
         if (typeof input.amountMinor !== 'number' || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0

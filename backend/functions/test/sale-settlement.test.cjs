@@ -167,6 +167,50 @@ test('one confirmed STK can clear two rounds only within the received total', as
   } finally { restore(); }
 });
 
+test('late STK recovery from another device replays the same payment and never records a second one', async () => {
+  const docs = base(); confirmedAttempt(docs);
+  const restore = harness(docs);
+  const manager = { token: { tenant_id: 't1', staff_id: 'manager', staff_role: 'manager' } };
+  try {
+    // The request id recovery derives from the attempt and the bill.
+    const input = { saleUuid: 'uuid-1', requestId: 'stk1-uuid-1', method: 'mpesa', attemptId: 'stk1' };
+    const first = await settleSale.run({ auth, data: input });
+    assert.deepEqual(await settleSale.run({ auth: manager, data: input }), first);
+    // An older till retrying under its own request id is refused, not paid twice.
+    await assert.rejects(settleSale.run({ auth, data: { ...input, requestId: 'old-format-0' } }), /Nothing is outstanding/);
+    assert.equal([...docs.values()].filter(row => row.source === 'sale_settlement').length, 1);
+    assert.deepEqual(docs.get('mpesa_payments/stk1').settledSaleIds, [SALE_ID]);
+  } finally { restore(); }
+});
+
+test('a prompt confirmed after the checkout reservation expired still settles against its own attempt', async () => {
+  const docs = base();
+  const attemptId = deterministicId('mpesa-attempt', 't1:late-key');
+  docs.set(`mpesa_payments/${attemptId}`, { tenantId: 't1', branchId: 'b1', status: 'paid', receipt: 'LATECODE01', amountMinor: 50000, settlementSaleIds: [SALE_ID] });
+  docs.set(`payment_intents/${deterministicId('intent', 't1:LATECODE01')}`, { tenantId: 't1', attemptId, status: 'verified', amountMinor: 50000 });
+  Object.assign(docs.get(`sales/${SALE_ID}`), { checkoutId: 'closed-dialog', checkoutStaffId: 's1', checkoutStkKey: 'late-key', checkoutExpiresAt: { toMillis: () => 1 } });
+  const restore = harness(docs);
+  try {
+    const result = await settleSale.run({ auth, data: { saleUuid: 'uuid-1', requestId: `${attemptId}-uuid-1`, checkoutId: 'closed-dialog', method: 'mpesa', attemptId } });
+    assert.equal(result.settledMinor, 50000);
+    assert.equal(result.reference, 'LATECODE01');
+    assert.equal(result.verified, true);
+  } finally { restore(); }
+});
+
+test('an attempt M-Pesa has not verified cannot settle a bill', async () => {
+  for (const status of ['verification_pending', 'pending', 'ambiguous']) {
+    const docs = base(); confirmedAttempt(docs);
+    docs.get('mpesa_payments/stk1').status = status;
+    const restore = harness(docs);
+    try {
+      await assert.rejects(settleSale.run({ auth, data: { saleUuid: 'uuid-1', requestId: 'stk1-uuid-1', method: 'mpesa', attemptId: 'stk1' } }), /has not confirmed/);
+      assert.equal(docs.get(`payments/${SALE_ID}_payment_01`).settledAt, undefined);
+      assert.equal([...docs.values()].filter(row => row.source === 'sale_settlement').length, 0);
+    } finally { restore(); }
+  }
+});
+
 test('a confirmed receipt pays different checkouts only up to its real balance', async () => {
   const docs = base(), second = deterministicId('sale', 't1:uuid-2');
   docs.set(`sales/${second}`, { tenantId: 't1', branchId: 'b1', totalMinor: 120000 });
@@ -612,5 +656,64 @@ test('shared-standard lookup cannot use another business ledger or branch, and n
     assert.equal(result.receivedMinor, 40000); assert.equal(result.availableMinor, 0);
     assert.equal([...docs.keys()].filter(path => path.startsWith('payment_receipt_claims/')).length, 0);
     assert.equal(docs.get('payments/foreign-payment').amountMinor, 170000);
+  } finally { restore(); }
+});
+
+function usedReceipt(docs, code, { amountMinor = 40000, allocatedMinor = amountMinor, targets }) {
+  docs.set(`mpesa_c2b_events/${deterministicId('c2b', `confirmation:${code}`)}`, { tenantId: 't1', payload: { amountMinor }, settledMinor: allocatedMinor });
+  docs.set(`payment_receipt_claims/${deterministicId('mpesa-receipt', `t1:${code}`)}`, { tenantId: 't1', allocationId: `receipt:t1:${code}`, targets, allocatedMinor, limitMinor: amountMinor });
+}
+
+test('an exhausted receipt explains received, used, where and what remains, and changes nothing', async () => {
+  const docs = base(), other = deterministicId('sale', 't1:other');
+  docs.set(`sales/${other}`, { tenantId: 't1', branchId: 'b1', invoiceNumber: 'INV-B1-000123', totalMinor: 40000 });
+  usedReceipt(docs, 'USEDCODE01', { targets: [`sale:${other}`] });
+  const restore = harness(docs);
+  try {
+    const before = JSON.stringify([...docs]);
+    await assert.rejects(settleSale.run({ auth, data: { saleUuid: 'uuid-1', requestId: 'r', method: 'mpesa', reference: 'USEDCODE01' } }), error => {
+      assert.equal(error.message, 'That M-Pesa receipt has no unallocated money left: received KES 400.00, already used KES 400.00 on INV-B1-000123, remaining KES 0.00.');
+      return true;
+    });
+    assert.equal(JSON.stringify([...docs]), before, 'a refusal writes nothing');
+  } finally { restore(); }
+});
+
+test('the exhausted-receipt message never names a bill it cannot safely identify', async () => {
+  const docs = base(), foreign = deterministicId('sale', 't2:foreign'), extra = ['a', 'b', 'c'].map(id => deterministicId('sale', `t1:${id}`));
+  docs.set(`sales/${foreign}`, { tenantId: 't2', invoiceNumber: 'INV-OTHER-BUSINESS', customerName: 'Somebody Else' });
+  docs.set(`customer_orders/web-9`, { tenantId: 't1', ref: 'WEB-9', customerName: 'Nicole', phone: '0712345678' });
+  usedReceipt(docs, 'USEDCODE02', { targets: [`sale:${foreign}`, 'sale:missing-sale', 'customer_order:web-9', ...extra.map(id => `sale:${id}`)] });
+  const restore = harness(docs);
+  try {
+    await assert.rejects(settleSale.run({ auth, data: { saleUuid: 'uuid-1', requestId: 'r', method: 'mpesa', reference: 'USEDCODE02' } }), error => {
+      assert.equal(error.message, 'That M-Pesa receipt has no unallocated money left: received KES 400.00, already used KES 400.00 on another bill, WEB-9 and 3 other bills, remaining KES 0.00.');
+      assert.doesNotMatch(error.message, /INV-OTHER-BUSINESS|Somebody|Nicole|0712345678/);
+      return true;
+    });
+  } finally { restore(); }
+});
+
+test('a staff-recorded total is "recorded", not "received", and an earlier part on this bill is named as such', async () => {
+  const docs = base(); enableInternalReceipts(docs);
+  docs.set('payments/old', { tenantId: 't1', saleId: SALE_ID, method: 'mpesa', reference: 'OLDCODE001', amountMinor: 20000, status: 'completed' });
+  const restore = harness(docs);
+  try {
+    await assert.rejects(settleSale.run({ auth, data: { saleUuid: 'uuid-1', requestId: 'r', method: 'mpesa', reference: 'OLDCODE001' } }),
+      /^Error: That M-Pesa receipt has no unallocated money left: recorded KES 200\.00, already used KES 200\.00 on this bill, remaining KES 0\.00\.$/);
+  } finally { restore(); }
+});
+
+test('a partly used receipt still pays what it has left, exactly as before', async () => {
+  const docs = base(), other = deterministicId('sale', 't1:other');
+  docs.set(`sales/${other}`, { tenantId: 't1', branchId: 'b1', invoiceNumber: 'INV-B1-000124', totalMinor: 10000 });
+  usedReceipt(docs, 'PARTCODE01', { amountMinor: 40000, allocatedMinor: 10000, targets: [`sale:${other}`] });
+  const restore = harness(docs);
+  try {
+    const result = await settleSale.run({ auth, data: { saleUuid: 'uuid-1', requestId: 'r', method: 'mpesa', reference: 'PARTCODE01' } });
+    assert.equal(result.settledMinor, 30000);
+    assert.equal(result.outstandingMinor, 20000);
+    assert.equal(result.availableMinor, 0);
+    assert.equal(docs.get(`payment_receipt_claims/${deterministicId('mpesa-receipt', 't1:PARTCODE01')}`).allocatedMinor, 40000);
   } finally { restore(); }
 });

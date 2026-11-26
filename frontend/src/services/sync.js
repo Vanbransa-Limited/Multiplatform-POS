@@ -260,7 +260,11 @@ export class SyncManager {
     const { pullSales } = await import('./catalogue');
     const { freeSettledTab } = await import('./tab-edit');
     await pullSales(undefined, uuids);
-    for (const tab of tabs) await freeSettledTab(tab.id);
+    let freed = false;
+    for (const tab of tabs) if (await freeSettledTab(tab.id) !== null) freed = true;
+    // The till lists open tabs from memory. A tab another device paid has just
+    // closed here, so tell it to read them again.
+    if (freed) globalThis.window?.dispatchEvent(new Event('pos:tabs-updated'));
   }
 
   /** Returns true when the sale reached the backend, which is what moved stock. */

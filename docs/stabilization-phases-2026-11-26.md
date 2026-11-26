@@ -35,3 +35,15 @@ staging release step.
 
 Order of delivery: A, then B, C, D, each deployed separately (functions before
 hosting).
+
+## Status (26 Nov 2026)
+
+| Phase | Commit | Live |
+| --- | --- | --- |
+| A, B, C (server) | `861fe18` | createSale, settleSale, voidSale, addRoundStaffDiscount; rules; 207 tables backfilled, 21 open |
+| B, C, D (devices, owner tools) | `722a904` | correctReceiptTotal; hosting |
+
+Gate: `npm run test:emulator` on Node 22, 9 stages (adds `tab-lifecycle`, `receipt-correction`).
+Remaining: M-Pesa provider confirmation (C2B) and a staging release step, deferred by the owner.
+Known limits: a tab whose rounds were all rung offline shows only on that device until it uploads;
+Void bill and Correct M-Pesa amount use simple browser prompts.

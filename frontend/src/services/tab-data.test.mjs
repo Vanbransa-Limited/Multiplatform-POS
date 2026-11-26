@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { withServerSessions } from './table-sessions.js';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { tabsWithTotals, tabOwes, closingUpdate, OPEN } from './tabs.js';
@@ -51,7 +52,8 @@ function setup() {
   }]));
   db.transaction = async (_mode, _tables, run) => run();
   return { rows, calls,
-    read: new Function('db', 'saleAsOrder', 'tabsWithTotals', 'OPEN', `${readBody}; return readOpenTabs;`)(db, saleAsOrder, tabsWithTotals, OPEN),
+    // Server tabs unknown (offline): the local view is what these tests pin down.
+    read: new Function('db', 'saleAsOrder', 'tabsWithTotals', 'OPEN', 'serverTableSessions', 'withServerSessions', `${readBody}; return readOpenTabs;`)(db, saleAsOrder, tabsWithTotals, OPEN, async () => null, withServerSessions),
     free: new Function('db', 'saleAsOrder', 'tabOwes', 'closingUpdate', 'OPEN', 'state', 'billableCheckoutRounds', `${freeBody}; return freeSettledTab;`)(db, saleAsOrder, tabOwes, closingUpdate, OPEN, { currentUser: { id: 'staff' } }, billableCheckoutRounds),
   };
 }

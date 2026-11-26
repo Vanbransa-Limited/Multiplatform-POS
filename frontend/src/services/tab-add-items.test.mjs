@@ -188,3 +188,23 @@ test('a tablet can add to a tab another till opened, but not to one still upload
   assert.equal(canAddToTab({ id: 'recovered-sale-1', readOnly: true, recoveryRequired: true }), false);
   assert.equal(canAddToTab(null), false);
 });
+
+test('an unpaid bill with no table offers Add items that joins it, so one payment settles both', () => {
+  const bill = { id: 's1', source: 'pos', ref: 'INV-BH001-003457', saleUuid: 'uuid-1', customerName: 'Guest', branchId: 'b',
+    tableNumber: '', status: 'awaiting_payment', paymentStatus: 'unpaid', lines: [] };
+  assert.match(renderOrderCard(bill, new Map()), /href="\/till\?join=uuid-1&ref=INV-BH001-003457"[^>]*>Add items<\/a>/);
+  for (const order of [{ ...bill, paymentStatus: 'paid', status: 'completed' }, { ...bill, paymentStatus: 'void', status: 'cancelled' }]) {
+    assert.doesNotMatch(renderOrderCard(order, new Map()), />Add items</, JSON.stringify(order));
+  }
+  assert.match(till, /join_sale_uuid: tableNo \? null : \(this\.joinBill\?\.saleUuid \|\| null\)/);
+});
+
+test('Void bill is offered on one unpaid bill, never on paid, voided or a whole merged table', () => {
+  const bill = { id: 's1', source: 'pos', ref: 'INV-1', saleUuid: 'u1', customerName: 'Guest', branchId: 'b', tableNumber: '',
+    status: 'awaiting_payment', paymentStatus: 'unpaid', lines: [] };
+  assert.match(renderOrderCard(bill, new Map()), /class="sec-btn co-void" data-void-sale="s1"/);
+  for (const order of [{ ...bill, paymentStatus: 'paid', status: 'completed' }, { ...bill, paymentStatus: 'void', status: 'cancelled' },
+    { ...bill, tabId: 't', roundIds: ['a', 'b'], tableNumber: '6' }]) {
+    assert.doesNotMatch(renderOrderCard(order, new Map()), /data-void-sale/, JSON.stringify(order));
+  }
+});

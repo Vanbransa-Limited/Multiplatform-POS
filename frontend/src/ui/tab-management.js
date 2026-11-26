@@ -42,6 +42,8 @@ export class TabManagementView {
         </section>
       </div>`;
 
+    this.onTablesUpdated = () => void this.refreshTabs().catch(() => {});
+    window.addEventListener('pos:tables-updated', this.onTablesUpdated);
     this.container.querySelector('#tabs-search').addEventListener('input', (event) => {
       this.search = event.target.value;
       this.renderList();
@@ -81,13 +83,27 @@ export class TabManagementView {
         readOnly: true,
       }));
     const localRefs = new Set(tabs.map((tab) => tab.order_no).filter(Boolean));
+    this.remoteTabs = remoteTabs;
     this.tabs = [...tabs, ...remoteTabs.filter((tab) => !localRefs.has(tab.order_no))]
       .sort((a, b) => new Date(a.opened_at).getTime() - new Date(b.opened_at).getTime());
     this.names = new Map(users.map((user) => [user.id, user.name]));
     this.renderList();
   }
 
-  dispose() { this.disposed = true; }
+  /** The server's tabs changed (paid or added to elsewhere): redraw from them. */
+  async refreshTabs() {
+    const tabs = await readOpenTabs(state.currentBranch?.id);
+    if (this.disposed) return;
+    const localRefs = new Set(tabs.map((tab) => tab.order_no).filter(Boolean));
+    this.tabs = [...tabs, ...(this.remoteTabs || []).filter((tab) => !localRefs.has(tab.order_no))]
+      .sort((a, b) => new Date(a.opened_at).getTime() - new Date(b.opened_at).getTime());
+    this.renderList();
+  }
+
+  dispose() {
+    this.disposed = true;
+    window.removeEventListener('pos:tables-updated', this.onTablesUpdated);
+  }
 
   /** Read-only incident check: includes closed/voided rows hidden by the floor. */
   async checkSavedOrders() {

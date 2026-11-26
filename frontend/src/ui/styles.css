@@ -3333,3 +3333,7 @@ textarea:focus {
 .checkout-print-actions button { flex: 1 1 120px; min-height: 44px; }
 .checkout-print-actions button:disabled { opacity: 0.45; cursor: not-allowed; }
 
+
+/* Void bill is for owners and managers; Orders adds .can-void for them. */
+.co-void { display: none; }
+.can-void .co-void { display: inline-flex; }

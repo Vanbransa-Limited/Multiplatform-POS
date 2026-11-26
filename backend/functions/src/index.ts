@@ -59,3 +59,4 @@ export { bootstrapOwner } from "./modules/staff-admin";
 //   export { provisionTenant } from "./modules/provisioning";
 
 export { lookupMpesaReceipt } from "./modules/sales/receipt-balance";
+export { correctReceiptTotal } from "./modules/sales/correct-receipt";

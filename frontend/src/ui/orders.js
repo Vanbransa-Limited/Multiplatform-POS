@@ -5,7 +5,7 @@ import {
   watchCustomerOrders, updateCustomerOrder, printCustomerOrder, kitchenTicket,
   ORDER_TABS, orderStats, visibleOrders, renderOrderGrid, saleAsOrder, placedAt, handledBy, mergeTabRounds, sortOrders,
   chargeCustomerOrder, checkCustomerOrderPayment, settleCustomerOrderByCode, settleCustomerOrderCard,
-  settleCustomerOrderBank, settleCustomerOrderCash, settleSale, claimSalePayment,
+  settleCustomerOrderBank, settleCustomerOrderCash, settleSale, claimSalePayment, voidSale,
 } from '../services/customer-orders';
 import { activeTenantId, pullSales } from '../services/catalogue';
 import { pullOpenOrders, collapseOpenOrders } from '../services/open-orders';
@@ -135,6 +135,39 @@ export class OrdersView {
     } finally { this.refreshing = false; }
   }
 
+  /** Owner or manager voids a duplicate or mistaken bill here, instead of a script. */
+  async voidBill(orderId) {
+    const order = (this.posOrders || []).find((row) => row.id === orderId);
+    const uuids = order ? (order.roundUuids || [order.saleUuid]).filter(Boolean) : [];
+    if (!order || uuids.length !== 1) return showNotification('Open the bill on its own to void it.', 'error');
+    const reason = window.prompt(`Void ${order.ref}? Say why (for example: duplicate of INV-...).`, '')?.trim();
+    if (!reason) return;
+    try {
+      await voidSale({ saleUuid: uuids[0], reason });
+      await pullSales(undefined, uuids);
+      showNotification(`${order.ref} voided. Its stock is back.`, 'success');
+      await this.loadPosOrders();
+    } catch (error) {
+      showNotification(error.message || 'That bill could not be voided.', 'error');
+    }
+  }
+
+  /** Owner fixes an M-Pesa amount staff typed wrongly; the rest of the money can then pay bills. */
+  async correctReceiptAmount() {
+    const reference = window.prompt('M-Pesa code to correct (10 characters):', '')?.trim().toUpperCase();
+    if (!reference) return;
+    const kes = Number(window.prompt(`Amount on the M-Pesa message for ${reference}, in KES:`, ''));
+    if (!Number.isFinite(kes) || kes <= 0) return showNotification('Enter the amount on the M-Pesa message.', 'error');
+    const reason = window.prompt('Why is it being corrected?', 'Staff typed the wrong amount')?.trim();
+    if (!reason) return;
+    try {
+      const result = await callFunction('correctReceiptTotal', { reference, totalMinor: Math.round(kes * 100), reason });
+      showNotification(`${reference} is now KES ${(result.totalMinor / 100).toFixed(2)}. KES ${(result.availableMinor / 100).toFixed(2)} can pay bills.`, 'success');
+    } catch (error) {
+      showNotification(error.message || 'That amount could not be corrected.', 'error');
+    }
+  }
+
   render() {
     this.container.innerHTML = `
       <!-- width:100% matters: .tab-view is a column flexbox, and the auto side
@@ -159,6 +192,7 @@ export class OrdersView {
             </label>
             <button type="button" id="orders-export-btn" class="co-print">📥 Export sales CSV</button>
             <button type="button" id="orders-refresh" class="co-print">Refresh orders</button>
+            ${state.currentUser?.role === 'Owner' ? '<button type="button" id="orders-correct-receipt" class="co-print" title="Fix an M-Pesa amount staff typed wrongly">Correct M-Pesa amount</button>' : ''}
             <label id="orders-sort-wrap" class="co-meta" style="display:flex;align-items:center;gap:6px;margin:0">Sort by
               <select id="orders-sort" class="co-search" style="width:auto;min-width:140px">
                 <option value="table">Table number</option>
@@ -886,6 +920,8 @@ export class OrdersView {
       const settle = event.target.closest('[data-settle-sale]');
       if (settle) return void this.startPrintedSettlement(settle.dataset.settleSale);
 
+      const voidBill = event.target.closest('[data-void-sale]');
+      if (voidBill) return void this.voidBill(voidBill.dataset.voidSale);
       const staff20 = event.target.closest('[data-staff-discount]');
       if (staff20) return void this.addStaffDiscountToRound(staff20.dataset.staffDiscount);
       const edit = event.target.closest('[data-edit-tab]');
@@ -1016,6 +1052,9 @@ export class OrdersView {
       this.renderCustomerBoard();
     });
     this.container.querySelector('#orders-refresh').addEventListener('click', () => { void this.refreshBoard(); });
+    this.container.querySelector('#orders-correct-receipt')?.addEventListener('click', () => { void this.correctReceiptAmount(); });
+    // Void is for owners and managers; the server checks again and audits it.
+    this.container.querySelector('#customer-orders-list').classList.toggle('can-void', selfApproves(state.currentUser?.role));
     this.container.querySelector('#customer-orders-list').addEventListener('change', async (event) => {
       const select = event.target.closest('[data-customer-order]');
       if (!select?.value) return;

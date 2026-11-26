@@ -4,6 +4,7 @@ import { state } from '../context';
 import { roundTotals, closingUpdate, tabOwes, tabsWithTotals, OPEN } from './tabs';
 import { saleAsOrder } from './customer-orders';
 import { billableCheckoutRounds } from './checkout-rounds';
+import { serverTableSessions, withServerSessions } from './table-sessions';
 
 /**
  * Takes one item off an open tab.
@@ -202,6 +203,14 @@ async function replaceServerRound(round, line) {
  * disagree about what a table owes.
  */
 export async function readOpenTabs(branchId) {
+  const local = await readLocalOpenTabs(branchId);
+  // Never inside the Dexie transaction: a network wait there would commit it.
+  const sessions = await serverTableSessions().catch(() => null);
+  return withServerSessions(local, sessions && sessions.filter(s => !branchId || s.branchId === branchId));
+}
+
+/** This device's own view: what it rang, plus rounds it has pulled from the server. */
+async function readLocalOpenTabs(branchId) {
   return db.transaction('r', [db.tabs, db.sales, db.payments, db.sale_lines, db.products], async () => {
   const tabs = await (branchId
     ? db.tabs.where('[branch_id+status]').equals([branchId, OPEN])
@@ -252,7 +261,11 @@ export async function readOpenTabs(branchId) {
     });
     openIds.add(round.tabId);
   }
-  return tabsWithTotals(tabs, rounds);
+  // What only this device knows about: unpaid rounds the server has not got yet.
+  const unsynced = new Set(sales.filter(sale => !sale.synced_at).map(sale => sale.id));
+  return tabsWithTotals(tabs, rounds).map(tab => ({ ...tab,
+    pendingUploadMinor: tab.unpaidRounds.filter(round => unsynced.has(round.id))
+      .reduce((sum, round) => sum + (Number(round.dueMinor) || 0), 0) }));
   });
 }
 

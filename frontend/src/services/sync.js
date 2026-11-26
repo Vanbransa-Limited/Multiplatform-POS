@@ -146,6 +146,7 @@ export class SyncManager {
       ...(sale.tab_id ? { tabId: sale.tab_id, orderReference: tab?.order_no || sale.order_reference || sale.invoice_no } : {}),
       buyerKraPin: sale.buyer_pin || undefined,
       ...(sale.discount_approval_id ? { discountApprovalId: sale.discount_approval_id } : {}),
+      ...(sale.join_sale_uuid && !sale.tab_id ? { joinSaleUuid: sale.join_sale_uuid } : {}),
       lines: sellable,
       payments: mappedPayments
     };

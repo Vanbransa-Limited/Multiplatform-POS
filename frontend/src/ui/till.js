@@ -77,6 +77,9 @@ export class TillView {
     // A refreshed menu reaches the product grid; the cart keeps what was rung.
     this.onCatalogueUpdated = () => { if (!this.disposed && this.container.isConnected) void this.loadProducts().catch(() => {}); };
     window.addEventListener('pos:catalogue-updated', this.onCatalogueUpdated);
+    // Another till paid or added to a table: the server's tabs changed.
+    this.onTablesUpdated = () => { if (!this.disposed && this.container.isConnected) void this.loadOpenTabs(); };
+    window.addEventListener('pos:tables-updated', this.onTablesUpdated);
     this.productPage = 1;
     this.catalogueProducts = [];
     this.filteredProducts = [];
@@ -117,8 +120,11 @@ export class TillView {
       this.loadOpenTabs(),
     ]);
     if (this.disposed) return;
+    // Orders' Add items on a bill without a table: these items join that bill.
+    const params = new URLSearchParams(window.location.search);
+    this.joinBill = params.get('join') ? { saleUuid: params.get('join'), ref: params.get('ref') || 'this bill' } : null;
     // Tab Management's "Add a round" arrives with the table in the link.
-    const linkedTable = new URLSearchParams(window.location.search).get('table');
+    const linkedTable = params.get('table');
     // Arriving from a tab means adding to it; paying happens back in Tab
     // Management, so this screen offers Add to tab and nothing else.
     this.tabOnly = Boolean(linkedTable);
@@ -130,6 +136,7 @@ export class TillView {
 
   dispose() {
     window.removeEventListener('pos:catalogue-updated', this.onCatalogueUpdated);
+    window.removeEventListener('pos:tables-updated', this.onTablesUpdated);
     clearTimeout(this.searchTimer);
     this.filterSheet?.dispose();
     this.persistDraft();
@@ -2572,6 +2579,7 @@ export class TillView {
    * next thing that table asks for is another round on the same bill.
    */
   async addRoundToTab() {
+    if (!this.activeTable && this.joinBill) return this.addToJoinedBill();
     if (!this.activeTable) return;
     if (this.cart.length === 0) {
       showNotification('Add items to the cart before putting a round on the tab.', 'warning');
@@ -2610,6 +2618,27 @@ export class TillView {
         `Added to Table ${this.activeTable}. KES ${((tab?.dueMinor || 0) / 100).toFixed(2)} now on this tab.`,
         'success'
       );
+      return true;
+    } finally {
+      this.finalizingInvoice = false;
+    }
+  }
+
+  /** Saves the cart unpaid onto the bill Orders sent us here for; one payment then settles both. */
+  async addToJoinedBill() {
+    if (this.cart.length === 0 || this.finalizingInvoice) return;
+    this.finalizingInvoice = true;
+    try {
+      const registered = await this.registerOrder(this.buildPendingPaymentRecords(), { pending: true });
+      if (!registered) return;
+      await db.sales.update(registered.saleId, { held_until: null });
+      if (firebaseConfigured) await state.syncManager.publishSale(registered.saleId);
+      const ref = this.joinBill.ref;
+      this.joinBill = null;
+      this.cart = [];
+      this.updateCartUI();
+      showNotification(`Added to ${ref}. Pay it once from Orders.`, 'success');
+      window.location.assign(`/orders?order=${encodeURIComponent(ref)}`);
       return true;
     } finally {
       this.finalizingInvoice = false;
@@ -2952,8 +2981,11 @@ export class TillView {
     const tab = (this.openTabs || []).find((entry) => tabKey(entry.table) === tabKey(this.activeTable));
     const dueMinor = tab?.dueMinor || 0;
     const onTab = Boolean(this.activeTable);
+    const joining = Boolean(this.joinBill && !onTab);
 
-    add.classList.toggle('hidden', !onTab);
+    add.classList.toggle('hidden', !onTab && !joining);
+    add.textContent = joining ? `+ Add to ${this.joinBill.ref}` : '+ Add Round to Tab';
+    if (joining) pay.classList.add('hidden');
     add.disabled = this.cart.length === 0;
 
     // Only worth offering once there is something on the tab to correct.
@@ -3165,6 +3197,8 @@ export class TillView {
       table_no: tableNo,
       // What ties this round to the nine o'clock one at the same table.
       tab_id: null,
+      // Added to an unpaid bill from Orders: the server puts it on that bill's tab.
+      join_sale_uuid: tableNo ? null : (this.joinBill?.saleUuid || null),
       buyer_pin: buyerPin,
       // A waiter's staff discount carries the manager approval it was given.
       discount_approval_id: discountApprovalId(this.cart),

@@ -80,6 +80,8 @@ export type UpdatedStockBalance = {
   productId: string;
   location: "HOUSE" | "STORE";
   qty: number;
+  /** What actually left this balance (never below zero); a void restores this. */
+  deductedQty: number;
   updatedAt: FirebaseFirestore.Timestamp;
 };
 

@@ -59,8 +59,9 @@ export async function loadSaleDependencies(
 
   // The till has already sold this and taken the money, so stock never refuses
   // it: refusing stranded the sale on the device, out of Orders and Financials.
-  // An item with no balance is not counted and moves nothing; a counted item is
-  // deducted even past zero, so the shortfall shows up on the stock screens.
+  // An item with no balance is not counted and moves nothing. A counted item is
+  // deducted down to zero and no further (owner, 26 Nov 2026): House never shows
+  // a negative. What was sold beyond it is kept on the movement as shortfallQty.
   const counted = candidateDocuments.flatMap((snapshot, index) => {
     const line = candidateLines[index];
     const balance = snapshot.data() ?? {};
@@ -77,13 +78,16 @@ export async function loadSaleDependencies(
   const balanceRefs = counted.map((entry) => entry.ref);
 
   const updatedBalances = counted.map(({ line, balance, snapshot }) => {
+    const qty = Math.max(0, balance.qty - line.qty);
     return {
       id: snapshot.id,
       tenantId: input.tenantId,
       branchId: input.branchId,
       productId: line.productId,
       location,
-      qty: balance.qty - line.qty,
+      qty,
+      // What actually left House; a void puts back exactly this.
+      deductedQty: Math.max(0, balance.qty) - qty,
       updatedAt: timestamp,
     };
   });

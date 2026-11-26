@@ -254,7 +254,7 @@ const { db: salesDb } = require("../lib/lib/firebase");
 
 test("a sale the till already took is never refused over stock", async () => {
   const docs = new Map([
-    // Counted, and already at zero: deducted past it rather than refused.
+    // Counted, and already at zero: sold, never refused, and House stays at zero (26 Nov 2026).
     ["stock_balances/b1_tusker_HOUSE", { tenantId: "t1", branchId: "b1", productId: "tusker", location: "HOUSE", qty: 0 }],
   ]);
   const original = salesDb.collection;
@@ -270,6 +270,20 @@ test("a sale the till already took is never refused over stock", async () => {
     const deps = await loadSaleDependencies(tx, { tenantId: "t1", branchId: "b1", payments: [{ method: "card", amountMinor: 100 }] }, lines, "now");
     assert.deepEqual(deps.physicalLines.map((line) => line.productId), ["tusker"]);
     assert.equal(deps.balanceRefs.length, 1);
-    assert.equal(deps.updatedBalances[0].qty, -2);
+    assert.equal(deps.updatedBalances[0].qty, 0, "House never goes below zero");
+    assert.equal(deps.updatedBalances[0].deductedQty, 0, "nothing left House, so a void puts nothing back");
+  } finally { salesDb.collection = original; }
+});
+
+test("House stock is taken down to zero and no further; only what left is recorded as taken", async () => {
+  const docs = new Map([["stock_balances/b1_coke_HOUSE", { tenantId: "t1", branchId: "b1", productId: "coke", location: "HOUSE", qty: 3 }]]);
+  const original = salesDb.collection;
+  salesDb.collection = (name) => ({ doc: (id) => ({ id, path: `${name}/${id}` }) });
+  try {
+    const tx = { getAll: async (...refs) => refs.map((ref) => ({ id: ref.id, exists: docs.has(ref.path), data: () => docs.get(ref.path) })) };
+    const deps = await loadSaleDependencies(tx, { tenantId: "t1", branchId: "b1", payments: [{ method: "card", amountMinor: 100 }] },
+      [{ productId: "coke", productName: "Coke", qty: 5, isService: false }], "now");
+    assert.equal(deps.updatedBalances[0].qty, 0);
+    assert.equal(deps.updatedBalances[0].deductedQty, 3);
   } finally { salesDb.collection = original; }
 });

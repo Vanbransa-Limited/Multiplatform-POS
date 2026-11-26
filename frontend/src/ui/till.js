@@ -31,7 +31,7 @@ import { recordReceiptSettlement } from '../services/receipt-settlement';
 import { FIRST_CHECK_MS, acknowledgePrompt, recoverableResponse, recoveryScope, rememberPrompt, removeRecovery, stkSettlementRequestId, updateRecovery } from '../services/stk-recovery';
 import { manualReceipt } from '../services/manual-receipt';
 import { pullStock } from '../services/stock';
-import { closingUpdate, newTab, OPEN, openTabAt, roundTotals, tabKey, tableChoices } from '../services/tabs';
+import { closingUpdate, newTab, OPEN, openTabAt, roundTotals, tabCustomerId, tabKey, tableChoices } from '../services/tabs';
 import { pullOpenOrders } from '../services/open-orders';
 import { removeTabLine, freeSettledTab, readOpenTabs } from '../services/tab-edit';
 import { tillDraftKey, readTillDraft, writeTillDraft } from '../services/till-draft';
@@ -629,18 +629,7 @@ export class TillView {
     // Customer attach dropdown selection
     const custSelect = document.getElementById('cart-customer-select');
     custSelect.addEventListener('change', async (e) => {
-      this.invalidateMpesaAttempt();
-      const custId = e.target.value;
-      this.selectedCustomer = await db.customers.get(custId);
-      
-      // Update UI prices based on customer price tier
-      document.getElementById('price-tier-indicator').innerText = 
-        this.selectedCustomer.price_tier === 'WHOLESALE' ? 'Wholesale Pricing' : 'Retail Pricing';
-      
-      document.getElementById('cart-buyer-pin').value = this.selectedCustomer.kra_pin || '';
-      
-      this.recomputeTotals();
-      this.persistDraft();
+      this.applyCustomer(await db.customers.get(e.target.value));
     });
 
     this.bindNewCustomer();
@@ -2564,6 +2553,18 @@ export class TillView {
       return;
     }
     if (this.finalizingInvoice) return;
+    // A customer's tab is billed to that customer. Whoever else the cart holds
+    // - a cashier's later pick, or nobody because the owner is not on this
+    // device yet - is refused rather than quietly put on their bill.
+    const tab = (this.openTabs || []).find((entry) => tabKey(entry.table) === tabKey(this.activeTable));
+    const owner = tab ? tabCustomerId(tab, WALK_IN_CUSTOMER_ID) : null;
+    if (owner && this.selectedCustomer?.id !== owner) {
+      const name = (await db.customers.get(owner))?.name;
+      showNotification(name
+        ? `Table ${this.activeTable} is ${name}'s tab. Select ${name} as the customer to add this round, or use a different table.`
+        : `Table ${this.activeTable} belongs to a customer this till has not loaded. Refresh customers, then add the round.`, 'error');
+      return;
+    }
     this.finalizingInvoice = true;
 
     try {
@@ -2791,6 +2792,38 @@ export class TillView {
       `Adding a round to Table ${table}. KES ${((tab?.dueMinor || 0) / 100).toFixed(2)} already open on this tab.`,
       'info'
     );
+    if (tab) void this.selectTabCustomer(tab, table);
+  }
+
+  /** The cart's customer: whose prices apply, and who a receivable is owed by. */
+  applyCustomer(customer) {
+    if (!customer) return;
+    this.invalidateMpesaAttempt();
+    this.selectedCustomer = customer;
+    // Update UI prices based on customer price tier
+    document.getElementById('price-tier-indicator').innerText =
+      customer.price_tier === 'WHOLESALE' ? 'Wholesale Pricing' : 'Retail Pricing';
+    document.getElementById('cart-buyer-pin').value = customer.kra_pin || '';
+    this.recomputeTotals();
+    this.persistDraft();
+  }
+
+  /**
+   * A round added to a customer's tab is billed to that customer. It used to
+   * go to whoever the cart had, usually the walk-in, so the items reached the
+   * table's bill but not the customer's balance. addRoundToTab refuses any
+   * other customer; nothing is selected when the tab has no single customer or
+   * the customer is not on this device.
+   */
+  async selectTabCustomer(tab, table) {
+    const id = tabCustomerId(tab, WALK_IN_CUSTOMER_ID);
+    if (!id || this.selectedCustomer?.id === id) return;
+    const customer = await db.customers.get(id);
+    if (!customer || this.disposed || tabKey(this.activeTable) !== tabKey(table)) return;
+    const select = document.getElementById('cart-customer-select');
+    if (select && [...select.options].some((option) => option.value === id)) select.value = id;
+    this.applyCustomer(customer);
+    showNotification(`Table ${table} is ${customer.name}'s tab. This round will be billed to ${customer.name}.`, 'info');
   }
 
   clearActiveTab() {

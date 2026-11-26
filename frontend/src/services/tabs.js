@@ -80,6 +80,22 @@ export function openTabAt(tabs, branchId, tableNo) {
 }
 
 /**
+ * Whose tab this is: the customer it was opened for, or else the one customer
+ * every round on it was billed to (a header repaired from another till's
+ * upload carries no customer). A round added later belongs to the same
+ * debtor. A walk-in tab, or one whose rounds name different customers, has no
+ * owner, so nothing is guessed.
+ */
+export function tabCustomerId(tab, walkInId) {
+  const own = (id) => (id && id !== walkInId ? String(id) : null);
+  if (own(tab?.customer_id)) return own(tab.customer_id);
+  const rounds = tab?.rounds || [];
+  const ids = new Set(rounds.map((round) => own(round.customerId) || walkInId));
+  const [only] = ids;
+  return rounds.length && ids.size === 1 ? own(only) : null;
+}
+
+/**
  * What each open tab is worth, newest rounds included.
  *
  * `rounds` are the orders already mapped through `saleAsOrder`, so a round that

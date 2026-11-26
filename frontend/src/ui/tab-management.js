@@ -163,6 +163,7 @@ export class TabManagementView {
           ${ref ? `<a class="co-print" style="text-decoration:none" href="/orders?order=${escapeHtml(encodeURIComponent(ref))}&invoice=1">Invoice</a>` : ''}
           ${tab.readOnly ? '' : `<a class="co-print" style="text-decoration:none" href="/till?table=${encodeURIComponent(tab.table)}">Add items</a>`}
           ${ref && !tab.readOnly ? `<a class="co-print" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}&edit=1">Edit tab</a>` : ''}
+          ${ref ? `<a class="co-print" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}&discount=1" title="Add the Staff 20% to a round that went out without it">Staff 20%</a>` : ''}
           ${ref ? `<a class="co-pay" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}">Pay now</a>` : ''}
           ${tab.readOnly ? '<span class="co-meta" style="margin:0">Running on another till · Pay now settles it from here</span>' : ''}
         </div>

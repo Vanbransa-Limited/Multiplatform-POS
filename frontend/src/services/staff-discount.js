@@ -20,3 +20,15 @@ export function discountAwaitingCode(cart, role) {
 
 /** The approval a sale carries to the server, if its discount needed one. */
 export const discountApprovalId = (cart) => staffDiscountItem(cart)?.approval?.id || null;
+
+/**
+ * The rounds of a bill that can still take the Staff 20% after they went out:
+ * not voided, no discount yet, and nothing paid against them. `outstandingMinor`
+ * maps each round's id to what it still owes.
+ */
+export function discountableRounds(rounds, outstandingMinor) {
+  return (rounds || []).filter((round) => round.status !== 'VOIDED'
+    && !(Number(round.discount) > 0)
+    && (outstandingMinor.get(round.id) || 0) > 0
+    && outstandingMinor.get(round.id) === Math.round((Number(round.grand_total) || 0) * 100));
+}

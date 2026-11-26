@@ -88,7 +88,12 @@ export async function replaySale(
 ): Promise<Record<string, unknown>> {
   assertReplayOwner(sale, input);
 
-  const storedFingerprint = sale.requestFingerprint;
+  // A sale a tablet could never upload, recorded for it by a reviewed repair
+  // from the copy it published. The tablet's own request differs in details the
+  // repair could not see (prices then, its shift), so its retry is answered
+  // with the recorded sale rather than refused for ever.
+  const repaired = sale.repairedFromDevice === true;
+  const storedFingerprint = repaired ? null : sale.requestFingerprint;
   if (
     typeof storedFingerprint === "string"
     && storedFingerprint !== expectedFingerprint
@@ -125,7 +130,8 @@ export async function replaySale(
     .map((snapshot) => snapshot.data() ?? {});
 
   if (
-    typeof storedFingerprint !== "string"
+    !repaired
+    && typeof storedFingerprint !== "string"
     && fingerprintFromStoredSale(sale, lines, payments) !== expectedFingerprint
   ) {
     throw new HttpsError(

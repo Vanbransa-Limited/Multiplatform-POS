@@ -136,6 +136,11 @@ export const changeStock = onCall({ region: FUNCTION_REGION }, async (request) =
     const settings = settingsDoc.data() || {};
     // Sale eligibility is separate from inventory retirement: unpriced supplies still move.
     if (action === 'request' && product.data()?.retiredAt) throw new HttpsError('failed-precondition', 'Restore this stock item before requesting it.');
+    // A delivery booked on a retired copy disappears from every screen while
+    // the item the till sells goes negative: how the catalogue grew twins.
+    if ((action === 'receive' || action === 'adjust') && product.data()?.retiredAt) {
+      throw new HttpsError('failed-precondition', 'This item was removed from the catalogue. Book it on the item the till sells, or ask the owner to restore it in Menu Admin.');
+    }
 
     // Each action names its own location, so the client cannot post a delivery
     // straight into the House while a Store is enabled.

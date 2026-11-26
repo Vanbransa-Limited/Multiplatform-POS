@@ -18,6 +18,7 @@ export { createSale } from "./modules/sales";
 export { listApprovalCodes, setApprovalCode, setApprovalAccess, approveStaffDiscount } from "./modules/approval-codes";
 export { generateEtr, setupEtims } from "./modules/etims";
 export { settleSale, voidSale, claimSalePayment } from "./modules/sales/settle";
+export { addRoundStaffDiscount } from "./modules/sales/add-round-discount";
 export { prepareCheckoutReceipt, confirmCheckoutReceiptPrinted } from "./modules/sales/checkout-print";
 // Open tabs, published for observation only. Never read back as money.
 export { publishOpenOrders } from "./modules/sales/open-orders";

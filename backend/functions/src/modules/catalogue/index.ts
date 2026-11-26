@@ -18,7 +18,7 @@ import { FUNCTION_REGION } from "../../config/runtime";
 import { db } from "../../lib/firebase";
 import { deterministicId } from "../../shared/identifiers";
 import { ADMIN_ROLES } from "../../shared/roles";
-import { catalogueWriteRefusal } from "./write-rule";
+import { catalogueWriteRefusal, duplicateNameRefusal } from "./write-rule";
 import { asRecord, documentId } from "../../shared/validation";
 import { productKey, stripDates } from "./product-key";
 import { SEED_PRODUCTS, isSeedProduct } from "./seed-products";
@@ -344,6 +344,14 @@ export const upsertProduct = onCall({ region: FUNCTION_REGION }, async (request)
     ? documentId(input.id, "id")
     : deterministicId("product", `${tenantId}:${sku}`);
   const ref = db.collection("products").doc(id);
+  // Only a brand-new item can be a second copy of an existing one.
+  const creating = !(await ref.get()).exists;
+  if (creating) {
+    const catalogue = (await db.collection("products").where("tenantId", "==", tenantId).get())
+      .docs.map((doc) => ({ id: doc.id, name: doc.data().name, retiredAt: doc.data().retiredAt }));
+    const duplicate = duplicateNameRefusal(catalogue, name, role);
+    if (duplicate) throw new HttpsError("already-exists", duplicate);
+  }
 
   return db.runTransaction(async (transaction) => {
     const existing = await transaction.get(ref);

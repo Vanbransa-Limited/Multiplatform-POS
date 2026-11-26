@@ -18,7 +18,9 @@ import { removeTabLine, freeSettledTab } from '../services/tab-edit';
 import { MpesaService } from '../services/mpesa';
 import { recordReceiptSettlement } from '../services/receipt-settlement';
 import { manualReceipt } from '../services/manual-receipt';
-import { DEVICE_ID } from '../services/firebase';
+import { DEVICE_ID, callFunction } from '../services/firebase';
+import { discountableRounds, selfApproves } from '../services/staff-discount';
+import { openManagerCodeSheet } from './manager-code-sheet';
 import { enqueuePrintJob, isStationOnline } from '../services/print-queue';
 import { requirePrintedReceipt } from './checkout-print';
 import { escapeHtml, renderEtrBlock } from '../services/print-receipt';
@@ -46,6 +48,8 @@ export class OrdersView {
     // Tab Management's Edit tab: open the item editor rather than payment.
     this.invoiceLinked = new URLSearchParams(window.location.search).get('invoice') === '1';
     this.editLinked = new URLSearchParams(window.location.search).get('edit') === '1';
+    // Tab Management's Staff 20%: add it to a round that went out without it.
+    this.discountLinked = new URLSearchParams(window.location.search).get('discount') === '1';
     this.customerSearch = this.reconcileReference;
     this.customerPage = 1;
     this.productImages = new Map();
@@ -735,7 +739,8 @@ export class OrdersView {
       this.container.querySelector('#customer-orders-status').textContent = `${order.ref} has already been reconciled.`;
       return;
     }
-    if (order.source === 'pos' && this.editLinked) void this.openTabEditor(order.id);
+    if (order.source === 'pos' && this.discountLinked) void this.addStaffDiscountToRound(order.id);
+    else if (order.source === 'pos' && this.editLinked) void this.openTabEditor(order.id);
     else if (order.source === 'pos') void this.startPrintedSettlement(order.id);
     else this.startPrintedCustomerPayment(order.id);
   }
@@ -1373,6 +1378,94 @@ export class OrdersView {
     } catch (error) {
       showNotification(error.message || 'That item could not be removed.', 'error');
     }
+  }
+
+  /**
+   * Adds the Staff 20% to one round of a bill that went out without it.
+   *
+   * The 20% rung with one round never covered the next, so a guest owed 20% on
+   * the whole tab was billed in full for every later round. The server changes
+   * the round (with a manager's code unless an owner or manager is signed in);
+   * this till's own copy is then rewritten to match, so it asks the new amount.
+   */
+  async addStaffDiscountToRound(orderId) {
+    const order = this.allOrders().find((entry) => entry.id === orderId);
+    if (!order) return;
+    const { firebaseConfigured } = await import('../services/firebase');
+    if (!firebaseConfigured) { showNotification('Adding the staff discount needs the server.', 'warning'); return; }
+    let rounds;
+    try {
+      rounds = await this.settleRounds(order);
+      for (const round of rounds) if (!round.synced_at) await state.syncManager.publishSale(round.id);
+      await pullSales(undefined, rounds.map((round) => round.sale_uuid));
+      rounds = (await Promise.all(rounds.map((round) => db.sales.get(round.id)))).filter(Boolean);
+    } catch (error) {
+      showNotification(error.message || 'This bill could not be loaded.', 'error');
+      return;
+    }
+    const outstanding = new Map(await Promise.all(rounds.map(async (round) => [round.id, await this.roundOutstandingMinor(round)])));
+    const choices = discountableRounds(rounds.filter((round) => round.synced_at), outstanding);
+    if (!choices.length) {
+      showNotification('No unpaid round on this bill can take the staff discount: each is paid, voided or already discounted.', 'warning');
+      return;
+    }
+    const products = new Map((await db.products.toArray()).map((product) => [product.id, product.name]));
+    const describe = async (round) => {
+      const lines = await db.sale_lines.where('sale_id').equals(round.id).toArray();
+      const names = lines.filter((line) => Number(line.line_total) > 0).map((line) => products.get(line.product_id) || 'Item').join(', ');
+      return `${round.invoice_no || round.id.slice(0, 8)} · ${names} · KES ${Number(round.grand_total).toFixed(2)}`;
+    };
+    const labels = await Promise.all(choices.map(describe));
+    let round = choices[0];
+    if (choices.length > 1) {
+      const answer = Number(window.prompt(`${order.ref} · Table ${order.tableNumber || ''}\n\nAdd the Staff 20% to which round?\n\n${labels.map((label, i) => `${i + 1}. ${label}`).join('\n')}\n\nType its number, or Cancel.`));
+      if (!Number.isInteger(answer) || answer < 1 || answer > choices.length) return;
+      round = choices[answer - 1];
+    }
+    const discountMinor = Math.round(Number(round.grand_total) * 100 * 0.2);
+
+    const apply = async (discountApprovalId) => {
+      const result = await callFunction('addRoundStaffDiscount', { saleUuid: round.sale_uuid, ...(discountApprovalId ? { discountApprovalId } : {}) });
+      await this.applyRoundDiscountLocally(round, result);
+      await this.loadPosOrders();
+      this.renderCustomerBoard();
+      showNotification(`Staff 20% added to ${result.invoiceNumber || round.invoice_no}: now KES ${(result.totalMinor / 100).toFixed(2)}.`, 'success');
+      return result;
+    };
+    if (selfApproves(state.currentUser?.role)) {
+      if (!window.confirm(`Add the Staff 20% to ${labels[choices.indexOf(round)]}?`)) return;
+      try { await apply(null); } catch (error) { showNotification(error.message || 'The discount could not be added.', 'error'); }
+      return;
+    }
+    openManagerCodeSheet({
+      subtitle: `Approve the Staff 20% on ${round.invoice_no || 'this round'} for ${state.currentUser?.name || 'this bill'}`,
+      chip: `about −KES ${(discountMinor / 100).toFixed(2)} · ${order.tableNumber ? `Table ${order.tableNumber}` : order.ref}`,
+      keepLabel: 'Cancel',
+      approve: async (code) => {
+        const approval = await callFunction('approveStaffDiscount', { code });
+        await apply(approval.approvalId);
+        return approval.approvedByName;
+      },
+    });
+  }
+
+  /** Rewrites this till's copy of a round to the discounted bill the server now holds. */
+  async applyRoundDiscountLocally(round, result) {
+    const lines = await db.sale_lines.where('sale_id').equals(round.id).toArray();
+    const byProduct = new Map((result.lines || []).map((line) => [line.productId, line]));
+    await db.transaction('rw', [db.sales, db.sale_lines, db.payments], async () => {
+      for (const line of lines) {
+        const next = byProduct.get(line.product_id);
+        if (!next) continue;
+        byProduct.delete(line.product_id);
+        await db.sale_lines.update(line.id, { discount: next.discountMinor / 100, tax_amount: next.taxMinor / 100, line_total: next.lineTotalMinor / 100 });
+      }
+      await db.sales.update(round.id, {
+        discount: result.discountMinor / 100, tax_total: result.taxMinor / 100, grand_total: result.totalMinor / 100,
+      });
+      const owing = (await db.payments.where('sale_id').equals(round.id).toArray()).filter((row) => isReceivable(row.method) && !row.settled_at);
+      for (const [index, row] of owing.entries()) await db.payments.update(row.id, { amount: index === 0 ? result.totalMinor / 100 : 0 });
+    });
   }
 
   /**

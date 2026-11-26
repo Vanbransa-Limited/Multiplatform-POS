@@ -469,3 +469,16 @@ test('an approval the Store cannot cover stays pending, and a request can be tur
     await assert.rejects(decide(owner, { requestId: 'missing', decision: 'approve' }), /No such request/);
   } finally { restore(); }
 });
+
+// Gordons, Robertson and KO deliveries landed on retired copies in Nov while the
+// live item - the one the till sells - went negative.
+test('a delivery or correction cannot be booked on a retired item', async () => {
+  const docs = base();
+  docs.set('products/p1', { tenantId: 't1', name: 'Tusker', retiredAt: { seconds: 1 } });
+  const restore = harness(docs);
+  try {
+    await assert.rejects(call(keeper, { action: 'receive', qty: 5, requestId: 'r-ret-1' }), /removed from the catalogue/);
+    await assert.rejects(call(owner, { action: 'adjust', qty: 0, location: 'HOUSE', expectedQty: 0, reason: 'count', requestId: 'r-ret-2' }), /removed from the catalogue/);
+    assert.equal(docs.has('stock_balances/b1_p1_STORE'), false);
+  } finally { restore(); }
+});

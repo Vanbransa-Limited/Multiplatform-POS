@@ -15,7 +15,7 @@ const BIN_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" st
  * throws with the server's message. A paused requester ("resource-exhausted")
  * loses the keypad; removing the discount is always available.
  */
-export function openManagerCodeSheet({ subtitle, chip, approve, onRemove, onKeep }) {
+export function openManagerCodeSheet({ subtitle, chip, approve, onRemove, onKeep, keepLabel = 'Keep it waiting' }) {
   const returnFocus = document.activeElement;
   const overlay = document.createElement('div');
   overlay.className = 'mcs-overlay';
@@ -34,8 +34,8 @@ export function openManagerCodeSheet({ subtitle, chip, approve, onRemove, onKeep
         <div class="mcs-foot">
           <span>No manager around?</span>
           <div class="mcs-foot-row">
-            <button type="button" class="mcs-keep">${CLOCK_ICON} Keep it waiting</button>
-            <button type="button" class="mcs-remove">${BIN_ICON} Remove discount</button>
+            <button type="button" class="mcs-keep">${CLOCK_ICON} ${escapeHtml(keepLabel)}</button>
+            ${onRemove ? `<button type="button" class="mcs-remove">${BIN_ICON} Remove discount</button>` : ''}
           </div>
         </div>
       </div>
@@ -109,7 +109,7 @@ export function openManagerCodeSheet({ subtitle, chip, approve, onRemove, onKeep
     else if (event.key === 'Escape') { close(); onKeep?.(); }
   });
   overlay.querySelector('.mcs-keep').addEventListener('click', () => { close(); onKeep?.(); });
-  overlay.querySelector('.mcs-remove').addEventListener('click', () => { close(); onRemove?.(); });
+  overlay.querySelector('.mcs-remove')?.addEventListener('click', () => { close(); onRemove?.(); });
 
   document.body.appendChild(overlay);
   render();

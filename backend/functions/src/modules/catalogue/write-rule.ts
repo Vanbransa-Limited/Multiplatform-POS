@@ -1,4 +1,27 @@
 import { ADMIN_ROLES } from "../../shared/roles";
+import { productKey } from "./product-key";
+
+type CatalogueEntry = { id: string; name?: unknown; retiredAt?: unknown };
+
+/**
+ * Why a new item would duplicate one already in the catalogue, or null.
+ *
+ * Same brand, size and container is the same product whatever the spelling.
+ * A second copy splits its stock: deliveries land on one, the till sells the
+ * other, and the one the till sells goes negative. A removed twin is for the
+ * owner to restore; only an owner or manager may deliberately start afresh.
+ */
+export function duplicateNameRefusal(catalogue: readonly CatalogueEntry[], name: string, role: string): string | null {
+  const key = productKey(name);
+  const twins = catalogue.filter((product) => productKey(product.name) === key);
+  const live = twins.find((product) => !product.retiredAt);
+  if (live) return `"${String(live.name)}" already exists. Use that item: Add / Remove stock changes its count.`;
+  const removed = twins[0];
+  if (removed && !ADMIN_ROLES.has(role)) {
+    return `"${String(removed.name)}" was removed from the catalogue. Ask the owner to restore it in Menu Admin rather than adding it again.`;
+  }
+  return null;
+}
 
 /**
  * Who may write a product, or why not.

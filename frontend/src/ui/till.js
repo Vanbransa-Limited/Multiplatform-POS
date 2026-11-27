@@ -169,6 +169,10 @@ export class TillView {
         this.selectedCustomer = draft.customer || this.selectedCustomer;
         this.activeTable = draft.activeTable || null;
         this.activeTabId = draft.activeTabId || null;
+        this.typingTable = Boolean(draft.typingTable);
+        this.tableEntry = draft.tableEntry || '';
+        this.dineIn = Boolean(draft.dineIn || this.typingTable || this.activeTable);
+        this.tabSelectedCustomerId = draft.tabSelectedCustomerId || null;
         if (saved || this.cart.length || this.parkedCarts.length) showNotification(saved
           ? 'The previous cart was already saved. Review its original order in Orders.'
           : 'Restored unfinished work from this browser tab. It has not been submitted as a new order.', 'info');
@@ -190,7 +194,9 @@ export class TillView {
       writeTillDraft(sessionStorage, this.draftKey, { cartId: this.cartDraftId || null,
         paymentAttemptKey: this.cart.length ? (this.recoveredPaymentAttempt || this.mpesaAttempt?.idempotencyKey || null) : null,
         cart: this.cart, parkedCarts: this.parkedCarts, customer: this.selectedCustomer,
-        activeTable: this.activeTable, activeTabId: this.activeTabId, savedAt: new Date().toISOString() });
+        activeTable: this.activeTable, activeTabId: this.activeTabId, typingTable: Boolean(this.typingTable),
+        tableEntry: this.tableEntry || '', dineIn: Boolean(this.dineIn), tabSelectedCustomerId: this.tabSelectedCustomerId || null,
+        savedAt: new Date().toISOString() });
       if (!this.cart.length) this.cartDraftId = null;
       this.draftBackupFailed = false;
     } catch (error) {
@@ -278,12 +284,22 @@ export class TillView {
             <!-- Open tabs first, then free tables. "Other table" types a name
                  the list does not have, which opens a tab under it. -->
             <div id="till-table-field" class="till-table-field hidden">
-              <label class="till-field-label" for="till-table-select">Table</label>
+              <div class="till-table-label-row">
+                <label class="till-field-label" for="till-table-select">Table</label>
+                <button type="button" class="till-new-table" id="till-new-table-btn">Enter table number</button>
+              </div>
               <div class="till-table-select-wrap">
                 <select id="till-table-select"></select>
                 <span id="till-table-badge" class="till-table-badge hidden"></span>
               </div>
-              <input type="text" id="till-table-input" class="hidden" placeholder="Type a table name, e.g. Patio 3" aria-label="Other table name">
+              <div id="till-table-entry" class="hidden">
+                <label class="till-field-label" for="till-table-input">Table number or name</label>
+                <div class="till-table-entry-row">
+                  <input type="text" id="till-table-input" maxlength="40" placeholder="e.g. 12 or Patio 3" autocomplete="off" aria-describedby="till-table-entry-note">
+                  <button type="button" class="sec-btn" id="till-use-table-btn">Use table</button>
+                </div>
+                <p id="till-table-entry-note" class="till-table-entry-note" role="status">Enter the full table number, then choose Use table.</p>
+              </div>
             </div>
             <datalist id="till-table-options"></datalist>
             <a href="/tabs" id="till-open-tabs-label" class="till-tab-label hidden"></a>
@@ -684,12 +700,15 @@ export class TillView {
     // Typing a table here is what opens the first tab of the night; the open
     // tab buttons below are only a shortcut back to one that already exists.
     document.getElementById('till-table-input').addEventListener('input', (event) => {
-      this.activeTable = event.target.value.trim() || null;
-      // Picking a suggested table is how an existing tab is chosen now.
-      this.activeTabId = (this.openTabs || []).find((tab) => tabKey(tab.table) === tabKey(this.activeTable))?.id || null;
+      this.tableEntry = event.target.value;
       this.persistDraft();
-      this.renderOpenTabs();
+      document.getElementById('till-use-table-btn').disabled = !tabKey(this.tableEntry);
     });
+    document.getElementById('till-table-input').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); this.useEnteredTable(); }
+    });
+    document.getElementById('till-new-table-btn').addEventListener('click', () => this.beginTableEntry());
+    document.getElementById('till-use-table-btn').addEventListener('click', () => this.useEnteredTable());
 
     // Takeaway leaves any tab alone and starts a sale of its own; Dine in asks
     // which table, from the open tabs and the free tables.
@@ -699,25 +718,26 @@ export class TillView {
     });
     document.getElementById('till-type-dine').addEventListener('click', () => {
       this.dineIn = true;
+      this.persistDraft();
       this.renderOpenTabs();
       document.getElementById('till-table-select')?.focus();
     });
     document.getElementById('till-table-select').addEventListener('change', (event) => {
       const picked = event.target.value;
-      const typed = document.getElementById('till-table-input');
       if (picked === OTHER_TABLE) {
-        typed.classList.remove('hidden');
-        typed.value = '';
-        typed.focus();
+        this.beginTableEntry();
         return;
       }
-      typed.classList.add('hidden');
       if (picked) this.addToTab(picked);
     });
 
     // Pay now triggers checkout modal
     document.getElementById('till-pay-now-btn').addEventListener('click', () => {
       if (!canSell(state.currentUser?.role)) { showNotification(SELLING_OFF, 'error'); return; }
+      if ((this.dineIn || this.typingTable) && !this.activeTable) {
+        showNotification('Choose a table or finish entering its number first.', 'warning');
+        return;
+      }
       // On a tab, paying means paying the table, not just what is on screen.
       if (this.activeTable) {
         void this.openTabCheckout().catch((error) => {
@@ -2554,15 +2574,16 @@ export class TillView {
         Object.assign(option('', 'Choose a table…'), { disabled: true }),
         ...(choices.open.length ? [group('Open tabs', choices.open)] : []),
         group('Free tables', choices.free),
+        ...(choices.typed ? [option(this.activeTable, `Table ${this.activeTable}`)] : []),
         option(OTHER_TABLE, 'Other table…'),
       );
-      const typing = input && !input.classList.contains('hidden') && !this.activeTable;
-      select.value = choices.typed || typing ? OTHER_TABLE : choices.selected;
-      // Never while it is being typed into, or the cursor jumps mid-word.
+      select.value = this.typingTable ? OTHER_TABLE : choices.typed ? this.activeTable : choices.selected;
+      document.getElementById('till-table-entry')?.classList.toggle('hidden', !this.typingTable);
       if (input) {
-        input.classList.toggle('hidden', !(choices.typed || typing));
-        if (document.activeElement !== input) input.value = choices.typed ? this.activeTable : input.value;
+        if (document.activeElement !== input) input.value = this.tableEntry || '';
       }
+      const use = document.getElementById('till-use-table-btn');
+      if (use) use.disabled = !tabKey(this.tableEntry);
       const badge = document.getElementById('till-table-badge');
       if (badge) {
         badge.textContent = choices.badge;
@@ -2846,9 +2867,39 @@ export class TillView {
     document.getElementById('tab-queue-modal').classList.add('active');
   }
 
+  /** Keep typed digits separate from the selected bill until explicitly applied. */
+  beginTableEntry() {
+    this.resetTabCustomer();
+    this.activeTable = null;
+    this.activeTabId = null;
+    this.joinBill = null;
+    this.tabOnly = false;
+    this.dineIn = true;
+    this.typingTable = true;
+    this.tableEntry = '';
+    const checkoutTable = document.getElementById('checkout-table-number');
+    if (checkoutTable) checkoutTable.value = '';
+    this.persistDraft();
+    this.renderOpenTabs();
+    document.getElementById('till-table-input')?.focus();
+  }
+
+  useEnteredTable() {
+    const table = String(this.tableEntry || '').trim();
+    if (!tabKey(table) || table.length > 40) {
+      showNotification('Enter a table number or name, up to 40 characters.', 'warning');
+      return;
+    }
+    this.addToTab(table);
+  }
+
   /** Points the cart at an existing tab; the next Pay Now is another round. */
   addToTab(table) {
+    if (tabKey(this.activeTable) !== tabKey(table)) this.resetTabCustomer();
     const tab = (this.openTabs || []).find((entry) => tabKey(entry.table) === tabKey(table));
+    this.typingTable = false;
+    this.tableEntry = '';
+    this.dineIn = true;
     this.activeTable = table;
     this.activeTabId = tab?.id || null;
     this.persistDraft();
@@ -2861,10 +2912,11 @@ export class TillView {
   }
 
   /** The cart's customer: whose prices apply, and who a receivable is owed by. */
-  applyCustomer(customer) {
+  applyCustomer(customer, { fromTab = false } = {}) {
     if (!customer) return;
     this.invalidateMpesaAttempt();
     this.selectedCustomer = customer;
+    this.tabSelectedCustomerId = fromTab ? customer.id : null;
     // Update UI prices based on customer price tier
     document.getElementById('price-tier-indicator').innerText =
       customer.price_tier === 'WHOLESALE' ? 'Wholesale Pricing' : 'Retail Pricing';
@@ -2887,15 +2939,31 @@ export class TillView {
     if (!customer || this.disposed || tabKey(this.activeTable) !== tabKey(table)) return;
     const select = document.getElementById('cart-customer-select');
     if (select && [...select.options].some((option) => option.value === id)) select.value = id;
-    this.applyCustomer(customer);
+    this.applyCustomer(customer, { fromTab: true });
     showNotification(`Table ${table} is ${customer.name}'s tab. This round will be billed to ${customer.name}.`, 'info');
   }
 
+  /** An automatically selected tab debtor must not follow staff to a new table. */
+  resetTabCustomer() {
+    if (!this.tabSelectedCustomerId) return;
+    const reset = this.selectedCustomer?.id === this.tabSelectedCustomerId;
+    this.tabSelectedCustomerId = null;
+    if (!reset) return;
+    const select = document.getElementById('cart-customer-select');
+    if (select) select.value = WALK_IN_CUSTOMER_ID;
+    this.applyCustomer({ id: WALK_IN_CUSTOMER_ID, name: 'Walk-In Customer', price_tier: 'RETAIL' });
+  }
+
   clearActiveTab() {
+    this.resetTabCustomer();
     this.dineIn = false;
+    this.typingTable = false;
+    this.tableEntry = '';
     this.tabOnly = false;
     this.activeTable = null;
     this.activeTabId = null;
+    const checkoutTable = document.getElementById('checkout-table-number');
+    if (checkoutTable) checkoutTable.value = '';
     this.persistDraft();
     this.renderOpenTabs();
   }
@@ -3009,6 +3077,7 @@ export class TillView {
     // With rounds already owed, paying settles the night rather than the cart,
     // so the button says the number the customer is about to be asked for.
     const settlingTotal = dueMinor + Math.round((this.totals?.total || 0) * 100);
+    pay.disabled = this.cart.length === 0 && !(onTab && dueMinor > 0);
     pay.classList.toggle('hidden', Boolean(this.tabOnly && onTab));
     pay.innerText = onTab && dueMinor > 0
       ? `Settle Table ${this.activeTable} · KES ${(settlingTotal / 100).toFixed(2)}`
@@ -3020,6 +3089,7 @@ export class TillView {
     // approved or removed; the server would refuse it anyway.
     const awaiting = discountAwaitingCode(this.cart, state.currentUser?.role);
     if (awaiting) { pay.disabled = true; add.disabled = true; }
+    if ((this.dineIn || this.typingTable) && !onTab) pay.disabled = true;
     const gate = document.getElementById('till-discount-note');
     if (gate) gate.classList.toggle('hidden', !awaiting);
     const discountPrice = document.querySelector('#cart-list .ci-discount .cart-item-price');
@@ -3124,7 +3194,12 @@ export class TillView {
     const buyerPin = document.getElementById('cart-buyer-pin').value || '';
     // A round joins the tab the cart is pointed at; the checkout field is what
     // opens a new one.
-    const tableNo = this.activeTable || document.getElementById('checkout-table-number').value || '';
+    if (this.typingTable || (this.dineIn && !this.activeTable)) {
+      showNotification('Choose a table or finish entering its number first.', 'warning');
+      return false;
+    }
+    const tableNo = this.activeTable || (!this.dineIn && !this.typingTable
+      ? document.getElementById('checkout-table-number').value : '') || '';
 
     // Prefer the trusted shift opened at sign-in. The old check looked only in
     // Dexie, so a valid cloud shift was rejected after yesterday's local row

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildSalesBody, itemCode, kraTaxType, kraTime, paymentType, verifyUrl } = require('../lib/modules/etims/oscu');
+const { buildSalesBody, itemCode, kraTaxType, kraTime, paymentType, verifyUrl, signedReceiptData, oscuPost, OscuUnreachable } = require('../lib/modules/etims/oscu');
 
 test('POS tax codes map onto KRA tax types', () => {
   assert.equal(kraTaxType('A'), 'B'); // 16%
@@ -58,4 +58,29 @@ test('the verification link carries PIN, branch and signature', () => {
     verifyUrl('production', 'P051234567A', '00', 'QUII27MATATSHFRB'),
     'https://etims.kra.go.ke/common/link/etims/receipt/indexEtimsReceiptData?Data=P051234567A00QUII27MATATSHFRB',
   );
+});
+
+test('a success without complete fiscal evidence cannot become a signed receipt', () => {
+  const data = { curRcptNo: 1, totRcptNo: '2', intrlData: 'EAHSAV6ECUUXSY6PCCJYAUP6MI', rcptSign: 'QUII27MATATSHFRB', sdcDateTime: '20261127120000' };
+  assert.equal(signedReceiptData(data).curRcptNo, '1');
+  assert.equal(signedReceiptData({ ...data, curRcptNo: undefined, 'curRcptNo ': '3' }).curRcptNo, '3');
+  for (const key of Object.keys(data)) assert.throws(() => signedReceiptData({ ...data, [key]: '' }), OscuUnreachable);
+  assert.throws(() => signedReceiptData({ ...data, rcptSign: { forged: true } }), OscuUnreachable);
+  assert.throws(() => signedReceiptData(null), OscuUnreachable);
+});
+
+test('HTTP errors, malformed JSON and interrupted replies are uncertain, even with a success code', async () => {
+  const originalFetch = global.fetch;
+  try {
+    for (const response of [
+      new Response(JSON.stringify({ resultCd: '000' }), { status: 503 }),
+      new Response('null'), new Response('[]'), new Response('not json'),
+      { ok: true, status: 200, text: async () => { throw Error('stream interrupted'); } },
+    ]) {
+      global.fetch = async () => response;
+      await assert.rejects(oscuPost('sandbox', '/saveTrnsSalesOsdc', {}, {}), OscuUnreachable);
+    }
+    global.fetch = async () => new Response(JSON.stringify({ resultCd: '000', data: [] }));
+    assert.equal((await oscuPost('sandbox', '/saveTrnsSalesOsdc', {}, {})).data, null);
+  } finally { global.fetch = originalFetch; }
 });

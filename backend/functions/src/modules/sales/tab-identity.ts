@@ -48,6 +48,9 @@ async function joinUnpaidBill(transaction: Transaction, input: ParsedSaleInput):
   if (String(bill.status).toUpperCase() === "VOIDED" || bill.proformaId) {
     throw new HttpsError("failed-precondition", "That bill was voided or belongs to a proforma; ring a new one.");
   }
+  if (bill.customerId && input.customerId !== bill.customerId) {
+    throw new HttpsError("failed-precondition", "This bill belongs to another customer. Select that customer before adding items.");
+  }
   if (Number(bill.checkoutExpiresAt?.toMillis?.() || 0) > Date.now()) {
     throw new HttpsError("failed-precondition", "That bill is being paid. Finish checkout before adding items.");
   }
@@ -77,6 +80,7 @@ export async function resolveSharedTab(transaction: Transaction, input: ParsedSa
   const all = await tableSales(transaction, input.tenantId, input.branchId, input.tableNumber, lock.data());
   const sales = all.filter(doc => doc.data().tabId && String(doc.data().status).toUpperCase() !== "VOIDED");
   const active = new Map<string, DocumentData>();
+  const customers = new Set<string>();
   for (const doc of sales) {
     const ledger = await transaction.get(db.collection("payments").where("saleId", "==", doc.id));
     if (ledger.docs.some(payment => owesCredit(payment.data(), input.tenantId))) {
@@ -84,9 +88,13 @@ export async function resolveSharedTab(transaction: Transaction, input: ParsedSa
         throw new HttpsError("failed-precondition", "This table is being paid. Finish checkout before adding another round.");
       }
       active.set(doc.data().tabId, doc.data());
+      if (doc.data().customerId) customers.add(String(doc.data().customerId));
     }
   }
   if (active.size > 1) throw new HttpsError("failed-precondition", "This table has multiple unpaid bills. Consolidate them before adding another round.");
+  if (customers.size && (customers.size !== 1 || !customers.has(input.customerId))) {
+    throw new HttpsError("failed-precondition", "This table belongs to another customer account. Check the customer or choose a different table.");
+  }
   const existing = [...active.values()][0];
   // A device that has not heard the table was paid still proposes the old tab.
   // That bill is closed: the next customer gets a tab of their own (26 Nov 2026).

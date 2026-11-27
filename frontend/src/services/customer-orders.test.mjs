@@ -79,6 +79,19 @@ test('another device groups shared receivables without having the original tab h
   assert.deepEqual(grouped[0].roundIds, ['a', 'b']);
 });
 
+test('a combined table bill names every seller while each round keeps its author', () => {
+  const rounds = ['nicole', 'hadrine'].map((staff, index) => saleAsOrder({
+    id: `round-${index}`, branch_id: 'b1', table_no: '5', tab_id: 'shared', order_reference: 'ORD-5',
+    staff_id: staff, customer_id: 'guest', grand_total: 100, status: 'PENDING_PAYMENT',
+  }, { payments: [{ method: 'CREDIT', amount: 100 }] }));
+  const [bill] = mergeTabRounds(rounds, []);
+  const names = new Map([['nicole', 'Nicole'], ['hadrine', 'Hadrine']]);
+  assert.deepEqual(bill.staffIds, ['nicole', 'hadrine']);
+  assert.equal(handledBy(bill, names), 'Nicole, Hadrine');
+  assert.deepEqual(rounds.map(round => round.staffId), ['nicole', 'hadrine']);
+  assert.equal(visibleOrders([bill], 'b1', { search: 'hadrine' }).length, 1);
+});
+
 test('rounds on a closed tab stay separate history', () => {
   const round = (id) => ({
     ...saleAsOrder(

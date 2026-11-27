@@ -56,6 +56,19 @@ test('entering a customer’s tab selects that customer for the round', async ()
   assert.match(notices[1], /billed to Nicole/);
 });
 
+test('an automatically selected tab customer does not carry to another table', async () => {
+  const { view, select } = tillTabMethods();
+  view.openTabs = [{ id: 'tab-1', table: '4', customer_id: 'nicole', dueMinor: 50000, rounds: [] }];
+  view.addToTab('4');
+  await settle();
+  assert.equal(view.selectedCustomer.id, 'nicole');
+  view.addToTab('12');
+  assert.equal(view.selectedCustomer.id, WALK_IN);
+  assert.equal(select.value, WALK_IN);
+  assert.equal(view.activeTable, '12');
+  assert.equal(view.activeTabId, null);
+});
+
 test('walk-in, mixed and unknown owners, a new table, and a table changed mid-read leave the cart as it was', async () => {
   for (const tab of [
     { id: 't', table: '9', rounds: [{ customerId: WALK_IN }] },

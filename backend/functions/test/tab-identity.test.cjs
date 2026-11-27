@@ -74,3 +74,18 @@ test('a paid tab proposed again by a stale device gives the next customer a new 
     assert.equal(result.data.orderReference, null, 'the old bill number is not reused');
   } finally { h.restore(); }
 });
+
+test('an existing table cannot acquire a round billed to another customer', async () => {
+  const h = harness([{ ...sale('first'), customerId: 'nicole' }], [credit('first')]);
+  try {
+    await assert.rejects(resolveSharedTab(h.tx, { ...input, customerId: 'brian' }), /another customer account/);
+    assert.equal((await resolveSharedTab(h.tx, { ...input, customerId: 'nicole' })).data.tabId, 'original');
+  } finally { h.restore(); }
+});
+
+test('mixed customer accounts on an old tab need review before another round can join', async () => {
+  const h = harness([{ ...sale('first'), customerId: 'nicole' }, { ...sale('second'), customerId: 'brian' }],
+    [credit('first'), credit('second')]);
+  try { await assert.rejects(resolveSharedTab(h.tx, { ...input, customerId: 'nicole' }), /another customer account/); }
+  finally { h.restore(); }
+});

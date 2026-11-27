@@ -18,6 +18,9 @@ Run from the repository root:
 | `npm run test:tooling` | Emulator target validation, test discovery, child failure propagation, runner setup | Application correctness |
 | `npm run verify:baseline` | Node 22; tooling tests; frontend tests; backend build/tests; frontend typecheck; static production build | Emulator/browser workflow coverage or a release gate |
 | `npm run test:emulator` | Fresh backend build; local Auth, Firestore, Functions; system scenario, stock transactions, receipt reconciliation, settings rule client | Browser-to-callable integration, every rule boundary, external provider behavior |
+| `npm run test:etims` | Node 22 backend build; demo Firestore transactions for fiscal claims, retries, isolation and audit; simulated KRA replies | KRA sandbox acceptance, certification, browser transport or production readiness |
+| `npm run test:tables` | Demo Firestore table lifecycle across three devices; seller attribution, customer-account mismatch refusal, unchanged stock on refusal, settlement and table reuse | Real browser-to-callable transport or correction of historical orders |
+| `node frontend/e2e/table-entry-check.mjs` | Production till markup/handlers, custom select and IndexedDB with synthetic customers; desktop/phone table entry and customer reset | Live customer data or payment submission |
 | `npm --prefix frontend run visual` | Production build and Playwright suite | Real provider behavior; inspect each test's substituted transport |
 | `node frontend/e2e/<check>.mjs` | The standalone check named by that file | Other scenarios; check each file's fixture requirements |
 

@@ -193,6 +193,24 @@ export function buildItemBody(input: {
 
 export type OscuReply ={ resultCd: string; resultMsg: string; data: Record<string, unknown> | null };
 
+/** A success code alone is not evidence that an invoice was signed. */
+export function signedReceiptData(data: Record<string, unknown> | null) {
+  const text = (key: string) => {
+    const value = data?.[key] ?? data?.[`${key} `];
+    return typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+  };
+  const receipt = {
+    curRcptNo: text('curRcptNo'), totRcptNo: text('totRcptNo'),
+    intrlData: text('intrlData'), rcptSign: text('rcptSign'), sdcDateTime: text('sdcDateTime'),
+  };
+  if (!/^\d+$/.test(receipt.curRcptNo) || !/^\d+$/.test(receipt.totRcptNo)
+    || typeof data?.intrlData !== 'string' || !receipt.intrlData
+    || typeof data?.rcptSign !== 'string' || !receipt.rcptSign || !/^\d{14}$/.test(receipt.sdcDateTime)) {
+    throw new OscuUnreachable('KRA returned an incomplete signed receipt.');
+  }
+  return receipt;
+}
+
 /** Thrown when KRA's answer never arrived, so the same body must be resent. */
 export class OscuUnreachable extends Error {}
 
@@ -200,28 +218,28 @@ export async function oscuPost(
   environment: EtimsEnvironment,
   path: string,
   headers: Record<string, string>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown> | string,
 ): Promise<OscuReply> {
   let response: Response;
   try {
     response = await fetch(`${OSCU_BASE_URL[environment]}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify(body),
+      body: typeof body === 'string' ? body : JSON.stringify(body),
       signal: AbortSignal.timeout(30_000),
     });
   } catch (error) {
     throw new OscuUnreachable(error instanceof Error ? error.message : String(error));
   }
-  const text = await response.text();
   let reply: Partial<OscuReply>;
   try {
-    reply = JSON.parse(text);
+    reply = JSON.parse(await response.text());
   } catch {
     throw new OscuUnreachable(`KRA answered HTTP ${response.status} without a result.`);
   }
-  if (typeof reply.resultCd !== 'string') {
+  if (!response.ok || !reply || typeof reply !== 'object' || typeof reply.resultCd !== 'string') {
     throw new OscuUnreachable(`KRA answered HTTP ${response.status} without a result code.`);
   }
-  return { resultCd: reply.resultCd, resultMsg: String(reply.resultMsg ?? ''), data: reply.data ?? null };
+  return { resultCd: reply.resultCd, resultMsg: String(reply.resultMsg ?? ''),
+    data: reply.data && typeof reply.data === 'object' && !Array.isArray(reply.data) ? reply.data : null };
 }

@@ -1,6 +1,8 @@
 # Multiplatform POS
 
 Current verification instructions: [test commands and environment contract](docs/testing.md).
+eTIMS implementation, sandbox onboarding and remaining certification work:
+[eTIMS integration preparation](docs/etims-integration.md).
 The [system stabilization plan](docs/system-stabilization-plan.md) tracks the ongoing audit.
 The migration audit linked below is a dated historical assessment; its feature matrix
 does not describe the current operational application.

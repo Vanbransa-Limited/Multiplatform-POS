@@ -605,7 +605,7 @@ export class OrdersView {
             || userById.get(shiftById.get(sale.shift_id)?.user_id)?.name
             || '',
         };
-      }), tabs);
+      }), tabs).map(order => ({ ...order, cashierName: handledBy(order, this.staffNames) || order.cashierName || '' }));
     } catch (error) {
       if (this.disposed || generation !== this.posReadGeneration) return;
       // A failed read is not an empty floor. Keep the last complete snapshot.

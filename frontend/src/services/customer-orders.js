@@ -237,6 +237,7 @@ export function mergeTabRounds(orders, tabs) {
         roundUuids: order.saleUuid ? [order.saleUuid] : [],
         // Each round's own invoice, so a link or search by any of them finds the card.
         roundRefs: [order.ref],
+        staffIds: order.staffId ? [order.staffId] : [],
         lines: [...(order.lines || [])],
       };
       groups.set(tab.id, seed);
@@ -247,6 +248,7 @@ export function mergeTabRounds(orders, tabs) {
     group.roundIds.push(order.id);
     if (order.saleUuid) group.roundUuids.push(order.saleUuid);
     group.roundRefs.push(order.ref);
+    if (order.staffId && !group.staffIds.includes(order.staffId)) group.staffIds.push(order.staffId);
     group.lines.push(...(order.lines || []));
     group.totalMinor += order.totalMinor;
     group.dueMinor += order.dueMinor;
@@ -276,6 +278,9 @@ export function mergeTabRounds(orders, tabs) {
  * rather than dropped: an untraceable order is exactly what this is for.
  */
 export function handledBy(order, names) {
+  if (order?.source === 'pos' && order.staffIds?.length) {
+    return [...new Set(order.staffIds)].map(id => names?.get(id) || String(id)).join(', ');
+  }
   const id = order?.source === 'pos'
     ? order.staffId
     : (order?.settledByStaffId || order?.lastPrintedByStaffId || order?.updatedByStaffId);
@@ -407,7 +412,7 @@ export function visibleOrders(orders, branchId, { tab = 'all', search = '', allB
       order.ref, ...(order.roundRefs || []), order.customerName, order.tableNumber, servingLabel(order),
       // Both the name and the raw staff id: an owner tracing an order may have
       // either, and statusLabel puts the state itself within reach too.
-      order.cashierName, order.staffId, order.settledByStaffId, statusLabel(order),
+      order.cashierName, order.staffId, ...(order.staffIds || []), order.settledByStaffId, statusLabel(order),
       order.paymentMethod, order.paymentReference,
       ...(order.lines || []).map((line) => line.name),
     ].filter(Boolean).join(' ').toLowerCase();

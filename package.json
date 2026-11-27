@@ -14,6 +14,8 @@
     "verify:baseline": "node scripts/verify-baseline.cjs",
     "test:emulator": "node scripts/run-emulator-checks.cjs",
     "test:receipts": "node scripts/run-emulator-checks.cjs --receipts-only",
+    "test:etims": "node scripts/run-emulator-checks.cjs --etims-only",
+    "test:tables": "node scripts/run-emulator-checks.cjs --tables-only",
     "test:frontend": "npm --prefix frontend test",
     "test:backend": "npm --prefix backend/functions test",
     "smoke": "node scripts/smoke-test.mjs",

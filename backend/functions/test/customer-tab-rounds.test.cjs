@@ -22,6 +22,7 @@ function harness() {
     ['shifts/shift', { tenantId: 'tenant', branchId: 'branch', deviceId: 'device', staffId: 'cashier', status: 'open', expectedCashMinor: 0 }],
     ['staff/cashier', { tenantId: 'tenant', status: 'active', role: 'cashier' }],
     ['customers/nicole', { tenantId: 'tenant', isActive: true, name: 'Nicole' }],
+    ['customers/brian', { tenantId: 'tenant', isActive: true, name: 'Brian' }],
     ['tenant_settings/tenant', { tenantId: 'tenant', acceptedPaymentMethods: ['cash', 'mpesa'] }],
     ['products/tea', { tenantId: 'tenant', isActive: true, sellPriceMinor: 26000, taxCode: 'A', name: 'Tea' }],
     ['stock_balances/branch_tea_HOUSE', { tenantId: 'tenant', branchId: 'branch', productId: 'tea', location: 'HOUSE', qty: 10 }],
@@ -65,6 +66,10 @@ test('a round added to a part-paid customer tab joins it, keeps every earlier it
     const firstLines = JSON.stringify([...docs.values()].filter(row => row.saleId === first.sale.id && row.productId));
     const firstPayments = JSON.stringify(payments(first.sale.id));
     assert.equal(stock(), 8);
+    const beforeWrongCustomer = docs.size;
+    await assert.rejects(createSale.run({ auth, data: { ...round('wrong-customer', 'new-local-tab', 1), customerId: 'brian' } }), /another customer account/);
+    assert.equal(docs.size, beforeWrongCustomer, 'a refused account mismatch writes no sale or payment');
+    assert.equal(stock(), 8, 'a refused account mismatch moves no stock');
 
     // The customer comes back. Another till, with its own local tab id, adds one more tea.
     const added = await createSale.run({ auth, data: round('nicole-round-2', 'tab-on-till-b', 1) });

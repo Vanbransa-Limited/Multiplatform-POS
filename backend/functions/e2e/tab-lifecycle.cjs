@@ -22,6 +22,7 @@ async function seed() {
     [`tenants/${T}`]: { status: 'active', etimsMode: 'none' },
     [`branches/${B}`]: { tenantId: T, status: 'active', code: 'LIFE' },
     [`customers/life-walkin`]: { tenantId: T, isActive: true },
+    [`customers/life-other-customer`]: { tenantId: T, isActive: true },
     [`tenant_settings/${T}`]: { tenantId: T, acceptedPaymentMethods: ['cash', 'mpesa', 'credit'] },
     [`products/life-beef`]: { tenantId: T, isActive: true, sellPriceMinor: 50000, taxCode: 'A', name: 'Ugali Beef' },
     [`products/life-punch`]: { tenantId: T, isActive: true, sellPriceMinor: 35000, taxCode: 'A', name: 'Pineapple Punch' },
@@ -39,11 +40,11 @@ async function seed() {
 }
 
 /** A round rung on `device`, saved unpaid, the way every till saves a bill first. */
-async function ring(device, { table, tabId, product = 'life-beef', join } = {}) {
+async function ring(device, { table, tabId, product = 'life-beef', join, customer = 'life-walkin' } = {}) {
   const key = `life-round-${++n}`;
   const price = product === 'life-beef' ? 50000 : 35000;
   const { sale } = await createSale.run({ auth: auth(device), data: { tenantId: T, branchId: B, deviceId: device,
-    shiftId: `shift-${device}`, staffId: staff[device], customerId: 'life-walkin', idempotencyKey: key,
+    shiftId: `shift-${device}`, staffId: staff[device], customerId: customer, idempotencyKey: key,
     ...(table ? { tableNumber: table, tabId: tabId || `proposed-${key}`, orderReference: `ORD-${key}` } : {}),
     ...(join ? { joinSaleUuid: join } : {}),
     lines: [{ productId: product, qty: 1 }], payments: [{ method: 'credit', amountMinor: price }] } });
@@ -63,6 +64,14 @@ async function main() {
   const first = await ring('life-tablet-a', { table: '6' });
   const second = await ring('life-tablet-b', { table: 'Table 6', product: 'life-punch' });
   assert.equal(second.tabId, first.tabId, 'B joined A\'s tab');
+  assert.equal(second.staffId, 'life-hadrine', 'Hadrine remains the seller of her own round');
+  assert.equal((await db.doc(`sales/${first.id}`).get()).data().staffId, 'life-nicole', 'the original seller is unchanged');
+  const stockBeforeWrongAccount = (await db.doc(`stock_balances/${B}_life-beef_HOUSE`).get()).data().qty;
+  const saleCountBeforeWrongAccount = (await db.collection('sales').where('tenantId', '==', T).get()).size;
+  await assert.rejects(ring('life-tablet-b', { table: '6', customer: 'life-other-customer' }), /another customer account/);
+  await assert.rejects(ring('life-tablet-b', { join: first.uuid, customer: 'life-other-customer' }), /another customer/);
+  assert.equal((await db.doc(`stock_balances/${B}_life-beef_HOUSE`).get()).data().qty, stockBeforeWrongAccount);
+  assert.equal((await db.collection('sales').where('tenantId', '==', T).get()).size, saleCountBeforeWrongAccount);
   let open = await session('6');
   assert.equal(open.status, 'OPEN'); assert.equal(open.tabId, first.tabId); assert.equal(open.dueMinor, 85000);
   assert.deepEqual([...open.roundSaleIds].sort(), [first.id, second.id].sort());

@@ -20,6 +20,7 @@ function main() {
     ['backend/functions/e2e/checkout-print.cjs'],
     ['backend/functions/e2e/tab-lifecycle.cjs'],
     ['backend/functions/e2e/receipt-correction.cjs'],
+    ['backend/functions/e2e/etims.cjs'],
   ];
   try {
     for (const args of scenarios) {

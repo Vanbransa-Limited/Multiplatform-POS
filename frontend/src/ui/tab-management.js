@@ -113,10 +113,12 @@ export class TabManagementView {
     const { reason, error } = releaseReason(answer);
     if (error) { showNotification(error, 'warning'); return; }
     this.releasing = true;
+    // showNotification renders HTML; table names are typed by staff.
+    const table = escapeHtml(target.tableNumber);
     try {
       const result = await callFunction('releaseTable', { tenantId: await activeTenantId(), branchId: state.currentBranch?.id,
         tableNumber: target.tableNumber, tabId: target.tabId, reason });
-      showNotification(`Table ${target.tableNumber} released. ${kes} stays owed on ${this.refFor(tab) || 'the bill'}; pay it from Orders.`, 'success');
+      showNotification(`Table ${table} released. ${kes} stays owed on ${escapeHtml(this.refFor(tab) || 'the bill')}; pay it from Orders.`, 'success');
       if (result?.replayed) showNotification('It had already been released; nothing was recorded twice.', 'info');
       // Bring the release stamp down so this till frees the table now, not at the next sync.
       await pullSales(undefined, undefined, { tableNumber: target.tableNumber, branchId: state.currentBranch?.id }).catch(() => null);
@@ -124,7 +126,7 @@ export class TabManagementView {
       await this.refreshTabs();
       await this.renderReleased();
     } catch (failure) {
-      showNotification(`Table ${target.tableNumber} was not released: ${failure?.message || failure}`, 'error');
+      showNotification(`Table ${table} was not released: ${escapeHtml(failure?.message || failure)}`, 'error');
     } finally {
       this.releasing = false;
     }

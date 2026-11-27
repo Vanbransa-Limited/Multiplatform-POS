@@ -11,11 +11,33 @@ export const tableKey = (tableNumber: string) =>
 export const tableSessionRef = (tenantId: string, branchId: string, tableNumber: string) =>
   db.collection("table_sessions").doc(deterministicId("table", `${tenantId}:${branchId}:${tableKey(tableNumber)}`));
 
-const owesCredit = (row: DocumentData, tenantId: string) => row.tenantId === tenantId && row.method === "credit"
+export const owesCredit = (row: DocumentData, tenantId: string) => row.tenantId === tenantId && row.method === "credit"
   && !row.settledAt && String(row.status).toLowerCase() !== "voided" && Number(row.amountMinor) > 0;
 
+/**
+ * A released bill is still owed and payable, but no longer holds its table:
+ * the next customer there gets a tab of their own (releaseTable, 27 Nov 2026).
+ */
+export const isReleased = (sale: DocumentData | undefined) => Boolean(sale?.tableRelease);
+
+/**
+ * A round that names a released tab. It is refused rather than joined to the
+ * next customer's bill or added to the released one: the device that rang it
+ * holds it for staff to review (sync.js), with these details.
+ */
+function releasedTabRefused(sale: DocumentData, input: ParsedSaleInput) {
+  const release = sale.tableRelease as { releasedAt?: Timestamp; releaseId?: string } | undefined;
+  const releasedAt = release?.releasedAt?.toDate?.().toISOString() ?? null;
+  logger.warn("round for a released tab held for review", { tenantId: input.tenantId, branchId: input.branchId,
+    idempotencyKey: input.idempotencyKey, tabId: input.tabId, releaseId: release?.releaseId ?? null });
+  return new HttpsError("failed-precondition",
+    `Table ${sale.tableNumber} was released${releasedAt ? ` at ${releasedAt}` : ""}. This round was not added to any bill; it is held on this till for review.`,
+    { reason: "table-released", tabId: input.tabId, tableNumber: sale.tableNumber ?? null,
+      orderReference: sale.orderReference || sale.invoiceNumber || null, releaseId: release?.releaseId ?? null, releasedAt });
+}
+
 /** Every sale ever rung at this table in this branch, under any spelling of its name. */
-async function tableSales(transaction: Transaction, tenantId: string, branchId: string, tableNumber: string, lock?: DocumentData) {
+export async function tableSales(transaction: Transaction, tenantId: string, branchId: string, tableNumber: string, lock?: DocumentData) {
   const key = tableKey(tableNumber);
   const names = [...new Set([tableNumber, key, key.toUpperCase(), `Table ${key}`, `TABLE ${key.toUpperCase()}`,
     lock?.tableNumber].filter(Boolean))];
@@ -58,6 +80,11 @@ async function joinUnpaidBill(transaction: Transaction, input: ParsedSaleInput):
   if (!ledger.docs.some(payment => owesCredit(payment.data(), input.tenantId))) {
     throw new HttpsError("failed-precondition", "That bill is already paid. Ring the items as a new bill.");
   }
+  if (isReleased(bill)) {
+    // Its table went to the next customer: the items stay on this bill alone.
+    return { ref: null, data: { tabId: String(bill.tabId), orderReference: bill.orderReference || bill.invoiceNumber || null,
+      tableNumber: bill.tableNumber ? String(bill.tableNumber) : null, tableRelease: bill.tableRelease } };
+  }
   if (bill.tableNumber) {
     const { joinSaleUuid: _join, ...rest } = input;
     const tab = await resolveSharedTab(transaction, { ...rest, tableNumber: String(bill.tableNumber),
@@ -73,12 +100,21 @@ async function joinUnpaidBill(transaction: Transaction, input: ParsedSaleInput):
 /** Serialize competing tills and reuse the table's unpaid bill, including legacy sales. */
 export async function resolveSharedTab(transaction: Transaction, input: ParsedSaleInput): Promise<SharedTab | null> {
   if (input.joinSaleUuid) return joinUnpaidBill(transaction, input);
-  if (!input.tableNumber || !input.tabId
-    || !input.payments.some(payment => payment.method === "credit" && payment.amountMinor > 0)) return null;
+  const owing = input.payments.some(payment => payment.method === "credit" && payment.amountMinor > 0);
+  // New rounds are always saved unpaid first (SAVE_FIRST), so every one naming a tab is checked here,
+  // with or without a table: a released tab's round is held, never filed under it or the next customer's.
+  if (input.tabId && owing) {
+    const named = await transaction.get(db.collection("sales")
+      .where("tenantId", "==", input.tenantId).where("tabId", "==", input.tabId));
+    const released = named.docs.find(doc => doc.data().branchId === input.branchId && isReleased(doc.data()));
+    if (released) throw releasedTabRefused(released.data(), input);
+  }
+  if (!input.tableNumber || !input.tabId || !owing) return null;
   const ref = tableSessionRef(input.tenantId, input.branchId, input.tableNumber);
   const lock = await transaction.get(ref);
   const all = await tableSales(transaction, input.tenantId, input.branchId, input.tableNumber, lock.data());
-  const sales = all.filter(doc => doc.data().tabId && String(doc.data().status).toUpperCase() !== "VOIDED");
+  const sales = all.filter(doc => doc.data().tabId && String(doc.data().status).toUpperCase() !== "VOIDED"
+    && !isReleased(doc.data()));
   const active = new Map<string, DocumentData>();
   const customers = new Set<string>();
   for (const doc of sales) {
@@ -120,7 +156,7 @@ export async function refreshTableSession(tenantId: string, branchId: string, ta
   return db.runTransaction(async (tx) => {
     const lock = await tx.get(ref);
     const sales = (await tableSales(tx, tenantId, branchId, tableNumber, lock.data()))
-      .filter(doc => doc.data().tabId && String(doc.data().status).toUpperCase() !== "VOIDED");
+      .filter(doc => doc.data().tabId && String(doc.data().status).toUpperCase() !== "VOIDED" && !isReleased(doc.data()));
     const dueBySale = new Map<string, number>();
     for (let start = 0; start < sales.length; start += 30) {
       const ids = sales.slice(start, start + 30).map(doc => doc.id);

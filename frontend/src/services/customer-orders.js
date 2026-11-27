@@ -123,6 +123,11 @@ export function saleAsOrder(sale, { payment, payments, cashierName, customerName
     saleUuid: sale.sale_uuid || null,
     tabId: sale.tab_id || null,
     tabReference: sale.order_reference || null,
+    // Released from its table (or a late round for such a tab, held for review):
+    // its own bill, never merged with whoever sits at that table now.
+    tableReleased: Boolean(sale.table_release || sale.sync_hold),
+    // On no bill at all: refused by the server and kept here for review.
+    heldForReview: Boolean(sale.sync_hold),
     customerName: customerName || 'Guest',
     cashierName: cashierName || '',
     orderType: sale.table_no ? 'dine_in' : 'takeaway',
@@ -165,7 +170,10 @@ export function mergeTabRounds(orders, tabs) {
     .map((tab) => [tab.id, tab]));
   const headers = new Set((tabs || []).map(tab => tab.id));
   for (const order of orders || []) {
-    if (order.tabId && order.tabReference && order.paymentStatus === 'unpaid' && !headers.has(order.tabId)) {
+    if (order.heldForReview) continue;
+    // A released tab's header is closed here, but its rounds are still one bill.
+    if (order.tabId && order.tabReference && order.paymentStatus === 'unpaid'
+      && (!headers.has(order.tabId) || (order.tableReleased && !open.has(order.tabId)))) {
       open.set(order.tabId, { id: order.tabId, order_no: order.tabReference, table_no: order.tableNumber });
     }
   }
@@ -175,9 +183,10 @@ export function mergeTabRounds(orders, tabs) {
   // so every bill under a table can be settled together in one payment.
   const normTable = (t) => String(t ?? '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/^table\s*/, '');
   const tableTabByKey = new Map();
+  const releasedTabs = new Set((orders || []).filter(order => order.tableReleased && order.tabId).map(order => order.tabId));
   for (const tab of open.values()) {
     const k = `${tab.branch_id || ''}:${normTable(tab.table_no)}`;
-    if (normTable(tab.table_no) && !tableTabByKey.has(k)) {
+    if (normTable(tab.table_no) && !tableTabByKey.has(k) && !releasedTabs.has(tab.id)) {
       tableTabByKey.set(k, tab);
     }
   }
@@ -186,7 +195,7 @@ export function mergeTabRounds(orders, tabs) {
   // at the same table always consolidate into one unified table bill.
   const unpaidTableCounts = new Map();
   for (const order of orders || []) {
-    if (order.paymentStatus === 'unpaid' && normTable(order.tableNumber)) {
+    if (order.paymentStatus === 'unpaid' && normTable(order.tableNumber) && !order.tableReleased) {
       const k = `${order.branchId || ''}:${normTable(order.tableNumber)}`;
       unpaidTableCounts.set(k, (unpaidTableCounts.get(k) || 0) + 1);
     }
@@ -196,11 +205,12 @@ export function mergeTabRounds(orders, tabs) {
   const groups = new Map();
 
   for (const order of orders || []) {
+    if (order.heldForReview) { merged.push(order); continue; }
     // Edit items voids a round and re-sends what is left as a new one, so a
     // voided round is history, never part of the bill: merging it put every
     // removed item, and its price, back on the table.
     let tab = order.tabId && order.paymentStatus !== 'void' ? open.get(order.tabId) : null;
-    const tNorm = normTable(order.tableNumber);
+    const tNorm = order.tableReleased ? '' : normTable(order.tableNumber);
     const tableKey = tNorm ? `${order.branchId || ''}:${tNorm}` : '';
 
     if (order.paymentStatus === 'unpaid' && tableKey) {

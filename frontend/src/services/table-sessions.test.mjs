@@ -53,3 +53,16 @@ test('the server decides what is owed and what is open', () => {
   assert.equal(unseen.id, 'srv-11'); assert.equal(unseen.dueMinor, 40000); assert.equal(unseen.rounds.length, 2);
   assert.ok(unseen.readOnly && unseen.recoveryRequired, 'addable: the till re-creates its header');
 });
+
+test('a table released elsewhere shows the server\'s new tab, not this tablet\'s stale copy', () => {
+  // This tablet still holds the released tab T1 at table 9; the server's tab there is now T2.
+  const stale = local('T1', '9', { pendingUploadMinor: 0 });
+  const [tab] = withServerSessions([stale], [session('9', 20000, { tabId: 'T2', roundSaleIds: ['n1'] })]);
+  assert.equal(tab.id, 'T2'); assert.equal(tab.serverTabId, 'T2'); assert.equal(tab.dueMinor, 20000);
+  assert.ok(tab.readOnly && tab.recoveryRequired, 'the till re-creates T2\'s header and joins it');
+  // Nobody at table 9 yet: the released table is simply free.
+  assert.deepEqual(tableChoices(withServerSessions([stale], []), ['9'], '').free.map(f => f.value), ['9']);
+  // Rounds still uploading from here are never hidden.
+  const uploading = withServerSessions([local('T1', '9', { pendingUploadMinor: 5000 })], [session('9', 20000, { tabId: 'T2' })]);
+  assert.equal(uploading[0].id, 'T1');
+});

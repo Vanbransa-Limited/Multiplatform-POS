@@ -13,7 +13,9 @@ import { tabKey } from './tabs.js';
  *   anything still waiting to upload from here.
  * - A local tab the server does not have open is kept only while it holds a
  *   round not yet uploaded; otherwise it was paid or voided elsewhere.
- * - A server tab this device has never seen is listed so it can be added to.
+ * - A server tab this device has never seen is listed so it can be added to,
+ *   including when this device still holds an older tab for that table (paid
+ *   or released elsewhere): the server's current tab replaces it.
  */
 export function withServerSessions(local, sessions) {
   if (!sessions) return local;
@@ -30,6 +32,9 @@ export function withServerSessions(local, sessions) {
       if (tab.pendingUploadMinor > 0 || !tab.rounds?.length) tabs.push(tab);
       continue;
     }
+    // The table's server tab is another one: this copy was paid or released
+    // elsewhere and not yet pulled. The server's tab is listed instead, below.
+    if (session.tabId && session.tabId !== tab.id && !(tab.pendingUploadMinor > 0)) continue;
     seen.add(k);
     tabs.push({ ...tab, serverTabId: session.tabId,
       dueMinor: Number(session.dueMinor || 0) + Number(tab.pendingUploadMinor || 0) });

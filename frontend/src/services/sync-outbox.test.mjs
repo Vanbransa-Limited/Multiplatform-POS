@@ -215,3 +215,9 @@ test('overlapping uploads cannot use another round’s omission state to drop a 
     else {assert.equal(updates[0].fiscal_status,'NEEDS_REVIEW');assert.equal(updates[0].sync_omitted,undefined);assert.equal(updates[0].sync_pending,undefined);}
   }
 });
+
+test('a round held because its tab was released is never resent', () => {
+  const round = { id: 'late', status: 'PENDING_PAYMENT', synced_at: null, tab_id: 'released-tab', server_pending: true };
+  assert.equal(awaitingTransmission(round, now), true);
+  assert.equal(awaitingTransmission({ ...round, sync_hold: 'table_released' }, now), false);
+});

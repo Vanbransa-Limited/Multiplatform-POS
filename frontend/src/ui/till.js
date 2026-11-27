@@ -3009,7 +3009,7 @@ export class TillView {
     }
     if (refreshError) throw refreshError;
     const elsewhere = (await pullOpenOrders(DEVICE_ID))
-      .find((order) => order.branchId === state.currentBranch?.id && order.paymentStatus === 'unpaid'
+      .find((order) => order.branchId === state.currentBranch?.id && order.paymentStatus === 'unpaid' && !order.held
         && order.tableNumber && tabKey(order.tableNumber) === tabKey(table));
     if (elsewhere) {
       throw new Error(`Table ${elsewhere.tableNumber} has a round still uploading from another till. Wait for it to sync before adding items.`);

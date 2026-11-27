@@ -210,6 +210,13 @@ export async function pullSales(sinceIso, saleUuids, tableSelection) {
         table_no: doc.tableNumber || null,
         tab_id: doc.tabId || null,
         order_reference: doc.orderReference || null,
+        // Released: still owed, but no longer holding its table (releaseTable).
+        table_release: doc.tableRelease ? {
+          id: doc.tableRelease.releaseId || null,
+          at: asIso(doc.tableRelease.releasedAt),
+          by: doc.tableRelease.releasedByStaffId || null,
+          reason: doc.tableRelease.reason || '',
+        } : null,
         // The backend settles in integer minor units; every screen here is
         // still in KES floats.
         subtotal: (Number(doc.subtotalMinor) || 0) / 100,
@@ -280,6 +287,7 @@ export async function pullSales(sinceIso, saleUuids, tableSelection) {
       tab_id: row.tab_id,
       order_reference: row.order_reference,
       table_no: row.table_no,
+      table_release: row.table_release,
     };
     if (Object.entries(updates).some(([key, value]) => localById.get(localId)?.[key] !== value)) {
       await db.sales.update(localId, updates);

@@ -126,6 +126,8 @@ export const publishOpenOrders = onCall({ region: FUNCTION_REGION }, async (requ
       // Whether it is a table's running bill or a single unpaid order, so the
       // board can say which it is looking at.
       kind: order.kind === 'sale' ? 'sale' : 'tab',
+      // A round refused for naming a released tab: on show for review, holding no table.
+      ...(order.held === 'table_released' ? { held: 'table_released' } : {}),
       // This collection only ever holds work a till is still holding: once the
       // sale reaches `sales`, the till stops reporting it and it is cleared.
       status: 'open',

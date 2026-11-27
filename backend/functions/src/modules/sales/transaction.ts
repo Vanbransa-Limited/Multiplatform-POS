@@ -100,7 +100,9 @@ export async function executeCreateSale(
     });
     if (sharedTab) {
       Object.assign(records.sale, { tabId: sharedTab.data.tabId, orderReference: sharedTab.data.orderReference,
-        ...(sharedTab.data.tableNumber ? { tableNumber: sharedTab.data.tableNumber } : {}) });
+        ...(sharedTab.data.tableNumber ? { tableNumber: sharedTab.data.tableNumber } : {}),
+        // Added to a released bill: it stays off the table the next customer has.
+        ...(sharedTab.data.tableRelease ? { tableRelease: sharedTab.data.tableRelease } : {}) });
       if (sharedTab.ref) transaction.set(sharedTab.ref, { ...sharedTab.data, updatedAt: timestamp }, { merge: true });
       // A bill without a table becomes a tab the moment items are added to it.
       if (sharedTab.join) transaction.update(sharedTab.join.ref, sharedTab.join.update);

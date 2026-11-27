@@ -21,6 +21,7 @@ function main() {
     ['backend/functions/e2e/tab-lifecycle.cjs'],
     ['backend/functions/e2e/table-release.cjs'],
     ['backend/functions/e2e/receipt-correction.cjs'],
+    ['backend/functions/e2e/shared-receipt-repair.cjs'],
     ['backend/functions/e2e/etims.cjs'],
   ];
   try {

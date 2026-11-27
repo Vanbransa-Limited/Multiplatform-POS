@@ -34,10 +34,12 @@ function Shell({ children }: { children: ReactNode }) {
 
   if (bootError) {
     return (
-      <div
-        style={{ position: "fixed", top: 0, left: 0, width: "100%", background: "#f43f5e", color: "#fff", padding: 12, textAlign: "center", zIndex: 99999, fontSize: 12, fontWeight: "bold" }}
-      >
-        {`Database Initialization Error: ${bootError}`}
+      <div className="pos-boot pos-startup-problem" role="alert">
+        <div className="pos-boot-mark" aria-hidden="true">V</div>
+        <h1>Unable to open the till</h1>
+        <p>{bootError}</p>
+        <p>Saved orders remain on this device.</p>
+        <button type="button" className="primary-btn" onClick={() => window.location.reload()}>Try again</button>
       </div>
     );
   }

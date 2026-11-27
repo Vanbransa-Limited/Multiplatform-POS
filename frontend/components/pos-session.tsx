@@ -19,6 +19,9 @@ import {
   resumeStaffSession,
 } from "@/boot";
 import { ACTIVITY_EVENT, state } from "@/context";
+import { watchStartup } from "@/services/startup-watch";
+
+const STARTUP_PROBLEM = "The till could not finish opening. Check your connection and try again.";
 
 /**
  * Idle sign-out so an unattended shared tablet locks back to the Sign-In screen.
@@ -91,17 +94,15 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    bootPos((_status: string, count: number) => {
+    const stop = watchStartup(bootPos((_status: string, count: number) => {
       if (!cancelled) setQueueCount(count);
-    })
-      .then(() => !cancelled && setReady(true))
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        const message = error instanceof Error ? error.message : String(error);
-        setBootError(`${message}. Keep this browser's data intact and contact support; unsynced orders may be stored here.`);
-      });
+    }), {
+      onReady: () => { setBootError(null); setReady(true); },
+      onError: (error: unknown) => { console.error('POS startup did not finish', error); setBootError(STARTUP_PROBLEM); },
+    });
     return () => {
       cancelled = true;
+      stop();
     };
   }, []);
 
@@ -137,19 +138,18 @@ export function PosSessionProvider({ children }: { children: ReactNode }) {
       setResuming(false);
       return;
     }
-    let cancelled = false;
-    resumeStaffSession()
-      .then((existing: PosUser | null) => {
-        if (!cancelled && existing && !signedOut.current) void signIn(existing);
-      })
-      // Settled either way: we now know whether anyone is signed in, so the
-      // sign-in screen is finally a truthful thing to show.
-      .finally(() => {
-        if (!cancelled) setResuming(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    return watchStartup(resumeStaffSession(), {
+      onReady: (existing: PosUser | null) => {
+        if (existing && !signedOut.current) void signIn(existing);
+        setBootError(null);
+        setResuming(false);
+      },
+      onError: (error: unknown) => {
+        console.error('POS session restore did not finish', error);
+        setBootError(STARTUP_PROBLEM);
+        setResuming(false);
+      },
+    });
   }, [ready, user, signIn]);
 
   useEffect(() => {

@@ -3221,6 +3221,10 @@ textarea:focus {
 }
 
 .pos-boot p { font-size: 13px; }
+.pos-startup-problem { gap: 16px; padding: 24px; text-align: center; }
+.pos-startup-problem h1 { margin: 0; max-width: 24ch; font-family: var(--font-display); font-size: 24px; line-height: 1.25; }
+.pos-startup-problem p { margin: 0; max-width: 36ch; font-size: 16px; line-height: 1.5; }
+.pos-startup-problem .primary-btn { min-height: 48px; min-width: 180px; font-size: 16px; }
 
 @media (prefers-reduced-motion: reduce) {
   .pos-boot-bar span { animation: none; width: 100%; opacity: .6; }

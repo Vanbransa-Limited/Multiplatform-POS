@@ -198,7 +198,7 @@ test('tab invoice carries the rounds\' discounts so subtotal - discount = total'
   assert.equal(result.subtotal - result.discount, result.grand_total);
 });
 
-import { tableChoices } from './tabs.js';
+import { tableChoices, tabAge } from './tabs.js';
 
 test('the table dropdown lists open tabs first, then free tables, and keeps a typed table', () => {
   const tabs = [{ table: '7', dueMinor: 148000, rounds: [{}, {}] }, { table: 'Patio 3', dueMinor: 64000, rounds: [{}] }];
@@ -213,6 +213,27 @@ test('the table dropdown lists open tabs first, then free tables, and keeps a ty
   assert.equal(typed.badge, '');
   assert.equal(tableChoices([], ['1'], null).selected, '');
   assert.equal(tableChoices(tabs, ['1'], 'table 7').selected, '7');
+});
+
+test('an occupied table says since when its bill is unpaid; free tables and bad timestamps say nothing', () => {
+  const now = new Date(2026, 10, 27, 12, 0);
+  const tabs = [
+    { table: '2', dueMinor: 401000, rounds: [{}], opened_at: new Date(2026, 10, 23, 16, 27).toISOString() },
+    { table: '8', dueMinor: 300000, rounds: [{}], opened_at: new Date(2026, 10, 25, 10, 23).toISOString() },
+    { table: '1', dueMinor: 70000, rounds: [{}], opened_at: new Date(2026, 10, 27, 0, 5).toISOString() },
+    { table: '4', dueMinor: 50000, rounds: [{}], opened_at: 'not a date' },
+    { table: '5', dueMinor: 35000, rounds: [{}], opened_at: null },
+  ];
+  const choices = tableChoices(tabs, ['1', '2', '3', '4', '5', '8'], '', now);
+  assert.deepEqual(choices.open.map(o => o.label), [
+    'Table 2 · Since 23 Nov · 1 round · KES 4,010',
+    'Table 8 · Since 25 Nov · 1 round · KES 3,000',
+    'Table 1 · Active today · 1 round · KES 700',
+    'Table 4 · 1 round · KES 500',
+    'Table 5 · 1 round · KES 350',
+  ]);
+  assert.deepEqual(choices.free.map(o => o.label), ['Table 3']);
+  assert.equal(tabAge(new Date(2025, 10, 27).toISOString(), now), 'Since 27 Nov', 'same day last year is not today');
 });
 
 test('a paid table frees up: a tab with every round paid or voided is no longer open', () => {

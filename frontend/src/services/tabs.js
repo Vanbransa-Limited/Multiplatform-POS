@@ -257,17 +257,26 @@ export function mergeTabLines(rounds) {
 
 const tableLabel = (table) => (/^\d/.test(String(table)) ? `Table ${table}` : String(table));
 
+/** When an occupied table's unpaid bill started, so a forgotten bill stands out from live service. */
+export function tabAge(openedAt, now = new Date()) {
+  const opened = new Date(openedAt || NaN);
+  if (!openedAt || !Number.isFinite(opened.getTime())) return '';
+  return opened.toDateString() === now.toDateString() ? 'Active today'
+    : `Since ${opened.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+}
+
 /**
- * What the till's Table dropdown offers: open tabs first, with what each owes,
- * then the preset tables nobody is sitting at. A table typed by hand that is
- * in neither list stays selected as typed.
+ * What the till's Table dropdown offers: open tabs first, with what each owes
+ * and since when, then the preset tables nobody is sitting at. A table typed by
+ * hand that is in neither list stays selected as typed.
  */
-export function tableChoices(tabs, presets, activeTable) {
+export function tableChoices(tabs, presets, activeTable, now = new Date()) {
   const open = (tabs || []).map((tab) => {
     const rounds = tab.rounds?.length || 0;
+    const age = tabAge(tab.opened_at, now);
     return {
       value: String(tab.table),
-      label: `${tableLabel(tab.table)} · ${rounds} round${rounds === 1 ? '' : 's'} · KES ${Math.round((tab.dueMinor || 0) / 100).toLocaleString('en-KE')}`,
+      label: `${tableLabel(tab.table)}${age ? ` · ${age}` : ''} · ${rounds} round${rounds === 1 ? '' : 's'} · KES ${Math.round((tab.dueMinor || 0) / 100).toLocaleString('en-KE')}`,
       rounds,
     };
   });

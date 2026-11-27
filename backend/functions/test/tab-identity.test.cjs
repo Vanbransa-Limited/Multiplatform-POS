@@ -89,3 +89,33 @@ test('mixed customer accounts on an old tab need review before another round can
   try { await assert.rejects(resolveSharedTab(h.tx, { ...input, customerId: 'nicole' }), /another customer account/); }
   finally { h.restore(); }
 });
+
+test('a table session stays OPEN until every round is paid, including while one is being paid', async () => {
+  const { refreshTableSession } = require('../lib/modules/sales/tab-identity');
+  const sales = [sale('r1'), sale('r2')];
+  const payments = [credit('r1'), credit('r2')];
+  const original = { collection: db.collection, runTransaction: db.runTransaction };
+  const query = (name, constraints = []) => ({ name, constraints, path: undefined,
+    doc: id => ({ path: `${name}/${id}` }),
+    where: (field, op, value) => query(name, [...constraints, [field, op, value]]) });
+  const written = [];
+  db.collection = name => query(name);
+  db.runTransaction = async run => run({
+    get: async target => target.path ? { data: () => undefined } : { docs: (target.name === 'sales' ? sales : payments)
+      .filter(row => target.constraints.every(([key, op, value]) => op === 'in' ? value.includes(row[key]) : row[key] === value))
+      .map(row => ({ id: row.id, data: () => row })) },
+    set: (_ref, data) => written.push(data),
+  });
+  try {
+    payments[0].settledAt = 'paid';
+    let session = await refreshTableSession('tenant', 'b1', '50');
+    assert.deepEqual([session.status, session.dueMinor], ['OPEN', 10000], 'part paid: still occupied');
+    sales[1].checkoutExpiresAt = { toMillis: () => Date.now() + 60_000 };
+    session = await refreshTableSession('tenant', 'b1', '50');
+    assert.deepEqual([session.status, session.dueMinor], ['OPEN', 10000], 'a checkout in progress does not free it');
+    payments[1].settledAt = 'paid';
+    session = await refreshTableSession('tenant', 'b1', '50');
+    assert.deepEqual([session.status, session.dueMinor], ['SETTLED', 0], 'fully paid: free');
+    assert.equal(written.length, 3);
+  } finally { Object.assign(db, original); }
+});

@@ -205,7 +205,7 @@ test('a tablet can add to a tab another till opened, but not to one still upload
 test('an unpaid bill with no table offers Add items that joins it, so one payment settles both', () => {
   const bill = { id: 's1', source: 'pos', ref: 'INV-BH001-003457', saleUuid: 'uuid-1', customerName: 'Guest', branchId: 'b',
     tableNumber: '', status: 'awaiting_payment', paymentStatus: 'unpaid', lines: [] };
-  assert.match(renderOrderCard(bill, new Map()), /href="\/till\?join=uuid-1&ref=INV-BH001-003457"[^>]*>Add items<\/a>/);
+  assert.match(renderOrderCard(bill, new Map()), /href="\/till\?join=uuid-1&amp;ref=INV-BH001-003457"[^>]*>Add items<\/a>/);
   for (const order of [{ ...bill, paymentStatus: 'paid', status: 'completed' }, { ...bill, paymentStatus: 'void', status: 'cancelled' }]) {
     assert.doesNotMatch(renderOrderCard(order, new Map()), />Add items</, JSON.stringify(order));
   }

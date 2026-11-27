@@ -241,7 +241,9 @@ export function mergeTabRounds(orders, tabs) {
         id: tab.id,
         ref: tab.order_no || order.ref,
         tableNumber: tab.table_no || order.tableNumber,
-        orderType: 'dine_in',
+        orderType: (tab.table_no || order.tableNumber) ? 'dine_in' : 'takeaway',
+        // Joining requires an unpaid round, even when the first round is paid.
+        joinSaleUuid: order.paymentStatus === 'unpaid' ? order.saleUuid : null,
         // The rounds behind the card, so settling can clear all of them.
         roundIds: [order.id],
         roundUuids: order.saleUuid ? [order.saleUuid] : [],
@@ -270,6 +272,7 @@ export function mergeTabRounds(orders, tabs) {
     if (order.paymentStatus === 'unpaid') {
       group.paymentStatus = 'unpaid';
       group.status = 'awaiting_payment';
+      group.joinSaleUuid ||= order.saleUuid;
     }
   }
 
@@ -502,22 +505,26 @@ export function renderOrderCard(order, images) {
   }
 
   const isConsolidatedTable = Array.isArray(order.roundIds) && order.roundIds.length > 1;
+  const joinUuid = order.joinSaleUuid || order.saleUuid;
+  const addItemsHref = paid || voided || order.heldForReview ? ''
+    : order.tableNumber && !order.tableReleased
+      ? order.roundIds ? `/till?table=${encodeURIComponent(order.tableNumber)}` : ''
+      : joinUuid ? `/till?join=${encodeURIComponent(joinUuid)}&ref=${encodeURIComponent(order.ref)}` : '';
   const actions = fromTill
     ? `<button type="button" class="co-print" data-invoice-sale="${escapeHtml(order.id)}">${isConsolidatedTable ? 'Consolidated invoice' : 'View invoice'}</button>
        ${paid || voided || (order.roundIds?.length > 1) ? '' : `<button type="button" class="sec-btn co-void" data-void-sale="${escapeHtml(order.id)}" title="Void a duplicate or mistaken bill (owner or manager)" style="padding:6px 12px;font-size:12px;">Void bill</button>`}
        ${paid || voided ? '' : `<button type="button" class="sec-btn" data-staff-discount="${escapeHtml(order.id)}" title="Add the Staff 20% to a round that went out without it" style="padding:6px 12px;font-size:12px;">Staff 20%</button>`}
        ${paid || voided ? '' : `<button type="button" class="co-pay" data-settle-sale="${escapeHtml(order.id)}">${isConsolidatedTable ? `Pay consolidated bill (${order.roundIds.length})` : 'Pay now'}</button>`}
-       ${!paid && !voided && !order.tableNumber && order.saleUuid && !order.roundIds
-         ? `<a class="sec-btn" href="/till?join=${escapeHtml(encodeURIComponent(order.saleUuid))}&ref=${escapeHtml(encodeURIComponent(order.ref))}" style="padding:6px 12px;font-size:12px;text-decoration:none;">Add items</a>`
+       ${addItemsHref
+         ? `<a class="sec-btn" href="${escapeHtml(addItemsHref)}" style="padding:6px 12px;font-size:12px;text-decoration:none;">Add items</a>`
          : ''}
        ${!paid && !voided && order.tabId !== undefined && order.roundIds
-         ? `${order.tableNumber ? `<a class="sec-btn" href="/till?table=${escapeHtml(encodeURIComponent(order.tableNumber))}" style="padding:6px 12px;font-size:12px;text-decoration:none;">Add items</a>` : ''}
-            <button type="button" class="sec-btn" data-edit-tab="${escapeHtml(order.id)}" style="padding:6px 12px;font-size:12px;">Edit items</button>
-            <a class="sec-btn" href="/tabs" style="padding:6px 12px;font-size:12px;text-decoration:none;">Tab management</a>`
+         ? `<button type="button" class="sec-btn" data-edit-tab="${escapeHtml(order.id)}" style="padding:6px 12px;font-size:12px;">Edit items</button>
+            ${order.tableNumber ? '<a class="sec-btn" href="/tabs" style="padding:6px 12px;font-size:12px;text-decoration:none;">Tab management</a>' : ''}`
          : ''}
        <span class="co-meta" style="margin:0">${voided
          ? `Voided${order.voidReason ? ` · ${escapeHtml(order.voidReason)}` : ''}`
-         : paid ? escapeHtml(order.paymentMethod || 'Payment recorded') : (isConsolidatedTable ? `${order.roundIds.length} bills consolidated for Table ${escapeHtml(order.tableNumber)}` : 'Awaiting payment')}</span>`
+         : paid ? escapeHtml(order.paymentMethod || 'Payment recorded') : (isConsolidatedTable ? `${order.roundIds.length} bills consolidated${order.tableNumber ? ` for Table ${escapeHtml(order.tableNumber)}` : ''}` : 'Awaiting payment')}</span>`
     : `${closed ? '' : `${liveActions}
        <select class="co-status-select" aria-label="Order status" data-customer-order="${escapeHtml(order.id)}"><option value="">Update status…</option><option value="preparing">Preparing</option><option value="ready">Ready</option>${paid ? '<option value="completed">Completed</option>' : ''}<option value="cancelled">Cancelled</option></select>`}
        <span class="co-meta" style="margin:0">${prints ? `Printed ${prints}×` : 'Not printed'}</span>`;

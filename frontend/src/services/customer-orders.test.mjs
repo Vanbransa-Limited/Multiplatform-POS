@@ -1,7 +1,39 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { handledBy, handledLabel, mergeTabRounds, orderStats, saleAsOrder, visibleOrders, sortOrders } from './customer-orders.js';
+import { handledBy, handledLabel, mergeTabRounds, orderStats, saleAsOrder, visibleOrders, sortOrders, renderOrderCard } from './customer-orders.js';
+
+test('a counter bill stays findable and addable after several rounds, including a paid first round', () => {
+  const round = (id, amount, paid = false) => saleAsOrder({
+    id, sale_uuid: id, invoice_no: `INV-${id}`, branch_id: 'b1', staff_id: 'cashier',
+    tab_id: 'counter-bill', order_reference: 'INV-first', grand_total: amount, status: 'COMPLETED',
+  }, { payments: [{ method: paid ? 'CASH' : 'CREDIT', amount }], lines: [{ name: 'Fanta Orange', qty: 1 }] });
+  for (const headers of [[], [{ id: 'counter-bill', status: 'OPEN', table_no: null, order_no: 'INV-first' }]]) {
+    const [bill] = mergeTabRounds([round('first', 100, true), round('second', 200)], headers);
+    assert.equal(bill.orderType, 'takeaway');
+    assert.equal(bill.dueMinor, 20000);
+    assert.deepEqual(bill.roundUuids, ['first', 'second']);
+    assert.equal(visibleOrders([bill], 'b1', { tab: 'running', search: 'INV-second' }).length, 1);
+    assert.equal(visibleOrders([bill], 'b1', { tab: 'running', search: 'takeaway' }).length, 1);
+    const html = renderOrderCard(bill);
+    assert.match(html, /TAKEAWAY/);
+    assert.match(html, /href="\/till\?join=second&amp;ref=INV-first"[^>]*>Add items/);
+    assert.doesNotMatch(html, />Tab management<\/a>/);
+    assert.doesNotMatch(html, /for Table <|for Table\s*<|\?table=/);
+  }
+});
+
+test('adding to a released bill keeps its identity instead of joining the next table customer', () => {
+  const order = saleAsOrder({ id: 'old', sale_uuid: 'old-round', table_no: '9', branch_id: 'b1',
+    invoice_no: 'INV-old', status: 'PENDING_PAYMENT', grand_total: 100, table_release: { id: 'release' },
+  }, { payments: [{ method: 'CREDIT', amount: 100 }] });
+  assert.match(renderOrderCard(order), /href="\/till\?join=old-round&amp;ref=INV-old"/);
+  const current = renderOrderCard({ ...order, tableReleased: false, roundIds: ['old'] });
+  assert.match(current, /href="\/till\?table=9"/);
+  for (const blocked of [{ paymentStatus: 'paid' }, { paymentStatus: 'void' }, { heldForReview: true }]) {
+    assert.doesNotMatch(renderOrderCard({ ...order, ...blocked }), />Add items<\/a>/);
+  }
+});
 
 test('a pending round without payment rows remains running until confirmed settlement', () => {
   const pending = saleAsOrder({ id: 'judy-round', branch_id: 'b1', status: 'PENDING_PAYMENT', grand_total: 520 });

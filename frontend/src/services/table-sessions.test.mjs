@@ -1,11 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { withServerSessions } from './table-sessions.js';
+import { tableChoices } from './tabs.js';
 
 const local = (id, table, extra = {}) => ({ id, status: 'OPEN', branch_id: 'b', table, table_no: table,
   opened_at: '2026-11-26T10:00:00Z', dueMinor: 50000, rounds: [{ id: `${id}-r` }], unpaidRounds: [{ id: `${id}-r` }], ...extra });
 const session = (table, dueMinor, extra = {}) => ({ status: 'OPEN', branchId: 'b', tableNumber: table, tabId: `srv-${table}`,
   orderReference: `ORD-${table}`, dueMinor, roundSaleIds: ['s1', 's2'], openedAt: '2026-11-26T09:00:00Z', ...extra });
+
+test('the till picker frees exactly the tables nothing is owed on', () => {
+  const presets = ['1', '2', '3', '4', '5', '6'];
+  const picker = (tabs, sessions) => {
+    const { open, free } = tableChoices(withServerSessions(tabs, sessions), presets, '');
+    return { open: open.map(o => o.value).sort(), free: free.map(f => f.value) };
+  };
+  const tabs = [
+    local('paid-on-another-tablet', '1', { pendingUploadMinor: 0 }),
+    local('part-paid', '2'),
+    local('unpaid', '3'),
+    local('being-paid', '4'),
+    // Refused by the server, so still only here: money owed that nobody else can see.
+    local('not-uploaded', '5', { pendingUploadMinor: 50000 }),
+  ];
+  const server = [session('2', 20000), session('3', 50000), session('4', 50000)];
+  assert.deepEqual(picker(tabs, server), { open: ['2', '3', '4', '5'], free: ['1', '6'] });
+  // A retry or a later pull re-reads this device's stale copy of table 1: the server still decides.
+  assert.deepEqual(picker([...tabs, local('stale-copy', '1')], server).free, ['1', '6']);
+  // Table 2 settled on another tablet: its session leaves the OPEN list and the table frees here.
+  assert.deepEqual(picker(tabs, server.filter(s => s.tableNumber !== '2')).free, ['1', '2', '6']);
+});
 
 test('offline or unknown: this device\'s own view stands', () => {
   const tabs = [local('a', '6')];

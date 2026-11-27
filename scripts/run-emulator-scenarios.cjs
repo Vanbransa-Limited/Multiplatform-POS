@@ -19,6 +19,7 @@ function main() {
     ['frontend/e2e/settings-rules-check.mjs', tokens],
     ['backend/functions/e2e/checkout-print.cjs'],
     ['backend/functions/e2e/tab-lifecycle.cjs'],
+    ['backend/functions/e2e/table-release.cjs'],
     ['backend/functions/e2e/receipt-correction.cjs'],
     ['backend/functions/e2e/etims.cjs'],
   ];

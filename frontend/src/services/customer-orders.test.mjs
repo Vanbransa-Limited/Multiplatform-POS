@@ -273,3 +273,19 @@ test('a paid counter order prints as takeaway and paid', async () => {
   assert.match(html, /TAKEAWAY/);
   assert.match(html, /PAID CASH/);
 });
+
+test('a released bill and the next customer\'s bill at the same table stay separate cards', () => {
+  const owed = (id, tab, ref, extra = {}) => saleAsOrder({ id, sale_uuid: id, branch_id: 'b1', table_no: '9', tab_id: tab,
+    order_reference: ref, status: 'PENDING_PAYMENT', grand_total: 500, ...extra }, { payments: [{ method: 'CREDIT', amount: 500 }] });
+  const release = { table_release: { id: 'rel-1', at: '2026-11-27T09:00:00Z', by: 'ann', reason: 'Moved to the bar' } };
+  const cards = mergeTabRounds([
+    owed('old-1', 'T1', 'ORD-OLD', release), owed('old-2', 'T1', 'ORD-OLD', release),
+    owed('new-1', 'T2', 'ORD-NEW'),
+    owed('late', 'T1', 'ORD-OLD', { sync_hold: 'table_released' }),
+  ], [{ id: 'T1', status: 'RELEASED', branch_id: 'b1', table_no: '9' }, { id: 'T2', status: 'OPEN', branch_id: 'b1', table_no: '9', order_no: 'ORD-NEW' }]);
+  const byRef = Object.fromEntries(cards.map(card => [card.ref, card]));
+  assert.deepEqual([...byRef['ORD-OLD'].roundUuids].sort(), ['old-1', 'old-2'], 'Pay now on the released bill settles only its rounds');
+  assert.deepEqual(byRef['ORD-NEW'].roundUuids, ['new-1'], 'the new customer\'s bill is untouched');
+  assert.equal(cards.length, 3, 'the held round is a card of its own, on no bill');
+  assert.ok(cards.find(card => card.id === 'late' && card.heldForReview));
+});

@@ -63,7 +63,25 @@ test('table spelling shares a lock while tenants and branches remain isolated', 
 
 test('settled sales and takeaway orders never acquire an open-table lock', async () => {
   assert.equal(await resolveSharedTab({}, { ...input, payments: [{ method: 'cash', amountMinor: 10000 }] }), null);
-  assert.equal(await resolveSharedTab({}, { ...input, tableNumber: null }), null);
+  // An unpaid takeaway naming a tab only checks the tab was not released; it takes no table lock.
+  const h = harness();
+  try {
+    assert.equal(await resolveSharedTab(h.tx, { ...input, tableNumber: null }), null);
+    assert.deepEqual(h.locks, []);
+  } finally { h.restore(); }
+});
+
+test('a round naming a released tab is refused for review, never joined to the table\'s next tab', async () => {
+  const released = { ...sale('old', 'new-tab'), tableRelease: { releaseId: 'rel-1', releasedAt: { toDate: () => new Date('2026-11-27T09:00:00Z') } } };
+  const h = harness([released, sale('next', 'next-tab')], [credit('old'), credit('next')]);
+  try {
+    await assert.rejects(resolveSharedTab(h.tx, { ...input, idempotencyKey: 'late-round' }), error =>
+      error.details?.reason === 'table-released' && error.details.tabId === 'new-tab' && error.details.releaseId === 'rel-1'
+      && error.details.releasedAt === '2026-11-27T09:00:00.000Z');
+    // A fresh proposal at that table joins the current customer's tab, not the released one.
+    const result = await resolveSharedTab(h.tx, { ...input, tabId: 'proposed', idempotencyKey: 'fresh' });
+    assert.equal(result.data.tabId, 'next-tab');
+  } finally { h.restore(); }
 });
 
 test('a paid tab proposed again by a stale device gives the next customer a new tab', async () => {

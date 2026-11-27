@@ -212,15 +212,23 @@ export async function readOpenTabs(branchId) {
 /** This device's own view: what it rang, plus rounds it has pulled from the server. */
 async function readLocalOpenTabs(branchId) {
   return db.transaction('r', [db.tabs, db.sales, db.payments, db.sale_lines, db.products], async () => {
-  const tabs = await (branchId
+  const headerRows = await (branchId
     ? db.tabs.where('[branch_id+status]').equals([branchId, OPEN])
     : db.tabs.where('status').equals(OPEN)).toArray();
   // Check the unpaid ledger as well as tab headers. An absent or incorrectly
   // settled header must not make a saved, unpaid round disappear from view.
-  const pending = await db.sales.where('status').equals('PENDING_PAYMENT')
+  const unpaidAtTables = await db.sales.where('status').equals('PENDING_PAYMENT')
     .filter(sale => !sale.proforma_id && (!branchId || sale.branch_id === branchId) && Boolean(sale.table_no)).toArray();
+  if (!headerRows.length && !unpaidAtTables.length) return [];
+  const candidates = [...new Set([...headerRows.map(tab => tab.id), ...unpaidAtTables.map(sale => sale.tab_id)].filter(Boolean))];
+  const onCandidateTabs = candidates.length ? await db.sales.where('tab_id').anyOf(candidates).toArray() : [];
+  // A released tab (or one whose late round is held for review) is still owed
+  // and payable from Orders, but holds no table: the next customer gets a fresh tab.
+  const released = new Set(onCandidateTabs.filter(sale => sale.table_release || sale.sync_hold).map(sale => sale.tab_id));
+  const tabs = headerRows.filter(tab => !released.has(tab.id));
+  const pending = unpaidAtTables.filter(sale => !released.has(sale.tab_id) && !sale.table_release && !sale.sync_hold);
   if (!tabs.length && !pending.length) return [];
-  const onOpenTabs = tabs.length ? await db.sales.where('tab_id').anyOf(tabs.map(tab => tab.id)).toArray() : [];
+  const onOpenTabs = onCandidateTabs.filter(sale => tabs.some(tab => tab.id === sale.tab_id));
   const sales = [...new Map([...onOpenTabs, ...pending].map(sale => [sale.id, sale])).values()];
   const ids = sales.map(sale => sale.id);
   const [payments, lines] = ids.length ? await Promise.all([
@@ -290,7 +298,13 @@ export async function freeSettledTab(tabId) {
 
   // Every round on the table, not only the ones just settled: a tab with one
   // round still owing stays open for whoever settles it.
-  const rounds = await billableCheckoutRounds(await db.sales.where('tab_id').equals(tabId).toArray(), db);
+  const all = await db.sales.where('tab_id').equals(tabId).toArray();
+  // Released on some till: the bill stays owed in Orders, but the table is free here too.
+  if (all.some(sale => sale.table_release || sale.sync_hold)) {
+    await db.tabs.update(tabId, { status: 'RELEASED', closed_at: new Date().toISOString() });
+    return tab.table_no || null;
+  }
+  const rounds = await billableCheckoutRounds(all, db);
   const ledger = await db.payments.where('sale_id').anyOf(rounds.map(sale => sale.id)).toArray();
   const bySale = new Map();
   for (const row of ledger) {

@@ -87,7 +87,7 @@ async function heldOrdersSnapshot({ branchId, tenantId }) {
   const byTab = new Map();
   const standalone = [];
   for (const sale of held) {
-    const tab = sale.tab_id ? openTabs.get(sale.tab_id) : null;
+    const tab = sale.tab_id && !sale.sync_hold ? openTabs.get(sale.tab_id) : null;
     if (!tab) standalone.push(sale);
     else byTab.set(tab.id, [...(byTab.get(tab.id) || []), sale]);
   }
@@ -125,6 +125,8 @@ async function heldOrdersSnapshot({ branchId, tenantId }) {
     payments: tendersOf(sale),
     saleUuids: sale.sale_uuid ? [sale.sale_uuid] : [],
     openedAt: sale.sold_at || null,
+    // Rung for a released tab and refused: shown for review, holding no table.
+    ...(sale.sync_hold ? { held: sale.sync_hold } : {}),
   }));
 
   return [...fromTab, ...fromSales];
@@ -224,7 +226,8 @@ export function collapseOpenOrders(rows) {
   const bills = new Map();
   const result = [];
   for (const row of fresh) {
-    const key = table(row) && row.paymentStatus !== 'paid' ? `${row.branchId}:${table(row)}` : '';
+    // A held round never merges into whoever now sits at its old table.
+    const key = table(row) && row.paymentStatus !== 'paid' && !row.held ? `${row.branchId}:${table(row)}` : '';
     const bill = key && bills.get(key);
     if (!bill) {
       const copy = { ...row, saleUuids: [...(row.saleUuids || [])], lines: [...(row.lines || [])] };

@@ -9,6 +9,36 @@ import { readWithDeadline } from './read-deadline.js';
 import { isNonBillableAdjustment, missingReceivable } from './checkout-rounds.js';
 
 /**
+ * A round the server refused because its tab was released (releaseTable).
+ *
+ * It is kept exactly as rung - lines, payments, tab id - and is on no bill:
+ * not the released one and never the next customer's at that table. It stays
+ * published (flagged held) so staff on any till can review it, holds no table
+ * here, and is not resent. Its local tab header closes as released.
+ */
+export async function holdReleasedRound(sale, err) {
+  const detail = err?.details || {};
+  await db.transaction('rw', [db.sales, db.tabs], async () => {
+    await db.sales.update(sale.id, {
+      sync_hold: 'table_released',
+      sync_hold_detail: {
+        tab_id: detail.tabId || sale.tab_id || null,
+        table_no: detail.tableNumber || sale.table_no || null,
+        order_reference: detail.orderReference || null,
+        release_id: detail.releaseId || null,
+        released_at: detail.releasedAt || null,
+        held_at: new Date().toISOString(),
+      },
+      fiscal_status: 'NEEDS_REVIEW',
+      sync_error_msg: err?.message || 'Its table was released. Held on this till for review.',
+      sync_retry_after: null,
+    });
+    const header = sale.tab_id ? await db.tabs.get(sale.tab_id) : null;
+    if (header?.status === 'OPEN') await db.tabs.update(header.id, { status: 'RELEASED', closed_at: new Date().toISOString() });
+  });
+}
+
+/**
  * A sale the server is still owed.
  *
  * An order awaiting payment transmits like any other: it is a real order that
@@ -25,6 +55,8 @@ const REFUSED_SALE_RETRY_MS = 60 * 60 * 1000;
 
 export function awaitingTransmission(sale, now = Date.now()) {
   if (sale.sync_omitted === 'adjustment_only') return false;
+  // Held for review (its tab was released): resending would only be refused again.
+  if (sale.sync_hold) return false;
   if (sale.synced_at !== undefined && sale.synced_at !== null) return false;
   if (sale.status === 'VOIDED') return false;
   if (sale.server_pending) return true;
@@ -35,7 +67,6 @@ export function awaitingTransmission(sale, now = Date.now()) {
   // and settle through settleSale once the server acknowledges the order.
   return !(sale.held_until && new Date(sale.held_until).getTime() > now);
 }
-
 
 export class SyncManager {
   /** Publish a checkout order before asking the customer to pay for it. */
@@ -308,6 +339,10 @@ export class SyncManager {
       });
       return true;
     } catch (err) {
+      if (err?.details?.reason === 'table-released') {
+        await holdReleasedRound(sale, err);
+        return false;
+      }
       const permanent = err && typeof err.code === 'string'
         && /invalid-argument|permission-denied|failed-precondition/.test(err.code);
       await db.sales.update(sale.id, {

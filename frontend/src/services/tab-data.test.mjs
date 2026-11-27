@@ -113,3 +113,22 @@ test('a preserved empty discount marker does not keep a fully paid table occupie
   assert.equal(await free('open'),'1');
   assert.equal(rows.sales.find(row=>row.id==='marker').status,'PENDING_PAYMENT','source is preserved, never labelled paid');
 });
+
+test('a released tab holds no table on this tablet, and its header closes as released', async () => {
+  const { rows, read, free } = setup();
+  rows.sales[0].table_no = '1';
+  rows.sales[0].table_release = { id: 'rel-1', at: '2026-11-27T09:00:00Z', by: 'ann', reason: 'Moved to the bar' };
+  assert.deepEqual(await read('b1'), [], 'table 1 is free for the next customer');
+  assert.equal(await free('open'), '1');
+  assert.equal(rows.tabs[0].status, 'RELEASED', 'not SETTLED: the bill is still owed');
+  assert.equal(rows.payments[0].settled_at, undefined, 'nothing was paid');
+  assert.equal(rows.sales[0].status, 'PENDING_PAYMENT', 'nor voided');
+});
+
+test('a round held for review holds no table, even with no header', async () => {
+  const { rows, read } = setup();
+  rows.tabs.shift();
+  rows.sales[0].table_no = '20';
+  rows.sales[0].sync_hold = 'table_released';
+  assert.deepEqual(await read('b1'), []);
+});

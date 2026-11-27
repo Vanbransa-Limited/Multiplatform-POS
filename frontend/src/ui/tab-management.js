@@ -1,11 +1,12 @@
 import { db } from '../db/schema';
-import { state } from '../context';
+import { state, showNotification } from '../context';
 import { escapeHtml } from '../services/print-receipt';
 import { canAddToTab, mergeTabLines } from '../services/tabs';
-import { readOpenTabs } from '../services/tab-edit';
+import { freeSettledTab, readOpenTabs } from '../services/tab-edit';
 import { pullOpenOrders, collapseOpenOrders } from '../services/open-orders';
-import { pullSales } from '../services/catalogue';
-import { DEVICE_ID } from '../services/firebase';
+import { activeTenantId, pullSales } from '../services/catalogue';
+import { DEVICE_ID, callFunction } from '../services/firebase';
+import { heldRounds, releaseReason, releaseTarget, releasedUnpaid } from '../services/table-release';
 
 /**
  * Tab Management: every open table on one screen.
@@ -39,8 +40,13 @@ export class TabManagementView {
           </div>
           <div id="tabs-saved-results" role="status" style="padding:0 16px 12px"></div>
           <div id="tabs-list"></div>
+          <div id="tabs-released" style="padding:0 16px 16px"></div>
         </section>
       </div>`;
+    this.container.querySelector('#tabs-list').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-release-tab]');
+      if (button) void this.releaseTab(this.tabs.find(tab => tab.serverTabId === button.dataset.releaseTab));
+    });
 
     this.onTablesUpdated = () => void this.refreshTabs().catch(() => {});
     window.addEventListener('pos:tables-updated', this.onTablesUpdated);
@@ -68,7 +74,7 @@ export class TabManagementView {
     tabs = await readOpenTabs(state.currentBranch?.id);
     if (this.disposed) return;
     const remoteTabs = collapseOpenOrders(remote)
-      .filter((order) => order.branchId === state.currentBranch?.id
+      .filter((order) => order.branchId === state.currentBranch?.id && !order.held
         && (order.kind === 'tab' || (order.tableNumber && order.dueMinor > 0)))
       .map((order) => ({
         id: order.id,
@@ -88,6 +94,67 @@ export class TabManagementView {
       .sort((a, b) => new Date(a.opened_at).getTime() - new Date(b.opened_at).getTime());
     this.names = new Map(users.map((user) => [user.id, user.name]));
     this.renderList();
+    await this.renderReleased();
+  }
+
+  /**
+   * Frees the table for the next customer; the bill stays owed and payable
+   * from Orders. The server checks who is asking and records who, when and why.
+   */
+  async releaseTab(tab) {
+    if (!tab || this.releasing) return;
+    const target = releaseTarget(tab, { online: navigator.onLine !== false });
+    if (target.blocked) { showNotification(target.blocked, 'warning'); return; }
+    const kes = `KES ${(target.dueMinor / 100).toLocaleString('en-KE', { minimumFractionDigits: 2 })}`;
+    const answer = window.prompt(`Release Table ${target.tableNumber} for the next customer?\n\n`
+      + `${kes} stays owed on ${this.refFor(tab) || 'this bill'}. Nothing is paid or voided; pay it later from Orders.\n\n`
+      + 'Reason (3 to 200 characters):', '');
+    if (answer === null) return;
+    const { reason, error } = releaseReason(answer);
+    if (error) { showNotification(error, 'warning'); return; }
+    this.releasing = true;
+    // showNotification renders HTML; table names are typed by staff.
+    const table = escapeHtml(target.tableNumber);
+    try {
+      const result = await callFunction('releaseTable', { tenantId: await activeTenantId(), branchId: state.currentBranch?.id,
+        tableNumber: target.tableNumber, tabId: target.tabId, reason });
+      showNotification(`Table ${table} released. ${kes} stays owed on ${escapeHtml(this.refFor(tab) || 'the bill')}; pay it from Orders.`, 'success');
+      if (result?.replayed) showNotification('It had already been released; nothing was recorded twice.', 'info');
+      // Bring the release stamp down so this till frees the table now, not at the next sync.
+      await pullSales(undefined, undefined, { tableNumber: target.tableNumber, branchId: state.currentBranch?.id }).catch(() => null);
+      await freeSettledTab(tab.id).catch(() => null);
+      await this.refreshTabs();
+      await this.renderReleased();
+    } catch (failure) {
+      showNotification(`Table ${table} was not released: ${escapeHtml(failure?.message || failure)}`, 'error');
+    } finally {
+      this.releasing = false;
+    }
+  }
+
+  /** Released bills still owed, and rounds held because their tab was released: for managers to follow up. */
+  async renderReleased() {
+    const panel = this.container.querySelector('#tabs-released');
+    if (!panel) return;
+    const branchId = state.currentBranch?.id || '';
+    const sales = (await db.sales.where('branch_id').equals(branchId).toArray())
+      .filter(sale => sale.table_release || sale.sync_hold);
+    if (this.disposed) return;
+    const payments = sales.length ? await db.payments.where('sale_id').anyOf(sales.map(sale => sale.id)).toArray() : [];
+    const released = releasedUnpaid(sales, payments, branchId);
+    const held = heldRounds(sales, branchId);
+    const money = minor => `KES ${(minor / 100).toLocaleString('en-KE', { minimumFractionDigits: 2 })}`;
+    const when = iso => (iso ? new Date(iso).toLocaleString() : '—');
+    panel.innerHTML = (released.length ? `<h3 style="margin:8px 0;font-size:15px">Released · Unpaid (${released.length})</h3>`
+      + released.map(bill => `<p class="co-meta" style="margin:0 0 8px">
+          <b>Table ${escapeHtml(bill.table || '—')}</b> · <a href="/orders?order=${escapeHtml(encodeURIComponent(bill.ref))}">${escapeHtml(bill.ref)}</a>
+          · <span class="co-unpaid">${money(bill.dueMinor)} due</span> · Released · Unpaid<br>
+          Released ${escapeHtml(when(bill.releasedAt))} by <b>${escapeHtml(this.names.get(bill.releasedBy) || bill.releasedBy || 'unknown')}</b>: ${escapeHtml(bill.reason)}
+          · <a href="/orders?order=${escapeHtml(encodeURIComponent(bill.ref))}&invoice=1">Invoice</a>
+          · <a href="/orders?order=${escapeHtml(encodeURIComponent(bill.ref))}">Pay now</a></p>`).join('') : '')
+      + (held.length ? `<h3 style="margin:8px 0;font-size:15px">Held for review (${held.length})</h3>`
+      + held.map(round => `<p class="co-meta" style="margin:0 0 8px"><b>Table ${escapeHtml(round.table || '—')}</b> · ${escapeHtml(round.ref)}
+          · ${money(round.totalMinor)} · on no bill${round.releasedTabRef ? ` (rung for released ${escapeHtml(round.releasedTabRef)})` : ''}<br>${escapeHtml(round.message)}</p>`).join('') : '');
   }
 
   /** The server's tabs changed (paid or added to elsewhere): redraw from them. */
@@ -181,6 +248,7 @@ export class TabManagementView {
           ${ref && canAddToTab(tab) ? `<a class="co-print" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}&edit=1">Edit tab</a>` : ''}
           ${ref ? `<a class="co-print" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}&discount=1" title="Add the Staff 20% to a round that went out without it">Staff 20%</a>` : ''}
           ${ref ? `<a class="co-pay" style="text-decoration:none" href="/orders?order=${encodeURIComponent(ref)}">Pay now</a>` : ''}
+          ${tab.serverTabId && tab.dueMinor > 0 ? `<button type="button" class="co-print" data-release-tab="${escapeHtml(tab.serverTabId)}" title="Free the table for the next customer; the bill stays owed">Release table</button>` : ''}
           ${canAddToTab(tab) ? '' : '<span class="co-meta" style="margin:0">Running on another till · Pay now settles it from here</span>'}
         </div>
       </div>

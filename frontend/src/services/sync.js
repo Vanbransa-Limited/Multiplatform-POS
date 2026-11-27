@@ -315,6 +315,18 @@ export class SyncManager {
         db.sale_lines.where('sale_id').equals(sale.id).toArray(),
         db.payments.where('sale_id').equals(sale.id).toArray(),
       ]);
+      if (!lines.length && sale.sale_uuid && firebaseConfigured) {
+        // An audited recovery may already hold the original sale on the
+        // server. Pull its items into this same row before offering a re-ring.
+        const { pullSales } = await import('./catalogue');
+        await readWithDeadline(() => pullSales(undefined, [sale.sale_uuid]), 8000).catch(() => null);
+        const restored = await db.sales.get(sale.id);
+        const itemCount = await db.sale_lines.where('sale_id').equals(sale.id).count();
+        if (restored?.synced_at && itemCount > 0) {
+          await db.sales.update(sale.id, { sharing_pending: 0, sync_error_msg: null, sync_retry_after: null });
+          return true;
+        }
+      }
       if (isNonBillableAdjustment(sale, lines, payments)) {
         await db.sales.update(sale.id, { sync_pending: 0, sync_omitted: 'adjustment_only',
           sharing_pending: 0, sync_error_msg: null, fiscal_status: 'NOT_APPLICABLE' });

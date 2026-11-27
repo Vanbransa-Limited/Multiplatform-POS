@@ -22,6 +22,8 @@ function main() {
     ['backend/functions/e2e/table-release.cjs'],
     ['backend/functions/e2e/receipt-correction.cjs'],
     ['backend/functions/e2e/shared-receipt-repair.cjs'],
+    ['backend/functions/e2e/receipt-overallocation-repair.cjs'],
+    ['backend/functions/e2e/held-sale-recovery.cjs'],
     ['backend/functions/e2e/etims.cjs'],
   ];
   try {

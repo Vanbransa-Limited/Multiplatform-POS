@@ -3165,6 +3165,11 @@ export class TillView {
    * it applies both once the money is real.
    */
   async registerOrder(paymentRecords, { pending }) {
+    // A shift/table lookup yields to cart controls. Save the exact items and
+    // prices that produced this tender, even if the visible cart changes.
+    const cart = structuredClone(this.cart);
+    const totals = { ...this.totals };
+    const customerAtSave = { ...this.selectedCustomer };
     if (discountAwaitingCode(this.cart, state.currentUser?.role)) {
       showNotification('Apply or remove the staff discount first.', 'warning');
       this.askManagerCode();
@@ -3248,7 +3253,7 @@ export class TillView {
       return false;
     }
 
-    const hasKdsItems = this.cart.some(item => !item.product.is_service);
+    const hasKdsItems = cart.some(item => !item.product.is_service);
     // A sale is never booked against an M-Pesa payment the backend has not
     // confirmed. Cash and credit are settled at the counter; M-Pesa is not.
     // A pending order carries no tender at all, so there is nothing to prove.
@@ -3264,7 +3269,7 @@ export class TillView {
 
     // Opened here rather than when the table was typed, so a table tapped and
     // then abandoned does not leave an empty tab on the floor.
-    const recorded = recordedSaleTotals(this.totals);
+    const recorded = recordedSaleTotals(totals);
     const saleRecord = {
       id: saleId,
       tenant_id: state.currentTenant.id,
@@ -3283,7 +3288,7 @@ export class TillView {
       // till, the owner's included, ever saw them.
       created_by: state.currentUser?.id || null,
       staff_id: state.currentUser?.id || null,
-      customer_id: this.selectedCustomer.id || null,
+      customer_id: customerAtSave.id || null,
       table_no: tableNo,
       // What ties this round to the nine o'clock one at the same table.
       tab_id: null,
@@ -3295,7 +3300,7 @@ export class TillView {
       // Recorded so that subtotal - discount is exactly what was charged.
       subtotal: recorded.subtotal,
       discount: recorded.discount,
-      tax_total: this.totals.tax,
+      tax_total: totals.tax,
       grand_total: recorded.grandTotal,
       // The board reads this to tell an order awaiting payment from a settled
       // one. The lease beside it keeps the order on this till while the
@@ -3342,8 +3347,8 @@ export class TillView {
       const stockMovementsBatch = [];
       const createdAtIso = new Date().toISOString();
 
-      for (const item of this.cart) {
-        const rate = saleLineRate(item.product, this.totals, this.selectedCustomer.price_tier);
+      for (const item of cart) {
+        const rate = saleLineRate(item.product, totals, customerAtSave.price_tier);
         const gross = rate * item.qty;
         const discount = Math.min(gross, Math.max(0, Number(item.discount_amount) || 0));
         const total = gross - discount;
@@ -3356,6 +3361,7 @@ export class TillView {
           id: crypto.randomUUID(),
           sale_id: saleId,
           product_id: item.product.id,
+          product_name: item.product.name,
           qty: item.qty,
           unit_price: rate,
           discount,
@@ -3392,23 +3398,25 @@ export class TillView {
 
       // 4. Update Customer Loyalty & Credit Balance. An order nobody has paid
       //    for moves neither; settling it applies both once the money is real.
-      if (!pending && this.selectedCustomer && this.selectedCustomer.id !== WALK_IN_CUSTOMER_ID) {
-        const customer = await db.customers.get(this.selectedCustomer.id);
+      if (!pending && customerAtSave.id && customerAtSave.id !== WALK_IN_CUSTOMER_ID) {
+        const customer = await db.customers.get(customerAtSave.id);
         if (customer) {
           const updates = {};
           
           if (isReceivable(this.selectedPaymentMethod)) {
-            updates.credit_balance = (customer.credit_balance || 0) + this.totals.total;
+            updates.credit_balance = (customer.credit_balance || 0) + totals.total;
           }
 
-          const pointsEarned = Math.floor(this.totals.total / 100);
+          const pointsEarned = Math.floor(totals.total / 100);
           updates.loyalty_points = Math.max(0, (customer.loyalty_points || 0) + pointsEarned - (this.redeemedPoints || 0));
 
           await db.customers.update(customer.id, updates);
 
           // Sync local customer reference
-          this.selectedCustomer.credit_balance = updates.credit_balance !== undefined ? updates.credit_balance : customer.credit_balance;
-          this.selectedCustomer.loyalty_points = updates.loyalty_points;
+          if (this.selectedCustomer?.id === customerAtSave.id) {
+            this.selectedCustomer.credit_balance = updates.credit_balance !== undefined ? updates.credit_balance : customer.credit_balance;
+            this.selectedCustomer.loyalty_points = updates.loyalty_points;
+          }
         }
       }
 
@@ -3427,7 +3435,7 @@ export class TillView {
 
     // Update cached in-memory houseStockByProduct and trigger low-stock alert in O(1) without blocking I/O
     try {
-      for (const item of this.cart) {
+      for (const item of cart) {
         if (!item.product.is_service) {
           const pid = String(item.product.id);
           const prev = this.houseStockByProduct?.get(pid) ?? 0;
@@ -3441,7 +3449,7 @@ export class TillView {
     } catch {}
 
     // Every new order reaches the kitchen: tab rounds, Pay Now and direct checkout.
-    void this.sendRoundToKitchen(registered.saleId, [...this.cart], { pending });
+    void this.sendRoundToKitchen(registered.saleId, cart, { pending });
     return registered;
   }
 

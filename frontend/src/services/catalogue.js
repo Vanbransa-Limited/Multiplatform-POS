@@ -263,6 +263,8 @@ export async function pullSales(sinceIso, saleUuids, tableSelection) {
   );
   const localIdFor = new Map();
   const localById = new Map(localSales.map(row => [row.id, row]));
+  const existingLines = localSales.length ? await db.sale_lines.where('sale_id').anyOf(localSales.map(row => row.id)).toArray() : [];
+  const localWithLines = new Set(existingLines.map(line => line.sale_id));
 
   const fresh = [];
   const movedTabs = new Map();
@@ -336,8 +338,10 @@ export async function pullSales(sinceIso, saleUuids, tableSelection) {
     const doc = entry.data();
     if (!selectedIds.has(doc.saleId)) return [];
     const localId = localIdFor.get(doc.saleId);
-    if (localId && localId !== doc.saleId) return [];
-    return [{ id: entry.id, sale_id: doc.saleId, product_id: doc.productId,
+    // Keep original item IDs when present. An empty local copy can recover
+    // the confirmed server items under its existing sale ID without a re-ring.
+    if (localId && localId !== doc.saleId && localWithLines.has(localId)) return [];
+    return [{ id: entry.id, sale_id: localId || doc.saleId, product_id: doc.productId,
       product_name: doc.productName, qty: doc.qty, tax_code: doc.taxCode,
       unit_price: (Number(doc.unitPriceMinor) || 0) / 100,
       discount: (Number(doc.discountMinor) || 0) / 100,
@@ -345,6 +349,11 @@ export async function pullSales(sinceIso, saleUuids, tableSelection) {
       line_total: (Number(doc.lineTotalMinor) || 0) / 100 }];
   });
   if (lineRows.length) await db.sale_lines.bulkPut(lineRows);
+  for (const localId of new Set(lineRows.map(line => line.sale_id))) {
+    if (localById.has(localId) && !localWithLines.has(localId)) {
+      await db.sales.update(localId, { sharing_pending: 0, sync_error_msg: null, sync_retry_after: null });
+    }
+  }
 
   // The selling device keeps its original tender IDs. Mirror the server's
   // remaining receivable as well as full settlement, including payments made

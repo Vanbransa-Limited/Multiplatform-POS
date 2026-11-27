@@ -76,6 +76,25 @@ test('selling device refresh preserves local ids without duplicating tender', as
   assert.equal(db.payments.rows.get('settlement').sale_id, 'local');
 });
 
+test('a missing local item list recovers from its canonical sale without another sale or tender', async () => {
+  const { db, pull } = setup(true);
+  await pull(undefined, ['uuid']);
+  await pull(undefined, ['uuid']);
+  assert.equal(db.sales.rows.size, 1);
+  assert.equal(db.sale_lines.rows.size, 1);
+  assert.equal(db.sale_lines.rows.get('line').sale_id, 'local');
+  assert.equal(db.sale_lines.rows.get('line').product_name, 'Tea');
+  assert.equal(db.payments.rows.size, 1);
+  assert.equal(db.payments.rows.get('local-credit').amount, 100);
+});
+
+test('server history preserves original local item IDs when that item list exists', async () => {
+  const { db, pull } = setup(true);
+  await db.sale_lines.bulkPut([{ id: 'original-line', sale_id: 'local', product_name: 'Tea', qty: 2 }]);
+  await pull(undefined, ['uuid']);
+  assert.deepEqual([...db.sale_lines.rows.keys()], ['original-line']);
+});
+
 test('a partial payment from another device reduces the original local debt without duplicating credit', async () => {
   const { db, records, pull } = setup(true);
   records.payments[0].amountMinor = 6000;

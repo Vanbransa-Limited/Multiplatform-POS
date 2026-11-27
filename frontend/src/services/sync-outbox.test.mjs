@@ -221,3 +221,20 @@ test('a round held because its tab was released is never resent', () => {
   assert.equal(awaitingTransmission(round, now), true);
   assert.equal(awaitingTransmission({ ...round, sync_hold: 'table_released' }, now), false);
 });
+
+test('the outbox pulls an audited missing-item recovery into the original row without creating another sale', async () => {
+  const start = source.indexOf('  async transmitSale(');
+  const body = source.slice(start, source.indexOf('\n  startSyncScheduler()', start))
+    .replace('async transmitSale(', 'async function transmitSale(')
+    .replace("const { pullSales } = await import('./catalogue');", 'const pullSales = restore;');
+  const sale = { id: 'local', sale_uuid: 'original-uuid', grand_total: 350, status: 'PENDING_PAYMENT' };
+  const patches = []; let restored = false;
+  const db = { sales: { get: async () => ({ ...sale, synced_at: restored ? 'server' : null }), update: async (_id, patch) => patches.push(patch) },
+    sale_lines: { where: () => ({ equals: () => ({ toArray: async () => [], count: async () => restored ? 1 : 0 }) }) },
+    payments: { where: () => ({ equals: () => ({ toArray: async () => [{ method: 'CREDIT', amount: 350 }] }) }) } };
+  const run = new Function('db', 'firebaseConfigured', 'restore', 'readWithDeadline', 'callFunction', `return ${body}`)(db, true,
+    async (_since, uuids) => { assert.deepEqual(uuids, ['original-uuid']); restored = true; }, async read => read(),
+    () => { throw Error('Recovery must never create another sale'); });
+  assert.equal(await run.call({ buildSalePayload: async () => null }, sale), true);
+  assert.equal(patches.at(-1).sync_error_msg, null);
+});
